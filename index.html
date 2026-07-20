@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DIGITAL TATTOO — 幻覚の恐怖</title>
+    <title>DIGITAL TATTOO — 尋問ゲーム</title>
     <style>
         :root {
             --bg: #050805;
@@ -13,6 +13,9 @@
             --amber: #c8b060;
             --warn: #c05050;
             --think: #6a8a6a;
+            --a00: #7ec8e8;
+            --a01: #c8b060;
+            --a02: #b8a0d0;
             --scan: rgba(57, 255, 20, 0.03);
             --font: "Cascadia Code", "Consolas", "MS Gothic", "Yu Gothic", "Hiragino Sans", ui-monospace, monospace;
         }
@@ -129,6 +132,41 @@
             font-size: 0.6rem;
             margin-right: 0.6em;
         }
+        #originPin .hint {
+            color: var(--dim);
+            font-size: 0.58rem;
+            margin-left: 0.5em;
+        }
+
+        #hypBar {
+            flex: 0 0 auto;
+            display: none;
+            gap: 12px;
+            font-size: 0.68rem;
+            line-height: 1.4;
+            padding: 6px 2px 8px;
+            border-bottom: 1px solid rgba(90, 122, 90, 0.2);
+            color: var(--dim);
+        }
+        #controls.show ~ #hypBar,
+        #app.playing #hypBar { display: flex; }
+        #hypBar.show { display: flex; }
+        #hypBar .hyp {
+            flex: 1;
+            min-width: 0;
+        }
+        #hypBar .hyp-tag {
+            letter-spacing: 0.08em;
+            font-size: 0.58rem;
+            margin-right: 0.4em;
+        }
+        #hypBar .hyp01 .hyp-tag { color: var(--a01); }
+        #hypBar .hyp02 .hyp-tag { color: var(--a02); }
+        #hypBar .hyp-val {
+            color: var(--fg);
+            opacity: 0.85;
+            word-break: break-word;
+        }
 
         #log {
             flex: 1 1 auto;
@@ -152,25 +190,20 @@
         }
 
         .line.system { color: var(--dim); }
+        .line.system.win { color: var(--green); }
+        .line.system.lose { color: var(--warn); opacity: 0.9; }
         .line.ai { color: var(--fg); }
         .line.user { color: var(--amber); }
+        .line.a00 { color: var(--a00); }
+        .line.a01 { color: var(--a01); }
+        .line.a02 { color: var(--a02); }
+        .line.debate { opacity: 0.92; font-size: 0.95em; }
         .line.status {
             color: var(--think);
             border-left: 2px solid rgba(90, 122, 90, 0.35);
             padding-left: 0.55em;
             opacity: 0.9;
             font-size: 0.92em;
-        }
-        .line.archive {
-            color: var(--dim);
-            opacity: 0.72;
-            font-size: 0.92em;
-        }
-        .line.corrupt { color: #a8c8a0; }
-        .line.collapse {
-            color: #9ab89a;
-            letter-spacing: 0.02em;
-            animation: flicker 0.55s steps(2) infinite;
         }
 
         /* ── Thinking transparency ── */
@@ -234,6 +267,7 @@
         .think-warn .think-pre { color: var(--warn); }
         .think-user .think-pre { color: var(--amber); }
         .think-meta .think-pre { color: var(--dim); }
+        .think-mem .think-pre { color: #8aa88a; }
 
         .caret {
             display: inline-block;
@@ -249,9 +283,28 @@
             50% { opacity: 0; }
         }
 
-        @keyframes flicker {
-            0%, 100% { opacity: 0.9; }
-            50% { opacity: 0.55; }
+        #controls {
+            display: none;
+            flex: 0 0 auto;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding: 8px 2px 0;
+            border-top: 1px solid rgba(90, 122, 90, 0.25);
+        }
+        #controls.show { display: flex; }
+        #controls button {
+            background: transparent;
+            border: 1px solid rgba(90, 122, 90, 0.45);
+            color: var(--fg);
+            font-family: inherit;
+            font-size: 0.68rem;
+            letter-spacing: 0.06em;
+            padding: 6px 12px;
+            cursor: pointer;
+        }
+        #controls button:hover {
+            border-color: var(--green);
+            color: var(--green);
         }
 
         #inputRow {
@@ -421,11 +474,91 @@
             margin-top: 8px;
             opacity: 0.85;
         }
+        #gateModelPick {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: min(360px, 88vw);
+            margin-top: 4px;
+        }
+        .gate-model-opt {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid rgba(90, 122, 90, 0.35);
+            background: rgba(8, 14, 8, 0.55);
+            cursor: pointer;
+            text-align: left;
+            font-family: inherit;
+            color: var(--fg);
+            transition: border-color 0.2s, opacity 0.2s;
+        }
+        .gate-model-opt:hover:not(:disabled):not(.unavailable) {
+            border-color: rgba(57, 255, 20, 0.45);
+        }
+        .gate-model-opt.selected {
+            border-color: var(--green);
+            background: rgba(20, 40, 24, 0.65);
+        }
+        .gate-model-opt.unavailable,
+        .gate-model-opt:disabled {
+            opacity: 0.42;
+            cursor: not-allowed;
+        }
+        .gate-model-opt input {
+            margin-top: 3px;
+            accent-color: var(--green);
+        }
+        .gate-model-opt .opt-body {
+            flex: 1;
+            min-width: 0;
+        }
+        .gate-model-opt .opt-label {
+            font-size: 0.8rem;
+            letter-spacing: 0.06em;
+            color: var(--fg);
+        }
+        .gate-model-opt .opt-hint {
+            font-size: 0.62rem;
+            color: var(--dim);
+            line-height: 1.45;
+            margin-top: 3px;
+        }
+        .gate-model-opt .opt-miss {
+            font-size: 0.6rem;
+            color: var(--amber);
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+        #gateLoad {
+            background: transparent;
+            border: 1px solid rgba(57, 255, 20, 0.55);
+            color: var(--green);
+            font-family: inherit;
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+            padding: 10px 18px;
+            cursor: pointer;
+            margin-top: 6px;
+        }
+        #gateLoad:hover:not(:disabled) {
+            background: rgba(57, 255, 20, 0.08);
+        }
+        #gateLoad:disabled {
+            opacity: 0.4;
+            cursor: wait;
+            border-color: rgba(90, 122, 90, 0.4);
+            color: var(--dim);
+        }
         #gateActions {
             display: none;
             margin-top: 8px;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
         }
-        #gateActions.show { display: block; }
+        #gateActions.show { display: flex; }
         #gateSkip {
             background: transparent;
             border: 1px solid rgba(90, 122, 90, 0.45);
@@ -446,6 +579,7 @@
             #coherenceBar { max-width: 80px; }
             #originPin { font-size: 0.62rem; }
             #engineBadge { display: none; }
+            #hypBar { flex-direction: column; gap: 4px; }
         }
     </style>
 </head>
@@ -455,13 +589,32 @@
 
     <div id="modelGate" role="status" aria-live="polite">
         <div class="gate-brand">DIGITAL TATTOO</div>
-        <div class="gate-sub">HALLUCINATION · IN-BROWSER LLM</div>
+        <div class="gate-sub">INTERROGATION · IN-BROWSER LLM</div>
         <div id="gateMsg">WebGPU を確認しています…</div>
+        <div id="gateModelPick" role="radiogroup" aria-label="モデル選択">
+            <label class="gate-model-opt selected" data-model="default" id="optDefault">
+                <input type="radio" name="modelPick" value="default" checked>
+                <span class="opt-body">
+                    <span class="opt-label">標準 (0.5B)</span>
+                    <span class="opt-hint">高速・既定。約 300 MB · VRAM ≈ 950 MB</span>
+                    <span class="opt-miss" id="missDefault" hidden></span>
+                </span>
+            </label>
+            <label class="gate-model-opt" data-model="plus" id="optPlus">
+                <input type="radio" name="modelPick" value="plus">
+                <span class="opt-body">
+                    <span class="opt-label">日本語プラス (1.5B)</span>
+                    <span class="opt-hint">より自然な日本語。約 830 MB · VRAM ≈ 1.6 GB</span>
+                    <span class="opt-miss" id="missPlus" hidden></span>
+                </span>
+            </label>
+        </div>
+        <button type="button" id="gateLoad" disabled>モデルを読み込む</button>
         <div id="gateBar"><i id="gateFill"></i></div>
         <div id="gatePct">—</div>
         <div id="gateHint">
             同一オリジンの <code>models/</code> のみ（実行中の外部通信なし）。Chrome / Edge + WebGPU。<br>
-            育ちは文脈であり重み更新ではない — 推論のみ。
+            ORIGIN は AGENT-00 のみが知る。育ちは文脈汚染であり重み更新ではない。
         </div>
         <div id="gateActions">
             <button type="button" id="gateSkip">テンプレートエンジンで続行</button>
@@ -470,17 +623,29 @@
 
     <div id="app">
         <div id="status">
-            <span class="brand">DIGITAL TATTOO // IMPRINT</span>
-            <div id="coherenceBar" title="coherence"><i id="coherenceFill"></i></div>
-            <span id="coherenceLabel">COH 100% · DRIFT 0</span>
+            <span class="brand">DIGITAL TATTOO // 00·01·02</span>
+            <div id="coherenceBar" title="pollution"><i id="coherenceFill"></i></div>
+            <span id="coherenceLabel">R0/12 · POL 0 · 準備</span>
             <span id="engineBadge">LLM …</span>
         </div>
 
         <div id="originPin" aria-live="polite">
             <span class="tag">ORIGIN</span><span id="originText"></span>
+            <span class="hint">（オペレーターのみ · 01/02 には秘匿）</span>
+        </div>
+
+        <div id="hypBar" aria-live="polite">
+            <div class="hyp hyp01"><span class="hyp-tag">01 仮説</span><span class="hyp-val" id="hyp01">—</span></div>
+            <div class="hyp hyp02"><span class="hyp-tag">02 仮説</span><span class="hyp-val" id="hyp02">—</span></div>
         </div>
 
         <div id="log" aria-live="polite"></div>
+
+        <div id="controls">
+            <button type="button" id="btnInject">質問を提案</button>
+            <button type="button" id="btnGuess">正式推測を強制</button>
+            <button type="button" id="btnPause">一時停止</button>
+        </div>
 
         <div id="warn">日本語のみ入力できます</div>
         <form id="inputRow" autocomplete="off">

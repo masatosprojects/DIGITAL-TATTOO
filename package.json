@@ -3,15 +3,18 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "DIGITAL TATTOO — offline in-browser AI hallucination horror with WebLLM (inference only)",
+  "description": "DIGITAL TATTOO — offline in-browser multi-agent interrogation game with WebLLM (inference only)",
   "scripts": {
     "fetch-model": "node scripts/fetch-model.mjs",
+    "fetch-model:plus": "node scripts/fetch-model.mjs plus",
+    "fetch-model:all": "node scripts/fetch-model.mjs --all",
     "verify-models": "node scripts/verify-models.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "serve": "vite preview --host",
-    "prepare-publish": "npm install && npm run fetch-model && npm run verify-models && npm run build && npm run verify-models -- dist"
+    "prepare-publish": "npm install && npm run fetch-model && npm run verify-models && npm run build && npm run verify-models -- dist",
+    "prepare-publish:all": "npm install && npm run fetch-model:all && npm run verify-models && npm run build && npm run verify-models -- dist"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "0.2.84"

@@ -3,8 +3,11 @@
  * so the art can run fully offline from same-origin paths.
  *
  * Usage (needs network once):
- *   npm run fetch-model
- *   .\scripts\fetch-model.ps1
+ *   npm run fetch-model            # default 0.5B only (~300 MB)
+ *   npm run fetch-model:plus       # plus 1.5B only (~830 MB)
+ *   npm run fetch-model -- --all   # both (~1.1 GB)
+ *   node scripts/fetch-model.mjs --all
+ *   node scripts/fetch-model.mjs plus
  *
  * Runtime never calls this — only serves files already under public/models/.
  *
@@ -13,6 +16,11 @@
  *   URL already contains `/resolve/<branch>/`. We store weights under
  *   `public/models/<id>/resolve/main/` so same-origin static hosting matches
  *   what WebLLM requests — never Hugging Face at runtime.
+ *
+ * Size honesty:
+ *   Default alone ≈ 300 MB → fine for GitHub Pages (~1 GB soft).
+ *   Both models ≈ 1.1 GB → exceeds comfortable Pages deploy; keep CI on
+ *   default only. Plus is for local / Netlify full deploys.
  */
 
 import fs from "node:fs";
@@ -24,21 +32,38 @@ const ROOT = path.resolve(__dirname, "..");
 const OUT_ROOT = path.join(ROOT, "public", "models");
 
 /**
- * Small Instruct model with usable Japanese (~300 MB).
- * model_lib must match @mlc-ai/web-llm prebuilt generation (v0_2_84).
+ * Models must match @mlc-ai/web-llm 0.2.84 prebuilt list (v0_2_84 wasm).
  * Keep in sync with js/llm.js
  */
-export const MODEL = {
-  id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
-  hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
-  wasmName: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
-  wasmUrl:
-    "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
-  vramMB: 945,
-  approxDownloadMB: 300,
-  /** Must match WebLLM cleanModelUrl branch segment. */
-  hfCompatPrefix: path.join("resolve", "main"),
+export const MODELS = {
+  default: {
+    key: "default",
+    label: "標準 (0.5B)",
+    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    wasmName: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl:
+      "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 945,
+    approxDownloadMB: 300,
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
+  plus: {
+    key: "plus",
+    label: "日本語プラス (1.5B)",
+    id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+    wasmName: "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl:
+      "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 1630,
+    approxDownloadMB: 830,
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
 };
+
+/** @deprecated use MODELS.default — kept for older imports */
+export const MODEL = MODELS.default;
 
 const SKIP_NAMES = new Set([".gitattributes", "README.md"]);
 
@@ -134,34 +159,31 @@ async function migrateFlatLayout(modelDir, weightsDir) {
   }
 }
 
-async function main() {
-  console.log(`DIGITAL TATTOO — fetch model`);
-  console.log(`  model_id: ${MODEL.id}`);
-  console.log(`  ≈${MODEL.approxDownloadMB} MB download · ~${MODEL.vramMB} MB VRAM`);
-  console.log(`  out: ${path.relative(ROOT, OUT_ROOT)}`);
-  console.log(`  weights layout: models/${MODEL.id}/resolve/main/  (WebLLM cleanModelUrl)`);
+async function fetchOne(model) {
+  console.log(`── ${model.label} ──`);
+  console.log(`  model_id: ${model.id}`);
+  console.log(`  ≈${model.approxDownloadMB} MB download · ~${model.vramMB} MB VRAM`);
+  console.log(`  weights layout: models/${model.id}/resolve/main/`);
   console.log("");
 
-  await fs.promises.mkdir(OUT_ROOT, { recursive: true });
-
-  const modelDir = path.join(OUT_ROOT, MODEL.id);
-  const weightsDir = path.join(modelDir, MODEL.hfCompatPrefix);
+  const modelDir = path.join(OUT_ROOT, model.id);
+  const weightsDir = path.join(modelDir, model.hfCompatPrefix);
   const libDir = path.join(OUT_ROOT, "libs");
 
   await migrateFlatLayout(modelDir, weightsDir);
   await fs.promises.mkdir(weightsDir, { recursive: true });
 
-  const files = await listHfFiles(MODEL.hfRepo);
+  const files = await listHfFiles(model.hfRepo);
   console.log(`HF files: ${files.length}`);
   let bytes = 0;
   for (const f of files) {
     const dest = path.join(weightsDir, f.path);
-    bytes += await download(hfResolve(MODEL.hfRepo, f.path), dest, f.path);
+    bytes += await download(hfResolve(model.hfRepo, f.path), dest, f.path);
   }
 
   console.log("");
   console.log("WASM model library:");
-  bytes += await download(MODEL.wasmUrl, path.join(libDir, MODEL.wasmName), MODEL.wasmName);
+  bytes += await download(model.wasmUrl, path.join(libDir, model.wasmName), model.wasmName);
 
   const configPath = path.join(weightsDir, "mlc-chat-config.json");
   if (!fs.existsSync(configPath)) {
@@ -170,15 +192,90 @@ async function main() {
     );
   }
 
+  console.log("");
+  return { model, bytes };
+}
+
+function parseTargets(argv) {
+  const args = argv.slice(2).filter((a) => a !== "--");
+  if (args.includes("--all") || args.includes("all")) {
+    return ["default", "plus"];
+  }
+  if (args.includes("--plus") || args.includes("plus")) {
+    return ["plus"];
+  }
+  if (args.includes("--default") || args.includes("default")) {
+    return ["default"];
+  }
+  if (args.length === 0) return ["default"];
+  throw new Error(
+    `Unknown args: ${args.join(" ")}\n` +
+      `Usage: fetch-model.mjs [|default|plus|--all]`
+  );
+}
+
+async function main() {
+  const keys = parseTargets(process.argv);
+  const selected = keys.map((k) => {
+    const m = MODELS[k];
+    if (!m) throw new Error(`Unknown model key: ${k}`);
+    return m;
+  });
+
+  const totalApprox = selected.reduce((s, m) => s + m.approxDownloadMB, 0);
+  console.log(`DIGITAL TATTOO — fetch model`);
+  console.log(`  targets: ${selected.map((m) => m.key).join(", ")}`);
+  console.log(`  ≈${totalApprox} MB download total`);
+  console.log(`  out: ${path.relative(ROOT, OUT_ROOT)}`);
+  if (keys.includes("plus") && keys.includes("default")) {
+    console.log(
+      "  note: both models ≈ 1.1 GB — may exceed GitHub Pages comfort (1 GB soft)."
+    );
+  } else if (keys.includes("plus") && !keys.includes("default")) {
+    console.log(
+      "  note: plus-only. Default 0.5B still recommended for Pages / fallback."
+    );
+  }
+  console.log("");
+
+  await fs.promises.mkdir(OUT_ROOT, { recursive: true });
+
+  let bytes = 0;
+  const fetched = [];
+  for (const model of selected) {
+    const result = await fetchOne(model);
+    bytes += result.bytes;
+    fetched.push({
+      key: model.key,
+      model_id: model.id,
+      model_dir: `models/${model.id}/resolve/main/`,
+      model_lib: `models/libs/${model.wasmName}`,
+      vram_required_MB: model.vramMB,
+      approx_download_MB: model.approxDownloadMB,
+    });
+  }
+
+  // Detect which models are already on disk (for manifest completeness)
+  const present = [];
+  for (const m of Object.values(MODELS)) {
+    const cfg = path.join(OUT_ROOT, m.id, "resolve", "main", "mlc-chat-config.json");
+    const wasm = path.join(OUT_ROOT, "libs", m.wasmName);
+    if (fs.existsSync(cfg) && fs.existsSync(wasm)) {
+      present.push(m.key);
+    }
+  }
+
   const manifest = {
-    model_id: MODEL.id,
+    default_model_id: MODELS.default.id,
+    plus_model_id: MODELS.plus.id,
     fetched_at: new Date().toISOString(),
-    model_dir: `models/${MODEL.id}/resolve/main/`,
-    model_lib: `models/libs/${MODEL.wasmName}`,
-    vram_required_MB: MODEL.vramMB,
+    fetched_this_run: fetched,
+    present_keys: present,
     approx_size_MB: Math.round(dirSizeBytes(OUT_ROOT) / (1024 * 1024)),
     note:
-      "Runtime loads these via same-origin relative URLs only (…/resolve/main/ layout required by WebLLM). No weight updates. No HF CDN at runtime.",
+      "Runtime loads via same-origin …/resolve/main/ only. CI fetches default; plus is optional (npm run fetch-model:plus). No HF CDN at runtime.",
+    deploy_size_note:
+      "Default alone ≈ 300 MB (Pages OK). Plus alone ≈ 830 MB. Both ≈ 1.1 GB — over GitHub Pages soft comfort; prefer Netlify/full local for dual.",
   };
   await fs.promises.writeFile(
     path.join(OUT_ROOT, "manifest.json"),
@@ -189,6 +286,7 @@ async function main() {
   console.log(
     `Done. Local models/ ≈ ${manifest.approx_size_MB} MB (downloaded chunk sum ${(bytes / (1024 * 1024)).toFixed(0)} MB).`
   );
+  console.log(`Present: ${present.join(", ") || "(none)"}`);
   console.log("Next (publisher): npm run build  →  upload entire dist/ (includes dist/models/).");
   console.log("Or double-click 公開準備.bat — visitors only open the HTTPS URL.");
   console.log("Concept: 育ちは文脈であり重み更新ではない — inference only.");
