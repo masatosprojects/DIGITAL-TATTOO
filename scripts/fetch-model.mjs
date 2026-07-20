@@ -3,28 +3,15 @@
  * so the art can run fully offline from same-origin paths.
  *
  * Usage (needs network once):
- *   npm run fetch-model            # default 1.5B only (~840 MB) — Netlify / local
- *   npm run fetch-model:pages      # lite 0.5B (~280 MB) — GitHub Pages CI (shard-safe)
- *   npm run fetch-model:lite       # alias of pages / weak-GPU
- *   npm run fetch-model:hq         # 3B only (~1.7 GB) — Netlify / strong GPU
- *   npm run fetch-model -- --all   # all three (~2.8 GB)
- *   node scripts/fetch-model.mjs lite
- *   node scripts/fetch-model.mjs hq
- *   node scripts/fetch-model.mjs default
+ *   npm run fetch-model            # default Qwen 1.5B (~840 MB)
+ *   npm run fetch-model:pages      # lite 0.5B — GitHub Pages CI
+ *   npm run fetch-model:hq         # 3B
+ *   npm run fetch-model:swallow    # TinySwallow JP (optional local pack)
+ *   npm run fetch-model:gemma-jpn  # Gemma2-JPN (optional)
+ *   npm run fetch-model:extras     # swallow + gemma-jpn
+ *   npm run fetch-model -- --all   # Qwen hq+default+lite (~2.8 GB)
  *
- * Runtime never calls this — only serves files already under public/models/.
- *
- * Layout note (critical):
- *   @mlc-ai/web-llm cleanModelUrl() appends `resolve/main/` unless the model
- *   URL already contains `/resolve/<branch>/`. We store weights under
- *   `public/models/<id>/resolve/main/` so same-origin static hosting matches
- *   what WebLLM requests — never Hugging Face at runtime.
- *
- * Size honesty (q4f16_1 weights from HF tree, wasm extra):
- *   lite 0.5B  ≈ 280 MB  · max shard ≈65 MB  · Pages CI OK
- *   default 1.5B ≈ 840 MB · max shard ≈111 MB · Pages Cache.add fails — Netlify/local
- *   hq 3B      ≈ 1.7 GB  · Pages NO
- *   all three  ≈ 2.8 GB  → Netlify / full local only
+ * Runtime prefers same-origin; missing models may load via HF + IndexedDB.
  */
 
 import fs from "node:fs";
@@ -46,7 +33,7 @@ export const MODELS = {
   hq: {
     key: "hq",
     rank: 1,
-    label: "高精度 (3B・要VRAM)",
+    label: "高精度 Qwen 3B（要VRAM）",
     id: "Qwen2.5-3B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-3B-Instruct-q4f16_1-MLC",
     wasmName: "Qwen2.5-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -57,10 +44,38 @@ export const MODELS = {
     license: "Qwen Research",
     hfCompatPrefix: path.join("resolve", "main"),
   },
+  "gemma-jpn": {
+    key: "gemma-jpn",
+    rank: 2,
+    label: "Gemma2 2B-JPN（system不可）",
+    id: "gemma-2-2b-jpn-it-q4f16_1-MLC",
+    hfRepo: "mlc-ai/gemma-2-2b-jpn-it-q4f16_1-MLC",
+    wasmName: "gemma-2-2b-jpn-it-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "gemma-2-2b-jpn-it-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 1895,
+    approxDownloadMB: 1400,
+    usable: "maybe",
+    license: "Gemma",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
+  swallow: {
+    key: "swallow",
+    rank: 3,
+    label: "TinySwallow 1.5B（JP特化）",
+    id: "TinySwallow-1.5B-Instruct-q4f32_1-MLC",
+    hfRepo: "SakanaAI/TinySwallow-1.5B-Instruct-q4f32_1-MLC",
+    wasmName: "Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm",
+    vramMB: 1889,
+    approxDownloadMB: 830,
+    usable: "yes",
+    license: "Apache-2.0",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
   default: {
     key: "default",
-    rank: 2,
-    label: "標準 (1.5B) · 推奨",
+    rank: 4,
+    label: "標準 Qwen 1.5B · 推奨（もともとの標準）",
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     wasmName: "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -73,8 +88,8 @@ export const MODELS = {
   },
   lite: {
     key: "lite",
-    rank: 3,
-    label: "軽量 (0.5B)",
+    rank: 5,
+    label: "軽量 Qwen 0.5B",
     id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
     wasmName: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -87,8 +102,10 @@ export const MODELS = {
   },
 };
 
-/** Ordered keys for --all (rank order). */
+/** Ordered keys for --all (Qwen pack; JP extras are opt-in). */
 export const ALL_KEYS = ["hq", "default", "lite"];
+/** Optional remote-friendly JP models (not in Pages CI / --all by default). */
+export const EXTRA_KEYS = ["swallow", "gemma-jpn"];
 
 /** @deprecated use MODELS.default */
 export const MODEL = MODELS.default;
@@ -229,9 +246,11 @@ async function fetchOne(model) {
 
 function normalizeKey(raw) {
   const a = String(raw || "").replace(/^--/, "").toLowerCase();
-  if (a === "plus" || a === "1.5b" || a === "1.5") return "default";
+  if (a === "plus" || a === "1.5b" || a === "1.5" || a === "qwen15") return "default";
   if (a === "0.5b" || a === "0.5" || a === "small" || a === "light") return "lite";
   if (a === "3b" || a === "high" || a === "quality") return "hq";
+  if (a === "tinyswallow" || a === "sakana" || a === "jp") return "swallow";
+  if (a === "gemma" || a === "gemma2" || a === "gemma-jpn" || a === "jpn") return "gemma-jpn";
   return a;
 }
 
@@ -240,17 +259,21 @@ function parseTargets(argv) {
   if (args.includes("--all") || args.includes("all")) {
     return ALL_KEYS.slice();
   }
+  if (args.includes("--extras") || args.includes("extras")) {
+    return EXTRA_KEYS.slice();
+  }
   if (args.length === 0) return ["default"];
 
   const keys = [];
   for (const raw of args) {
     const k = normalizeKey(raw);
     if (k === "all") return ALL_KEYS.slice();
+    if (k === "extras") return EXTRA_KEYS.slice();
     if (!MODELS[k]) {
       throw new Error(
         `Unknown args: ${args.join(" ")}\n` +
-          `Usage: fetch-model.mjs [|default|lite|hq|--all]\n` +
-          `  (aliases: plus→default, 0.5b→lite, 3b→hq)`
+          `Usage: fetch-model.mjs [|default|lite|hq|swallow|gemma-jpn|--all|--extras]\n` +
+          `  (aliases: plus→default, 0.5b→lite, 3b→hq, tinyswallow→swallow)`
       );
     }
     if (!keys.includes(k)) keys.push(k);

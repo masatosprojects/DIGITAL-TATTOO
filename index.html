@@ -754,6 +754,10 @@
             border-color: rgba(57, 255, 20, 0.45);
             color: var(--green);
         }
+        .opt-tag.jp {
+            border-color: rgba(96, 165, 250, 0.55);
+            color: #93c5fd;
+        }
         .gate-section-label {
             width: min(720px, 94vw);
             font-size: 0.62rem;
@@ -865,7 +869,7 @@
         <div id="gateBar"><i id="gateFill"></i></div>
         <div id="gatePct">—</div>
         <div id="gateHint">
-            同一オリジンの <code>models/</code> のみ。同じモデルを選んだエージェントはエンジンを共有します。ORIGIN は AGENT-00 のみが知る。
+            推奨は標準 Qwen 1.5B（もともとの標準）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN はエージェント00のみが知る。
         </div>
         <div id="gateActions">
             <button type="button" id="gateSkip">テンプレートで続行</button>

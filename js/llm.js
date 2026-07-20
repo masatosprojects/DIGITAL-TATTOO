@@ -25,9 +25,8 @@
  *
  * GitHub Pages notes:
  *   Soft site cap ≈1 GB → CI ships lite (0.5B) same-origin by default.
- *   1.5B / 3B are selectable via Hugging Face + IndexedDB cache (no Cache.add).
- *   Large same-origin shards are OK when shipped (IndexedDB); optional CI packs
- *   can include 1.5B. Full 0.5+1.5+3B pack still exceeds Pages comfort → Netlify.
+ *   default (1.5B) / hq / swallow / gemma-jpn stay selectable via HF + IndexedDB.
+ *   Full multi-model same-origin pack → Netlify / local fetch-model.
  */
 
 import { CreateMLCEngine } from "@mlc-ai/web-llm";
@@ -116,24 +115,25 @@ export const MODEL_HF_COMPAT_PREFIX = "resolve/main/";
  *   hint: string,
  *   license: string,
  *   isDefault?: boolean,
+ *   jpSpecialized?: boolean,
+ *   requiresF16?: boolean,
+ *   noSystemRole?: boolean,
+ *   remoteOk?: boolean,
  * }} ModelInfo
  */
 
 /**
- * Ranked by intelligence / JP quality (1 = smartest).
- * Local/Netlify default = 1.5B. GitHub Pages CI ships 0.5B same-origin;
- * 1.5B / 3B stay selectable on Pages via Hugging Face + IndexedDB.
- *   hq (3B)   — smarter but heavy / maybe; Qwen Research license
- *   default (1.5B) — recommended practical JP
- *   lite (0.5B) — Pages CI / weak-GPU fallback
+ * Ranked by intelligence / size (1 = smartest). Keep in sync with fetch-model.mjs.
+ * Recommended default remains Qwen 1.5B (もともとの標準).
+ * Pages CI ships lite same-origin; other keys load via HF+IndexedDB when missing.
  */
 /** @type {ModelInfo[]} */
 export const MODEL_CATALOG = [
   {
     key: "hq",
     rank: 1,
-    label: "高精度 (3B・要VRAM)",
-    shortLabel: "高精度",
+    label: "高精度 Qwen 3B（要VRAM）",
+    shortLabel: "Qwen3B",
     id: "Qwen2.5-3B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-3B-Instruct-q4f16_1-MLC",
     wasm: "Qwen2.5-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -141,15 +141,61 @@ export const MODEL_CATALOG = [
     vramMB: 2505,
     minVramHint: 2800,
     usable: "maybe",
-    jpQuality: 1,
+    jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
     license: "Qwen Research",
-    hint: "最も賢い候補。≈1.7 GB · VRAM ≈2.5 GB。統合GPUでは厳しい。Pages では初回 HF 取得。",
+    hint: "最も賢い候補。≈1.7 GB · VRAM ≈2.5 GB。統合GPUでは厳しい。未同梱時は初回は HF から取得。",
+  },
+  {
+    key: "gemma-jpn",
+    rank: 2,
+    label: "Gemma2 2B-JPN（system不可）",
+    shortLabel: "GemmaJPN",
+    id: "gemma-2-2b-jpn-it-q4f16_1-MLC",
+    hfRepo: "mlc-ai/gemma-2-2b-jpn-it-q4f16_1-MLC",
+    wasm: "gemma-2-2b-jpn-it-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 1400,
+    vramMB: 1895,
+    minVramHint: 2100,
+    usable: "maybe",
+    jpQuality: 2,
+    jpSpecialized: true,
+    requiresF16: true,
+    noSystemRole: true,
+    remoteOk: true,
+    license: "Gemma",
+    hint:
+      "JP寄り 2B。WebLLM 公式。system ロール非対応のため尋問プロンプトは弱めになり得る。" +
+      "≈1.4 GB · VRAM ≈1.9 GB。初回は HF から取得。",
+  },
+  {
+    key: "swallow",
+    rank: 3,
+    label: "TinySwallow 1.5B（JP特化）",
+    shortLabel: "Swallow",
+    id: "TinySwallow-1.5B-Instruct-q4f32_1-MLC",
+    hfRepo: "SakanaAI/TinySwallow-1.5B-Instruct-q4f32_1-MLC",
+    // Same arch as Qwen2 1.5B q4f32 — official ChatUI reuses this WASM (v0_2_84 name).
+    wasm: "Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm",
+    sizeMB: 830,
+    vramMB: 1889,
+    minVramHint: 2100,
+    usable: "yes",
+    jpQuality: 1,
+    jpSpecialized: true,
+    requiresF16: false,
+    remoteOk: true,
+    license: "Apache-2.0",
+    hint:
+      "Sakana JP特化蒸留。≈830 MB · VRAM ≈1.9 GB（q4f32）。未同梱時は初回は HF から取得。",
   },
   {
     key: "default",
-    rank: 2,
-    label: "標準 (1.5B) · 推奨",
-    shortLabel: "標準",
+    rank: 4,
+    label: "標準 Qwen 1.5B · 推奨（もともとの標準）",
+    shortLabel: "標準1.5B",
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     wasm: "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -158,15 +204,20 @@ export const MODEL_CATALOG = [
     minVramHint: 1800,
     usable: "yes",
     jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
     license: "Apache-2.0",
     isDefault: true,
-    hint: "実用日本語の最推奨。≈840 MB · VRAM ≈1.6 GB。Pages では同一オリジンまたは HF+IndexedDB。",
+    hint:
+      "もともとの標準・最推奨。≈840 MB · VRAM ≈1.6 GB。" +
+      "Pages でも選択可（未同梱時は初回は HF から取得 · IndexedDB）。",
   },
   {
     key: "lite",
-    rank: 3,
-    label: "軽量 (0.5B・品質劣る)",
-    shortLabel: "軽量",
+    rank: 5,
+    label: "軽量 Qwen 0.5B（品質劣る）",
+    shortLabel: "軽量0.5B",
     id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
     wasm: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -175,8 +226,13 @@ export const MODEL_CATALOG = [
     minVramHint: 1100,
     usable: "yes",
     jpQuality: 3,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
     license: "Apache-2.0",
-    hint: "品質は劣る（会話が崩れやすい）。≈280 MB。弱GPU向けフォールバック。推奨は標準 1.5B。",
+    hint:
+      "品質は劣る（会話が崩れやすい）。≈280 MB。Pages CI 同一オリジン同梱。" +
+      "推奨は標準 Qwen 1.5B。",
   },
 ];
 
@@ -598,7 +654,19 @@ export function preferredCacheBackend() {
   return "indexeddb";
 }
 
-/** Pages may load missing weights from Hugging Face; other hosts stay same-origin. */
+/**
+ * Missing same-origin weights may load from Hugging Face + IndexedDB.
+ * Default: yes when model.remoteOk (catalog) or on GitHub Pages.
+ * @param {ModelInfo | string} [model]
+ */
+export function allowsRemoteFallback(model) {
+  const m = typeof model === "string" ? resolveModel(model) : model;
+  if (m && m.remoteOk === false) return false;
+  if (m && m.remoteOk === true) return true;
+  return isGitHubPagesHost();
+}
+
+/** @deprecated use allowsRemoteFallback(model) */
 export function pagesAllowsRemoteModels() {
   return isGitHubPagesHost();
 }
@@ -610,22 +678,56 @@ export function pagesAllowsRemoteModels() {
 export function buildAppConfig(model = getActiveModel(), source = "local") {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
   const useRemote = source === "remote";
+  /** @type {Record<string, unknown>} */
+  const entry = {
+    model: useRemote ? remoteWeightsBase(m) : modelWeightsBase(m),
+    model_id: m.id,
+    model_lib: useRemote ? remoteWasmUrl(m) : modelsBase() + "libs/" + m.wasm,
+    low_resource_required: m.usable === "yes",
+    vram_required_MB: m.vramMB,
+    overrides: {
+      context_window_size: 2048,
+    },
+  };
+  // q4f16 needs shader-f16; q4f32 (TinySwallow) must not require it.
+  if (m.requiresF16 !== false) {
+    entry.required_features = ["shader-f16"];
+  }
   return {
     cacheBackend: preferredCacheBackend(),
-    model_list: [
-      {
-        model: useRemote ? remoteWeightsBase(m) : modelWeightsBase(m),
-        model_id: m.id,
-        model_lib: useRemote ? remoteWasmUrl(m) : modelsBase() + "libs/" + m.wasm,
-        low_resource_required: m.usable === "yes",
-        vram_required_MB: m.vramMB,
-        required_features: ["shader-f16"],
-        overrides: {
-          context_window_size: 2048,
-        },
-      },
-    ],
+    model_list: [entry],
   };
+}
+
+/**
+ * Gemma-style templates reject role:"system". Fold into the first user turn.
+ * @param {ModelInfo} model
+ * @param {Array<{ role: string, content: string }>} messages
+ */
+export function adaptMessagesForModel(model, messages) {
+  const list = Array.isArray(messages) ? messages.slice() : [];
+  if (!model || !model.noSystemRole) return list;
+  const systems = [];
+  const rest = [];
+  for (const msg of list) {
+    if (msg && msg.role === "system") systems.push(String(msg.content || ""));
+    else rest.push(msg);
+  }
+  if (!systems.length) return rest;
+  const preface = systems.filter(Boolean).join("\n\n");
+  if (!rest.length) {
+    return [{ role: "user", content: preface }];
+  }
+  const firstUserIdx = rest.findIndex((m) => m && m.role === "user");
+  if (firstUserIdx >= 0) {
+    const u = rest[firstUserIdx];
+    rest[firstUserIdx] = {
+      ...u,
+      content: preface + "\n\n" + String(u.content || ""),
+    };
+    return rest;
+  }
+  return [{ role: "user", content: preface }, ...rest];
 }
 
 /** @deprecated prefer buildAppConfig(model, "local") */
@@ -641,30 +743,44 @@ function missingReason(model, configUrl) {
   const pathHint = configUrl
     ? " 期待パス: " + configUrl.replace(/^https?:\/\/[^/]+/, "")
     : "";
+  const remoteHint = allowsRemoteFallback(model)
+    ? " Hugging Face + IndexedDB でも取得できます（初回 ≈" +
+      model.sizeMB +
+      " MB）。"
+    : "";
   if (model.key === "hq") {
     return (
       "このホストに 3B ファイルがありません（≈1.7 GB）。" +
-      "配置: `npm run fetch-model:hq` / `公開準備.bat`。" +
-      (pagesAllowsRemoteModels()
-        ? "GitHub Pages では Hugging Face 経由でも選択できます（初回 ≈1.7 GB・要VRAM）。"
-        : "Pages 以外では同一オリジン配置が必要です。") +
+      "配置: `npm run fetch-model:hq`。" +
+      remoteHint +
       pathHint
     );
   }
   if (model.key === "lite") {
     return (
       "このホストに 0.5B ファイルがありません（≈280 MB）。" +
-      "GitHub Pages では CI が 0.5B を配置します。しばらく待つか「テンプレートで続行」を使ってください。" +
-      "（公開者: `npm run fetch-model:lite` / `fetch-model:pages`）" +
+      "GitHub Pages では CI が 0.5B を配置します。" +
+      remoteHint +
+      "（`npm run fetch-model:lite`）" +
       pathHint
     );
   }
   if (model.key === "default") {
     return (
-      "このホストに 1.5B ファイルがありません（≈840 MB）。" +
-      (pagesAllowsRemoteModels()
-        ? "GitHub Pages では Hugging Face + IndexedDB で選択できます（初回ダウンロードあり）。"
-        : "Netlify / ローカルでは `npm run fetch-model` で同一オリジン配置してください。") +
+      "このホストに標準 1.5B がありません（≈840 MB）。" +
+      (allowsRemoteFallback(model)
+        ? "選択可 — Hugging Face + IndexedDB で取得（初回ダウンロード・もともとの標準）。"
+        : "`npm run fetch-model` で同一オリジン配置してください。") +
+      pathHint
+    );
+  }
+  if (model.key === "swallow" || model.key === "gemma-jpn") {
+    return (
+      model.shortLabel +
+      " の同一オリジン配置がありません（≈" +
+      model.sizeMB +
+      " MB）。" +
+      remoteHint +
       pathHint
     );
   }
@@ -781,7 +897,7 @@ export async function probeModel(modelOrKey) {
           wasmUrl,
         };
       }
-      if (!pagesAllowsRemoteModels()) {
+      if (!allowsRemoteFallback(model)) {
         return {
           ok: false,
           model,
@@ -792,7 +908,7 @@ export async function probeModel(modelOrKey) {
           wasmUrl,
         };
       }
-    } else if (!pagesAllowsRemoteModels()) {
+    } else if (!allowsRemoteFallback(model)) {
       return {
         ok: false,
         model,
@@ -802,8 +918,8 @@ export async function probeModel(modelOrKey) {
       };
     }
 
-    // Pages: missing / incomplete same-origin → Hugging Face + IndexedDB
-    if (pagesAllowsRemoteModels()) {
+    // Missing / incomplete same-origin → Hugging Face + IndexedDB
+    if (allowsRemoteFallback(model)) {
       return {
         ok: true,
         model,
@@ -828,7 +944,7 @@ export async function probeModel(modelOrKey) {
       wasmUrl,
     };
   } catch (e) {
-    if (pagesAllowsRemoteModels()) {
+    if (allowsRemoteFallback(model)) {
       return {
         ok: true,
         model,
@@ -993,8 +1109,15 @@ export async function unloadAllEngines(engines) {
 export async function generateWithEngine(engine, messages, opts = {}) {
   if (!engine) throw new Error("LLM engine not ready");
   const wantStream = opts.stream !== false && typeof opts.onDelta === "function";
+  const modelForAdapt =
+    opts.model ||
+    (opts.modelKey ? resolveModel(opts.modelKey) : null) ||
+    null;
+  const adapted = modelForAdapt
+    ? adaptMessagesForModel(modelForAdapt, messages)
+    : messages;
   const base = {
-    messages,
+    messages: adapted,
     temperature: opts.temperature ?? 0.7,
     max_tokens: opts.max_tokens ?? 120,
     top_p: opts.top_p ?? 0.9,
@@ -1564,8 +1687,9 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
       const eng = map[agent]?.engine;
       if (!eng) throw new Error("No engine bound for AGENT-" + agent);
 
+      const optsWithModel = { ...chatOpts, model: binding.model };
       try {
-        return await generateWithEngine(eng, messages, chatOpts);
+        return await generateWithEngine(eng, messages, optsWithModel);
       } catch (e) {
         if (!isLlmDeadError(e)) throw e;
         console.warn(
@@ -1577,7 +1701,10 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
         await recoverEngine(engineId);
         const again = map[agent]?.engine;
         if (!again) throw e;
-        return generateWithEngine(again, messages, chatOpts);
+        return generateWithEngine(again, messages, {
+          ...optsWithModel,
+          model: map[agent]?.model || binding.model,
+        });
       }
     });
   }

@@ -1625,7 +1625,7 @@ function enterFallback(reason) {
   gateLoad.hidden = true;
   gateHint.innerHTML =
     "下の <strong>テンプレートで続行</strong> でゲームを開始できます。<br>" +
-    "推奨は標準 (1.5B)。Pages でも HF+IndexedDB で選べます。0.5B は品質が落ちます。";
+    "推奨は標準 Qwen 1.5B（もともとの標準）。Pages でも HF+IndexedDB で選べます。";
   gateActions.classList.add("show");
   if (gateSkip) gateSkip.hidden = false;
 }
@@ -1654,7 +1654,7 @@ function buildAssignPicker() {
 
     const title = document.createElement("div");
     title.className = "agent-col-title";
-    title.textContent = "AGENT-" + agent;
+    title.textContent = "エージェント" + agent;
     col.appendChild(title);
 
     for (const m of listModels()) {
@@ -1676,16 +1676,23 @@ function buildAssignPicker() {
         lab.appendChild(document.createTextNode(" "));
         lab.appendChild(tag);
       }
+      if (m.jpSpecialized) {
+        const tag = document.createElement("span");
+        tag.className = "opt-tag jp";
+        tag.textContent = "JP特化";
+        lab.appendChild(document.createTextNode(" "));
+        lab.appendChild(tag);
+      }
 
       const hint = document.createElement("span");
       hint.className = "box-hint";
-      hint.textContent =
-        "≈" +
-        m.sizeMB +
-        " MB · VRAM ≈" +
-        Math.round(m.vramMB / 100) / 10 +
-        " GB · " +
-        usableTag(m.usable);
+      const bits = [
+        "≈" + m.sizeMB + " MB",
+        "VRAM ≈" + Math.round(m.vramMB / 100) / 10 + " GB",
+        usableTag(m.usable),
+      ];
+      if (m.noSystemRole) bits.push("system不可");
+      hint.textContent = bits.join(" · ");
 
       const miss = document.createElement("span");
       miss.className = "box-miss";
@@ -1717,10 +1724,17 @@ function syncAssignWarn(assignments) {
     );
   }
   if (keys.includes("hq")) {
-    parts.push("高精度 (3B) は VRAM ≈2.5 GB。統合GPUでは読み込み失敗することがあります。");
+    parts.push("高精度 Qwen 3B は VRAM ≈2.5 GB。統合GPUでは読み込み失敗することがあります。");
+  }
+  if (keys.includes("gemma-jpn")) {
+    parts.push(
+      "Gemma2-JPN は system ロール非対応のため尋問指示が弱くなり得ます（ユーザー文へ折り込み）。"
+    );
   }
   if (vram >= 3500) {
-    parts.push("VRAM 合計が高めです。落ちる場合は全エージェントを標準 (1.5B) か軽量に揃えてください。");
+    parts.push(
+      "VRAM 合計が高めです。落ちる場合は全エージェントを標準 Qwen 1.5B か軽量に揃えてください。"
+    );
   }
   if (parts.length) {
     gateAssignWarn.hidden = false;
@@ -1762,14 +1776,19 @@ async function syncAssignPickerUI() {
       missEl.textContent =
         key === "lite"
           ? "品質劣る · 同一オリジンまたは HF"
-          : "Pages: 初回は Hugging Face 取得（IndexedDB キャッシュ）· 推奨";
-      if (hintEl && key === "default") {
-        hintEl.textContent =
-          "≈" +
-          info.sizeMB +
-          " MB · VRAM ≈" +
-          Math.round(info.vramMB / 100) / 10 +
-          " GB · 推奨 · HF+IDB";
+          : key === "default"
+            ? "もともとの標準 · 初回は HF から取得（IndexedDB）"
+            : "初回は HF から取得（IndexedDB キャッシュ）";
+      if (hintEl) {
+        const tags = [
+          "≈" + info.sizeMB + " MB",
+          "VRAM ≈" + Math.round(info.vramMB / 100) / 10 + " GB",
+        ];
+        if (info.isDefault) tags.push("推奨");
+        if (info.jpSpecialized) tags.push("JP特化");
+        if (info.noSystemRole) tags.push("system不可");
+        tags.push("HF+IDB");
+        hintEl.textContent = tags.join(" · ");
       }
     } else {
       missEl.hidden = true;
@@ -1862,7 +1881,7 @@ if (gateAgentAssign) {
     applyAgentModelChoice(btn.dataset.agent, btn.dataset.model);
     const m = resolveModel(btn.dataset.model);
     gateMsg.textContent =
-      "AGENT-" +
+      "エージェント" +
       btn.dataset.agent +
       " → " +
       (m ? m.label : btn.dataset.model) +
@@ -1930,12 +1949,13 @@ gateLoad.addEventListener("click", async () => {
 async function init() {
   const pages = isGitHubPagesHost();
   gateHint.innerHTML = pages
-    ? "<strong>推奨: 標準 (1.5B)</strong> — Pages では Hugging Face + IndexedDB で取得（初回 ≈840 MB）。" +
-      "0.5B は品質が落ちます（会話が崩れやすい）。3B も選択可（要VRAM ≈2.5 GB・初回 ≈1.7 GB）。<br>" +
-      "CI は 0.5B を同一オリジン同梱。同じモデルを選んだエージェントはエンジンを共有します。"
-    : "<strong>推奨: 標準 (1.5B)</strong> · 軽量 (0.5B) は品質劣る · 高精度 (3B) は要VRAM。<br>" +
-      "取得: <code>npm run fetch-model</code> / <code>:lite</code> / <code>:hq</code>。<br>" +
-      "同じモデルを選んだエージェントはエンジンを共有します。";
+    ? "<strong>推奨: 標準 Qwen 1.5B（もともとの標準）</strong> — Pages でも選択可。" +
+      "未同梱時は Hugging Face + IndexedDB（初回 ≈840 MB）。" +
+      "TinySwallow（JP特化）/ 3B / Gemma-JPN も選択可。<br>" +
+      "0.5B は品質が落ちます。CI は 0.5B を同一オリジン同梱。同じ選択はエンジン共有。"
+    : "<strong>推奨: 標準 Qwen 1.5B（もともとの標準）</strong> · " +
+      "軽量 0.5B · TinySwallow（JP特化）· 高精度 3B · Gemma-JPN（system不可）。<br>" +
+      "未配置モデルは初回 HF 取得可。同じモデルを選んだエージェントはエンジンを共有します。";
   buildAssignPicker();
   updateHud();
   setControlsVisible(false);
@@ -1969,7 +1989,7 @@ async function init() {
   gatePct.textContent = "—";
   const defLabel = resolveModel(getDefaultModelKey())?.label || "モデル";
   gateMsg.textContent =
-    "AGENT-00 / 01 / 02 にモデルを割り当て、「読み込む」を押してください（既定: " +
+    "エージェント00 / 01 / 02 にモデルを割り当て、「読み込む」を押してください（既定: " +
     defLabel +
     "）。";
   gateLoad.disabled = false;

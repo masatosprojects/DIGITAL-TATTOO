@@ -9,7 +9,7 @@
 
 ### 体験の核
 
-1. モデルを選んで読み込む（標準 1.5B 推奨 / 軽量 0.5B / 高精度 3B）  
+1. モデルを選んで読み込む（**標準 Qwen 1.5B 推奨** / 0.5B / TinySwallow JP / 3B / Gemma-JPN）  
 2. オペレーターが AGENT-00 に **ORIGIN（秘密の役割）** を刻む — **以後不変・画面上部に表示（01/02 のプロンプトには載せない）**  
 3. 01 がはい／いいえ質問 → 00 が回答（クランプ）→ 01 と 02 が「なぜその答えか」を議論 → 交代して次の質問  
 4. 数ラウンドごとに正式推測「AGENT-00 の役割は〇〇である」→ ORIGIN と照合  
@@ -92,7 +92,7 @@ npm run build
 
 **WebLLM のパス注意:** ランタイムは Hugging Face 互換の  
 `models/<model-id>/resolve/main/mlc-chat-config.json`  
-を同一オリジンから読みます（`npm run fetch-model`）。**GitHub Pages** では未同梱の 1.5B / 3B を **Hugging Face + IndexedDB** で取得できます（初回ネット必要・推奨は 1.5B）。
+を同一オリジンから優先読みします。**GitHub Pages** では未同梱の 1.5B / TinySwallow / 3B / Gemma 等を **Hugging Face + IndexedDB** で取得できます（初回ネット必要・推奨は標準 1.5B）。
 
 容量の目安:
 
@@ -100,7 +100,9 @@ npm run build
 |------|--------------|-----------|--------------|
 | **軽量のみ (0.5B)** | ≈ **280 MB** | ≈ 0.95 GB | CI 同梱可 · **品質は劣る** |
 | **標準 (1.5B)** | ≈ **840 MB** 同梱 or HF | ≈ 1.6 GB | **プレイ可**（推奨・未同梱時は HF+IndexedDB） |
+| **TinySwallow 1.5B** | ≈ **830 MB** HF | ≈ 1.9 GB | 選択可（JP特化） |
 | **高精度 (3B)** | ≈ **1.7 GB** 同梱 or HF | ≈ 2.5 GB | 選択可（要VRAM・初回大きい） |
+| **Gemma2 2B-JPN** | ≈ **1.4 GB** HF | ≈ 1.9 GB | 選択可（system ロール不可） |
 | 全パック同梱 | ≈ **2.5–2.8 GB** | — | サイト容量超過 → Netlify / `公開準備.bat` |
 
 詳細な順位・流暢さの限界は [`MODELS.md`](./MODELS.md)。
@@ -109,9 +111,11 @@ npm run build
 
 起動ゲートで **エージェント00 / 01 / 02 ごとに** モデルを割り当て、「読み込む」で起動します:
 
-- **標準 (1.5B) · 推奨** — 実用日本語。Pages でも選べる（HF 取得の場合あり）  
+- **標準 (1.5B) · 推奨（もともとの標準）** — Pages でも選べる（HF 取得の場合あり）  
 - **軽量 (0.5B)** — 品質が落ちるフォールバック  
-- **高精度 (3B・要VRAM)** — より自然（VRAM ≈2.5 GB）
+- **TinySwallow 1.5B** — 日本語特化（Sakana）  
+- **高精度 (3B・要VRAM)** — より自然（VRAM ≈2.5 GB）  
+- **Gemma2 2B-JPN** — JP寄りだが system ロール非対応（尋問が弱めになり得る）
 
 #### Netlify ドラッグ＆ドロップで再公開する場合
 
@@ -132,7 +136,7 @@ npm run build
 ## GitHub Pages（Actions）で公開する
 
 **軽量モデル（0.5B）** は CI が同一オリジン同梱します。  
-**標準 1.5B / 高精度 3B** はゲートで選択可能 — Pages 上では **Hugging Face + IndexedDB** から取得（初回ダウンロード・推奨は 1.5B）。  
+**標準 1.5B（もともとの標準）** ほか TinySwallow / 3B / Gemma-JPN はゲートで選択可能 — Pages 上では **Hugging Face + IndexedDB** から取得（初回ダウンロード）。  
 フル同梱が必要なら Netlify か `公開準備.bat` / `npm run fetch-model` / `:hq` / `:all`。
 
 リポジトリ名がまだ決まっていない場合は、以下の `<repo>` を自分のリポジトリ名に置き換えてください（例: `digital-tattoo`）。
