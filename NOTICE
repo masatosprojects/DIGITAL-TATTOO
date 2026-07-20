@@ -5,7 +5,18 @@ This distribution includes third-party software and model weights.
 The following attribution notices are provided for informational purposes.
 
 -------------------------------------------------------------------------------
-Qwen2.5-0.5B-Instruct (model weights; MLC q4f16_1 build)
+Qwen2.5-1.5B-Instruct (default model weights; MLC q4f16_1 build)
+-------------------------------------------------------------------------------
+Copyright 2024 Alibaba Cloud
+
+Licensed under the Apache License, Version 2.0.
+Upstream: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct
+MLC build: https://huggingface.co/mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC
+(Base model license: Apache-2.0. The MLC quantized artifacts are a
+redistribution/derivative of that model for MLC-LLM / WebLLM.)
+
+-------------------------------------------------------------------------------
+Qwen2.5-0.5B-Instruct (optional lite model; MLC q4f16_1 build)
 -------------------------------------------------------------------------------
 Copyright 2024 Alibaba Cloud
 
@@ -13,8 +24,16 @@ Licensed under the Apache License, Version 2.0.
 Upstream: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
 License:  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/main/LICENSE
 MLC build: https://huggingface.co/mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC
-(Base model license: Apache-2.0. The MLC quantized artifacts are a
-redistribution/derivative of that model for MLC-LLM / WebLLM.)
+
+-------------------------------------------------------------------------------
+Qwen2.5-3B-Instruct (optional hq model; MLC q4f16_1 build)
+-------------------------------------------------------------------------------
+Copyright 2024 Alibaba Cloud
+
+Licensed under the Qwen RESEARCH LICENSE (not Apache-2.0).
+Upstream: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
+MLC build: https://huggingface.co/mlc-ai/Qwen2.5-3B-Instruct-q4f16_1-MLC
+Review the Qwen Research license before redistributing this optional model.
 
 -------------------------------------------------------------------------------
 @mlc-ai/web-llm and MLC-LLM runtime
@@ -29,8 +48,10 @@ License text: http://www.apache.org/licenses/LICENSE-2.0
 -------------------------------------------------------------------------------
 MLC model library WASM (binary-mlc-llm-libs)
 -------------------------------------------------------------------------------
-Precompiled WebGPU model library used by WebLLM, e.g.
+Precompiled WebGPU model libraries used by WebLLM, e.g.
+Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm
 Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm
+Qwen2.5-3B-Instruct-q4f16_1_cs1k-webgpu.wasm
 
 Source: https://github.com/mlc-ai/binary-mlc-llm-libs
 (Compiled artifacts accompanying MLC-LLM / WebLLM; treat under the same

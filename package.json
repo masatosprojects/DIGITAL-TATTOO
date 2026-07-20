@@ -6,7 +6,9 @@
   "description": "DIGITAL TATTOO — offline in-browser multi-agent interrogation game with WebLLM (inference only)",
   "scripts": {
     "fetch-model": "node scripts/fetch-model.mjs",
-    "fetch-model:plus": "node scripts/fetch-model.mjs plus",
+    "fetch-model:lite": "node scripts/fetch-model.mjs lite",
+    "fetch-model:hq": "node scripts/fetch-model.mjs hq",
+    "fetch-model:plus": "node scripts/fetch-model.mjs default",
     "fetch-model:all": "node scripts/fetch-model.mjs --all",
     "verify-models": "node scripts/verify-models.mjs",
     "dev": "vite",

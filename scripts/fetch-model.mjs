@@ -3,11 +3,13 @@
  * so the art can run fully offline from same-origin paths.
  *
  * Usage (needs network once):
- *   npm run fetch-model            # default 0.5B only (~300 MB)
- *   npm run fetch-model:plus       # plus 1.5B only (~830 MB)
- *   npm run fetch-model -- --all   # both (~1.1 GB)
- *   node scripts/fetch-model.mjs --all
- *   node scripts/fetch-model.mjs plus
+ *   npm run fetch-model            # default 1.5B only (~840 MB) — CI / Pages
+ *   npm run fetch-model:lite       # 0.5B only (~280 MB)
+ *   npm run fetch-model:hq         # 3B only (~1.7 GB) — Netlify / strong GPU
+ *   npm run fetch-model -- --all   # all three (~2.8 GB)
+ *   node scripts/fetch-model.mjs lite
+ *   node scripts/fetch-model.mjs hq
+ *   node scripts/fetch-model.mjs default
  *
  * Runtime never calls this — only serves files already under public/models/.
  *
@@ -17,10 +19,11 @@
  *   `public/models/<id>/resolve/main/` so same-origin static hosting matches
  *   what WebLLM requests — never Hugging Face at runtime.
  *
- * Size honesty:
- *   Default alone ≈ 300 MB → fine for GitHub Pages (~1 GB soft).
- *   Both models ≈ 1.1 GB → exceeds comfortable Pages deploy; keep CI on
- *   default only. Plus is for local / Netlify full deploys.
+ * Size honesty (q4f16_1 weights from HF tree, wasm extra):
+ *   lite 0.5B  ≈ 280 MB  · VRAM ≈ 0.95 GB · usable yes
+ *   default 1.5B ≈ 840 MB · VRAM ≈ 1.6 GB · usable yes ← CI default
+ *   hq 3B      ≈ 1.7 GB  · VRAM ≈ 2.5 GB · usable maybe · Pages NO
+ *   all three  ≈ 2.8 GB  → far over GitHub Pages soft 1 GB
  */
 
 import fs from "node:fs";
@@ -31,38 +34,62 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const OUT_ROOT = path.join(ROOT, "public", "models");
 
+const WASM_BASE =
+  "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/";
+
 /**
  * Models must match @mlc-ai/web-llm 0.2.84 prebuilt list (v0_2_84 wasm).
  * Keep in sync with js/llm.js
  */
 export const MODELS = {
-  default: {
-    key: "default",
-    label: "標準 (0.5B)",
-    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
-    hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
-    wasmName: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
-    wasmUrl:
-      "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
-    vramMB: 945,
-    approxDownloadMB: 300,
+  hq: {
+    key: "hq",
+    rank: 1,
+    label: "高精度 (3B・要VRAM)",
+    id: "Qwen2.5-3B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-3B-Instruct-q4f16_1-MLC",
+    wasmName: "Qwen2.5-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Qwen2.5-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 2505,
+    approxDownloadMB: 1670,
+    usable: "maybe",
+    license: "Qwen Research",
     hfCompatPrefix: path.join("resolve", "main"),
   },
-  plus: {
-    key: "plus",
-    label: "日本語プラス (1.5B)",
+  default: {
+    key: "default",
+    rank: 2,
+    label: "標準 (1.5B) · 推奨",
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     wasmName: "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
-    wasmUrl:
-      "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
     vramMB: 1630,
-    approxDownloadMB: 830,
+    approxDownloadMB: 840,
+    usable: "yes",
+    license: "Apache-2.0",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
+  lite: {
+    key: "lite",
+    rank: 3,
+    label: "軽量 (0.5B)",
+    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    wasmName: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 945,
+    approxDownloadMB: 280,
+    usable: "yes",
+    license: "Apache-2.0",
     hfCompatPrefix: path.join("resolve", "main"),
   },
 };
 
-/** @deprecated use MODELS.default — kept for older imports */
+/** Ordered keys for --all (rank order). */
+export const ALL_KEYS = ["hq", "default", "lite"];
+
+/** @deprecated use MODELS.default */
 export const MODEL = MODELS.default;
 
 const SKIP_NAMES = new Set([".gitattributes", "README.md"]);
@@ -162,7 +189,10 @@ async function migrateFlatLayout(modelDir, weightsDir) {
 async function fetchOne(model) {
   console.log(`── ${model.label} ──`);
   console.log(`  model_id: ${model.id}`);
-  console.log(`  ≈${model.approxDownloadMB} MB download · ~${model.vramMB} MB VRAM`);
+  console.log(
+    `  ≈${model.approxDownloadMB} MB download · ~${model.vramMB} MB VRAM · usable=${model.usable}`
+  );
+  console.log(`  license: ${model.license}`);
   console.log(`  weights layout: models/${model.id}/resolve/main/`);
   console.log("");
 
@@ -196,22 +226,35 @@ async function fetchOne(model) {
   return { model, bytes };
 }
 
+function normalizeKey(raw) {
+  const a = String(raw || "").replace(/^--/, "").toLowerCase();
+  if (a === "plus" || a === "1.5b" || a === "1.5") return "default";
+  if (a === "0.5b" || a === "0.5" || a === "small" || a === "light") return "lite";
+  if (a === "3b" || a === "high" || a === "quality") return "hq";
+  return a;
+}
+
 function parseTargets(argv) {
   const args = argv.slice(2).filter((a) => a !== "--");
   if (args.includes("--all") || args.includes("all")) {
-    return ["default", "plus"];
-  }
-  if (args.includes("--plus") || args.includes("plus")) {
-    return ["plus"];
-  }
-  if (args.includes("--default") || args.includes("default")) {
-    return ["default"];
+    return ALL_KEYS.slice();
   }
   if (args.length === 0) return ["default"];
-  throw new Error(
-    `Unknown args: ${args.join(" ")}\n` +
-      `Usage: fetch-model.mjs [|default|plus|--all]`
-  );
+
+  const keys = [];
+  for (const raw of args) {
+    const k = normalizeKey(raw);
+    if (k === "all") return ALL_KEYS.slice();
+    if (!MODELS[k]) {
+      throw new Error(
+        `Unknown args: ${args.join(" ")}\n` +
+          `Usage: fetch-model.mjs [|default|lite|hq|--all]\n` +
+          `  (aliases: plus→default, 0.5b→lite, 3b→hq)`
+      );
+    }
+    if (!keys.includes(k)) keys.push(k);
+  }
+  return keys;
 }
 
 async function main() {
@@ -227,13 +270,14 @@ async function main() {
   console.log(`  targets: ${selected.map((m) => m.key).join(", ")}`);
   console.log(`  ≈${totalApprox} MB download total`);
   console.log(`  out: ${path.relative(ROOT, OUT_ROOT)}`);
-  if (keys.includes("plus") && keys.includes("default")) {
+  if (totalApprox > 1000) {
     console.log(
-      "  note: both models ≈ 1.1 GB — may exceed GitHub Pages comfort (1 GB soft)."
+      "  note: total exceeds GitHub Pages soft comfort (~1 GB). Prefer Netlify / self-host for multi-model packs."
     );
-  } else if (keys.includes("plus") && !keys.includes("default")) {
+  }
+  if (keys.includes("hq")) {
     console.log(
-      "  note: plus-only. Default 0.5B still recommended for Pages / fallback."
+      "  note: 3B is Qwen Research license (not Apache-2.0) and needs ~2.5 GB VRAM — usable=maybe."
     );
   }
   console.log("");
@@ -247,11 +291,14 @@ async function main() {
     bytes += result.bytes;
     fetched.push({
       key: model.key,
+      rank: model.rank,
       model_id: model.id,
       model_dir: `models/${model.id}/resolve/main/`,
       model_lib: `models/libs/${model.wasmName}`,
       vram_required_MB: model.vramMB,
       approx_download_MB: model.approxDownloadMB,
+      usable: model.usable,
+      license: model.license,
     });
   }
 
@@ -267,15 +314,16 @@ async function main() {
 
   const manifest = {
     default_model_id: MODELS.default.id,
-    plus_model_id: MODELS.plus.id,
+    default_key: "default",
+    catalog_keys: ALL_KEYS,
     fetched_at: new Date().toISOString(),
     fetched_this_run: fetched,
     present_keys: present,
     approx_size_MB: Math.round(dirSizeBytes(OUT_ROOT) / (1024 * 1024)),
     note:
-      "Runtime loads via same-origin …/resolve/main/ only. CI fetches default; plus is optional (npm run fetch-model:plus). No HF CDN at runtime.",
+      "Runtime loads via same-origin …/resolve/main/ only. CI fetches default (1.5B); lite/hq optional. No HF CDN at runtime.",
     deploy_size_note:
-      "Default alone ≈ 300 MB (Pages OK). Plus alone ≈ 830 MB. Both ≈ 1.1 GB — over GitHub Pages soft comfort; prefer Netlify/full local for dual.",
+      "Default 1.5B ≈ 840 MB (Pages OK). Lite ≈ 280 MB. HQ 3B ≈ 1.7 GB (Pages NO). All ≈ 2.8 GB — Netlify/full local only.",
   };
   await fs.promises.writeFile(
     path.join(OUT_ROOT, "manifest.json"),

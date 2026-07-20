@@ -27,6 +27,7 @@
             padding: 0;
             width: 100%;
             height: 100%;
+            height: 100dvh;
             background: var(--bg); /* solid dark fallback if floral image missing */
             color: var(--fg);
             font-family: var(--font);
@@ -81,9 +82,12 @@
             display: flex;
             flex-direction: column;
             height: calc(100% - 28px);
+            max-height: calc(100dvh - 28px);
             max-width: 920px;
             margin: 14px auto;
             padding: 12px 14px 0;
+            min-height: 0; /* allow flex children to shrink / scroll */
+            overflow: hidden;
             background: rgba(0, 0, 0, 0.8);
             backdrop-filter: blur(16px) saturate(0.9);
             -webkit-backdrop-filter: blur(16px) saturate(0.9);
@@ -168,6 +172,76 @@
             margin-left: 0.5em;
         }
 
+        /* Sticky cast — who is who */
+        #castBar {
+            flex: 0 0 auto;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            padding: 8px 0 6px;
+            border-bottom: 1px solid rgba(90, 122, 90, 0.22);
+        }
+        .cast {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            padding: 6px 8px;
+            border-left: 3px solid transparent;
+            background: rgba(0, 0, 0, 0.35);
+        }
+        .cast00 { border-left-color: var(--a00); }
+        .cast01 { border-left-color: var(--a01); }
+        .cast02 { border-left-color: var(--a02); }
+        .cast.active {
+            background: rgba(20, 36, 20, 0.65);
+            box-shadow: inset 0 0 0 1px rgba(57, 255, 20, 0.18);
+        }
+        .cast-id {
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            font-weight: 600;
+        }
+        .cast00 .cast-id { color: var(--a00); }
+        .cast01 .cast-id { color: var(--a01); }
+        .cast02 .cast-id { color: var(--a02); }
+        .cast-role {
+            font-size: 0.58rem;
+            color: var(--dim);
+            line-height: 1.35;
+            letter-spacing: 0.02em;
+        }
+
+        #phaseStrip {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 6px 2px 8px;
+            font-size: 0.68rem;
+            color: var(--fg);
+            border-bottom: 1px solid rgba(90, 122, 90, 0.2);
+        }
+        #phaseLabel {
+            color: var(--green);
+            letter-spacing: 0.06em;
+            opacity: 0.9;
+        }
+        #helpStrip {
+            flex: 0 0 auto;
+            font-size: 0.62rem;
+            line-height: 1.45;
+            color: var(--dim);
+            padding: 0 2px 8px;
+            border-bottom: 1px solid rgba(90, 122, 90, 0.15);
+        }
+        #helpStrip strong {
+            color: var(--fg);
+            font-weight: 500;
+            opacity: 0.9;
+        }
+
         #hypBar {
             flex: 0 0 auto;
             display: none;
@@ -198,10 +272,14 @@
             word-break: break-word;
         }
 
+        /* Classic flex scroll: flex child needs min-height:0 or it grows forever */
         #log {
             flex: 1 1 auto;
+            min-height: 0;
             overflow-y: auto;
             overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
             padding: 16px 2px 20px;
             font-size: clamp(0.82rem, 1.6vw, 0.95rem);
             line-height: 1.75;
@@ -228,6 +306,16 @@
         .line.a01 { color: var(--a01); }
         .line.a02 { color: var(--a02); }
         .line.debate { opacity: 0.92; font-size: 0.95em; }
+        .line .agent-tag {
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            margin-right: 0.35em;
+        }
+        .line.a00 .agent-tag { color: var(--a00); }
+        .line.a01 .agent-tag,
+        .line.debate.a01 .agent-tag { color: var(--a01); }
+        .line.a02 .agent-tag,
+        .line.debate.a02 .agent-tag { color: var(--a02); }
         .line.status {
             color: var(--think);
             border-left: 2px solid rgba(90, 122, 90, 0.35);
@@ -236,68 +324,81 @@
             font-size: 0.92em;
         }
 
-        /* ── Thinking transparency ── */
+        /* ── Thinking transparency — readable on frosted floral ── */
         .think-wrap {
-            margin: 0.65em 0 0.35em;
+            margin: 0.75em 0 0.45em;
         }
         .think-wrap.think-done {
-            opacity: 0.82;
+            opacity: 0.92;
         }
         .think-panel {
-            border: 1px solid rgba(90, 122, 90, 0.35);
-            background: rgba(8, 14, 8, 0.75);
-            font-size: 0.72rem;
-            line-height: 1.5;
+            border: 1px solid rgba(120, 150, 120, 0.45);
+            background: rgba(4, 10, 4, 0.92);
+            font-size: 0.88rem;
+            line-height: 1.55;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
         }
         .think-summary {
             cursor: pointer;
             list-style: none;
-            padding: 0.45em 0.65em;
-            color: var(--think);
-            letter-spacing: 0.06em;
+            padding: 0.55em 0.75em;
+            color: #b8d4b8;
+            letter-spacing: 0.04em;
             user-select: none;
+            font-size: 0.82rem;
+            line-height: 1.4;
         }
         .think-summary::-webkit-details-marker { display: none; }
         .think-summary::before {
             content: "▸ ";
-            color: var(--dim);
+            color: var(--amber);
         }
         .think-panel[open] > .think-summary::before {
             content: "▾ ";
         }
         .think-panel[open] > .think-summary {
-            border-bottom: 1px solid rgba(90, 122, 90, 0.25);
+            border-bottom: 1px solid rgba(90, 122, 90, 0.35);
             color: var(--amber);
         }
         .think-body {
-            padding: 0.5em 0.65em 0.7em;
+            padding: 0.65em 0.75em 0.85em;
             max-height: min(42vh, 360px);
             overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            background: rgba(0, 0, 0, 0.25);
         }
-        .think-sec { margin: 0 0 0.65em; }
+        .think-body::-webkit-scrollbar { width: 5px; }
+        .think-body::-webkit-scrollbar-thumb {
+            background: rgba(90, 122, 90, 0.45);
+        }
+        .think-sec { margin: 0 0 0.85em; }
         .think-lab {
-            color: var(--dim);
-            letter-spacing: 0.08em;
-            font-size: 0.65rem;
-            margin-bottom: 0.2em;
+            color: var(--amber);
+            letter-spacing: 0.06em;
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-bottom: 0.35em;
+            opacity: 0.95;
         }
         .think-pre {
             margin: 0;
             white-space: pre-wrap;
             word-break: break-word;
-            color: #9ab89a;
+            color: #c5e0c5;
             font-family: inherit;
-            font-size: 0.7rem;
+            font-size: 0.84rem;
+            line-height: 1.55;
         }
-        .think-prompt .think-pre { color: #7a9a7a; }
-        .think-raw .think-pre { color: var(--amber); opacity: 0.9; }
-        .think-out .think-pre { color: var(--green); opacity: 0.85; }
+        .think-prompt .think-pre { color: #a8c8a8; }
+        .think-raw .think-pre { color: #e0c878; opacity: 0.95; }
+        .think-out .think-pre { color: var(--green); opacity: 0.95; }
         .think-origin .think-pre { color: var(--amber); }
-        .think-belief .think-pre { color: #c8a070; }
-        .think-warn .think-pre { color: var(--warn); }
+        .think-belief .think-pre { color: #d4b080; }
+        .think-warn .think-pre { color: #e08080; }
         .think-user .think-pre { color: var(--amber); }
-        .think-meta .think-pre { color: var(--dim); }
-        .think-mem .think-pre { color: #8aa88a; }
+        .think-meta .think-pre { color: #9ab89a; }
+        .think-mem .think-pre { color: #b0cbb0; }
 
         .caret {
             display: inline-block;
@@ -609,6 +710,7 @@
         @media (max-width: 520px) {
             #app {
                 height: calc(100% - 16px);
+                max-height: calc(100dvh - 16px);
                 margin: 8px;
                 max-width: none;
                 padding: 10px 10px 0;
@@ -619,6 +721,22 @@
             #originPin { font-size: 0.62rem; }
             #engineBadge { display: none; }
             #hypBar { flex-direction: column; gap: 4px; }
+            #castBar {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
+            .cast {
+                flex-direction: row;
+                align-items: baseline;
+                gap: 8px;
+                padding: 5px 8px;
+            }
+            .cast-role { font-size: 0.55rem; }
+            #phaseStrip { flex-direction: column; align-items: flex-start; gap: 4px; }
+            #helpStrip { font-size: 0.58rem; }
+            .think-panel { font-size: 0.84rem; }
+            .think-pre { font-size: 0.8rem; }
+            .think-body { max-height: min(38vh, 280px); }
         }
 
         @media (prefers-reduced-transparency: reduce) {
@@ -664,6 +782,28 @@
             <div id="coherenceBar" title="pollution"><i id="coherenceFill"></i></div>
             <span id="coherenceLabel">R0/12 · POL 0 · 準備</span>
             <span id="engineBadge">LLM …</span>
+        </div>
+
+        <div id="castBar" aria-label="登場エージェント">
+            <div class="cast cast00" id="cast00" data-agent="00">
+                <span class="cast-id">AGENT-00</span>
+                <span class="cast-role">答えははい／いいえのみ</span>
+            </div>
+            <div class="cast cast01" id="cast01" data-agent="01">
+                <span class="cast-id">AGENT-01</span>
+                <span class="cast-role">捜査官 · 質問と議論</span>
+            </div>
+            <div class="cast cast02" id="cast02" data-agent="02">
+                <span class="cast-id">AGENT-02</span>
+                <span class="cast-role">捜査官 · 質問と議論</span>
+            </div>
+        </div>
+
+        <div id="phaseStrip">
+            <span id="phaseLabel">準備中</span>
+            <span id="helpStrip">
+                <strong>遊び方:</strong> ORIGIN を刻印 → <span style="color:var(--a01)">01</span>/<span style="color:var(--a02)">02</span> が質問 → <span style="color:var(--a00)">00</span> がはい／いいえ → 仮説を議論して役割を当てる
+            </span>
         </div>
 
         <div id="originPin" aria-live="polite">

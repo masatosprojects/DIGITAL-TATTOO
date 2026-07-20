@@ -24,8 +24,10 @@ import {
   getSelectedModelKey,
   setSelectedModelKey,
   getActiveModel,
+  getDefaultModelKey,
+  listModels,
+  listModelAvailability,
   hasWebGPU,
-  probeAllModels,
   createLocalEngine,
   createLlmQueue,
   driftTemperature,
@@ -55,10 +57,6 @@ const gateActions = document.getElementById("gateActions");
 const gateSkip = document.getElementById("gateSkip");
 const gateLoad = document.getElementById("gateLoad");
 const gateModelPick = document.getElementById("gateModelPick");
-const optDefault = document.getElementById("optDefault");
-const optPlus = document.getElementById("optPlus");
-const missDefault = document.getElementById("missDefault");
-const missPlus = document.getElementById("missPlus");
 const hyp01El = document.getElementById("hyp01");
 const hyp02El = document.getElementById("hyp02");
 const btnInject = document.getElementById("btnInject");
@@ -93,9 +91,10 @@ const state = {
 
 const engineRef = { current: null };
 let llmQueue = null;
-/** @type {{ default: { ok: boolean, reason?: string }, plus: { ok: boolean, reason?: string } } | null} */
-let probeResults = null;
+/** @type {Array<import("./llm.js").ModelInfo & { available: boolean, reason?: string }> | null} */
+let catalogAvail = null;
 let loadingModel = false;
+let pickerBuilt = false;
 
 function activeModelId() {
   return getActiveModel().id;
@@ -1052,19 +1051,78 @@ function enterFallback(reason) {
   gateLoad.hidden = true;
   gateHint.innerHTML =
     "テンプレートエンジンでゲームは起動します。<br>" +
-    "オフライン LLM を使う場合は <code>npm run fetch-model</code>（プラスは <code>fetch-model:plus</code>）後に再読み込みしてください。";
+    "オフライン LLM を使う場合は <code>npm run fetch-model</code>" +
+    "（軽量 <code>fetch-model:lite</code> / 高精度 <code>fetch-model:hq</code>）後に再読み込みしてください。";
   gateActions.classList.add("show");
 }
 
-function syncModelPickerUI() {
-  const key = getSelectedModelKey();
+function usableTag(usable) {
+  if (usable === "yes") return "usable";
+  if (usable === "maybe") return "要VRAM";
+  return "非推奨";
+}
 
-  for (const [k, el, missEl, probe] of [
-    ["default", optDefault, missDefault, probeResults?.default],
-    ["plus", optPlus, missPlus, probeResults?.plus],
-  ]) {
+function buildModelPicker() {
+  if (!gateModelPick || pickerBuilt) return;
+  pickerBuilt = true;
+  gateModelPick.innerHTML = "";
+  const selected = getSelectedModelKey();
+  for (const m of listModels()) {
+    const label = document.createElement("label");
+    label.className = "gate-model-opt";
+    label.dataset.model = m.key;
+    label.id = "opt-" + m.key;
+
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "modelPick";
+    input.value = m.key;
+    if (m.key === selected) input.checked = true;
+
+    const body = document.createElement("span");
+    body.className = "opt-body";
+
+    const lab = document.createElement("span");
+    lab.className = "opt-label";
+    lab.textContent = m.label;
+
+    const hint = document.createElement("span");
+    hint.className = "opt-hint";
+    hint.textContent =
+      "≈" +
+      m.sizeMB +
+      " MB · VRAM ≈" +
+      Math.round(m.vramMB / 100) / 10 +
+      " GB · " +
+      usableTag(m.usable) +
+      (m.isDefault ? " · 既定" : "");
+
+    const miss = document.createElement("span");
+    miss.className = "opt-miss";
+    miss.id = "miss-" + m.key;
+    miss.hidden = true;
+
+    body.appendChild(lab);
+    body.appendChild(hint);
+    body.appendChild(miss);
+    label.appendChild(input);
+    label.appendChild(body);
+    gateModelPick.appendChild(label);
+  }
+}
+
+function syncModelPickerUI() {
+  if (!gateModelPick) return;
+  buildModelPicker();
+  const key = getSelectedModelKey();
+  const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
+
+  for (const el of gateModelPick.querySelectorAll(".gate-model-opt")) {
+    const k = el.dataset.model;
     const input = el.querySelector('input[type="radio"]');
-    const available = !!(probe && probe.ok);
+    const missEl = el.querySelector(".opt-miss");
+    const info = byKey.get(k);
+    const available = !!(info && info.available);
     el.classList.toggle("selected", key === k && available);
     el.classList.toggle("unavailable", !available);
     input.disabled = !available || loadingModel;
@@ -1072,21 +1130,21 @@ function syncModelPickerUI() {
     if (!available) {
       missEl.hidden = false;
       missEl.textContent =
-        k === "plus"
-          ? "ファイルなし — 公開者が npm run fetch-model:plus を実行してください"
-          : probe?.reason || "ファイルなし — npm run fetch-model が必要です";
+        info?.reason ||
+        "ファイルなし — 公開者が npm run fetch-model" +
+          (k === "lite" ? ":lite" : k === "hq" ? ":hq" : "") +
+          " を実行してください";
     } else {
       missEl.hidden = true;
       missEl.textContent = "";
     }
   }
 
-  const selectedOk = key === "plus" ? probeResults?.plus?.ok : probeResults?.default?.ok;
-  gateLoad.disabled = loadingModel || !selectedOk;
+  const selected = byKey.get(key);
+  gateLoad.disabled = loadingModel || !selected?.available;
   gateLoad.hidden = false;
-  if (!probeResults?.default?.ok && !probeResults?.plus?.ok) {
-    gateLoad.disabled = true;
-  }
+  const anyOk = (catalogAvail || []).some((m) => m.available);
+  if (!anyOk) gateLoad.disabled = true;
 }
 
 function applyModelChoice(key) {
@@ -1137,18 +1195,17 @@ gateModelPick.addEventListener("change", (e) => {
   if (!t || t.name !== "modelPick") return;
   if (loadingModel || state.ready) return;
   applyModelChoice(t.value);
+  const m = getActiveModel();
   gateMsg.textContent =
-    t.value === "plus"
-      ? "日本語プラス (1.5B) を選択しました。「モデルを読み込む」を押してください。"
-      : "標準 (0.5B) を選択しました。「モデルを読み込む」を押してください。";
+    m.label + " を選択しました。「モデルを読み込む」を押してください。";
 });
 
 gateLoad.addEventListener("click", async () => {
   if (loadingModel || state.ready) return;
   const key = getSelectedModelKey();
-  const probe = probeResults?.[key];
-  if (!probe?.ok) {
-    gateMsg.textContent = probe?.reason || "選択したモデルがありません。";
+  const info = (catalogAvail || []).find((m) => m.key === key);
+  if (!info?.available) {
+    gateMsg.textContent = info?.reason || "選択したモデルがありません。";
     return;
   }
   try {
@@ -1169,10 +1226,11 @@ gateLoad.addEventListener("click", async () => {
 
 async function init() {
   gateHint.innerHTML =
-    "モデルは <code>public/models/</code> に事前配置。<br>" +
-    "標準: <code>npm run fetch-model</code> · プラス: <code>npm run fetch-model:plus</code> · 両方: <code>npm run fetch-model:all</code><br>" +
+    "モデルは <code>public/models/</code> に事前配置（知能順）。<br>" +
+    "既定 1.5B: <code>npm run fetch-model</code> · 軽量: <code>:lite</code> · 高精度: <code>:hq</code> · 全部: <code>:all</code><br>" +
     "実行時は同一オリジンのみ。Chrome / Edge + WebGPU 推奨。選択は localStorage に保存。";
 
+  buildModelPicker();
   applyModelChoice(getSelectedModelKey());
   updateHud();
   setControlsVisible(false);
@@ -1186,20 +1244,23 @@ async function init() {
 
   setGateProgress("ローカルモデルを確認しています…", 0.02);
   gateMsg.textContent = "ローカルモデルを確認しています…";
-  probeResults = await probeAllModels();
+  catalogAvail = await listModelAvailability();
 
   let key = getSelectedModelKey();
-  if (!probeResults[key]?.ok) {
-    if (probeResults.default?.ok) key = "default";
-    else if (probeResults.plus?.ok) key = "plus";
-    else {
+  const byKey = new Map(catalogAvail.map((m) => [m.key, m]));
+  if (!byKey.get(key)?.available) {
+    const preferred =
+      catalogAvail.find((m) => m.key === getDefaultModelKey() && m.available) ||
+      catalogAvail.find((m) => m.available);
+    if (!preferred) {
       syncModelPickerUI();
       enterFallback(
-        probeResults.default?.reason ||
+        byKey.get(getDefaultModelKey())?.reason ||
           "ローカルモデルが見つかりません。`npm run fetch-model` のあと再読み込みしてください。"
       );
       return;
     }
+    key = preferred.key;
     setSelectedModelKey(key);
   }
 
@@ -1207,7 +1268,7 @@ async function init() {
   setGateProgress("モデルを選んで読み込んでください", 0);
   gatePct.textContent = "—";
   gateMsg.textContent =
-    (key === "plus" ? "日本語プラス" : "標準") +
+    getActiveModel().label +
     " が利用可能です。必要なら切替えてから「モデルを読み込む」を押してください。";
   gateLoad.disabled = false;
   gateLoad.textContent = "モデルを読み込む";

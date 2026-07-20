@@ -1,7 +1,8 @@
 # Deploy DIGITAL TATTOO to GitHub Pages.
-# Default model (~300 MB) is fetched in CI — do not commit public/models binaries.
-# Plus 1.5B (~830 MB) is NOT fetched in CI: dual models ≈ 1.1 GB exceed Pages comfort.
-# For plus on Pages you'd need a different host (Netlify etc.) or fetch-model:plus locally.
+# Default = smartest usable model: Qwen2.5-1.5B (~840 MB) — fetched in CI only.
+# Do not commit public/models binaries.
+# lite (0.5B) / hq (3B ≈1.7 GB) are NOT fetched in CI (Pages soft ~1 GB).
+# Full pack (~2.8 GB): Netlify / self-host via npm run fetch-model:all.
 #
 # One-time setup (repo Settings):
 #   1. Settings → Pages → Build and deployment → Source: GitHub Actions
@@ -46,8 +47,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Default 0.5B only (~300 MB). Plus 1.5B is optional / local-Netlify.
-      - name: Fetch default WebLLM model into public/models
+      # Default 1.5B only (~840 MB). lite/hq are optional / Netlify self-host.
+      - name: Fetch default WebLLM model (1.5B) into public/models
         run: npm run fetch-model
 
       - name: Verify model layout (resolve/main)
