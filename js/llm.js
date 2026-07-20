@@ -5,25 +5,38 @@
  * Public API (game / gate should use these):
  *   listModels()              — catalog sorted by intelligence rank
  *   resolveModel(idOrKey)     — look up by key or full model_id
- *   getDefaultModelKey()      — smartest *usable* model (1.5B)
+ *   getDefaultModelKey()      — smartest *usable* here (1.5B local; 0.5B on GitHub Pages)
+ *   isGitHubPagesHost() / preferPagesSafeModel()
  *   getSelectedModelKey() / setSelectedModelKey(key)
- *   getSelectedEngineMode() / setSelectedEngineMode(mode)
+ *   getAgentAssignments() / setAgentAssignments(map) / setAgentAssignment(agent, key)
+ *   loadAgentAssignments(map, onProgress) — per-agent models; share engine when same key
  *   probeModel / isModelAvailable / listModelAvailability
  *   loadModel(idOrKey, opts)  — unload previous, load selected, persist preference
  *   createEngine(modelKey, opts)
- *   loadTripleEngines(modelKey, onProgress)  — 1.5B × 3 runtime engines (same disk files)
- *   loadStrongWeakEngines(onProgress)        — 00=1.5B, 01/02=0.5B
+ *   loadTripleEngines / loadStrongWeakEngines / loadSwitchEngine (legacy presets)
+ *   explainLoadError(err)     — JP message for Cache.add / Pages limits
  *   generateWithEngine(engine, messages, opts)
  *   createLlmQueue(engineRef) / createAgentLlmRouter(binding)
  *
  * Keep catalog in sync with scripts/fetch-model.mjs (web-llm 0.2.84).
  * See MODELS.md for ranking, deploy sizes, engine modes, and fluency honesty.
+ *
+ * GitHub Pages notes:
+ *   Soft site cap ≈1 GB. 1.5B q4f16 has params_shard_0.bin ≈111 MB (over common
+ *   100 MB/file comfort) and ~840 MB total — Cache.add often fails on Pages.
+ *   CI therefore publishes lite (0.5B, max shard ≈65 MB). Use Netlify/local for 1.5B.
  */
 
 import { CreateMLCEngine } from "@mlc-ai/web-llm";
 
 export const STORAGE_KEY = "digital-tattoo-model";
 export const ENGINE_MODE_KEY = "digital-tattoo-engine-mode";
+/** JSON: { "00": "default", "01": "default", "02": "lite" } */
+export const AGENT_ASSIGN_KEY = "digital-tattoo-agent-models";
+
+/** @typedef {"00"|"01"|"02"} AgentId */
+/** @type {readonly AgentId[]} */
+export const AGENT_IDS = Object.freeze(["00", "01", "02"]);
 
 /**
  * @typedef {"triple-1.5" | "switch-1" | "strong-weak"} EngineModeId
@@ -103,10 +116,10 @@ export const MODEL_HF_COMPAT_PREFIX = "resolve/main/";
 
 /**
  * Ranked by intelligence / JP quality (1 = smartest).
- * Default = smartest *usable* on common WebGPU laptops + Pages (~1 GB soft).
+ * Local/Netlify default = 1.5B. GitHub Pages CI ships 0.5B (shard-safe).
  *   hq (3B)   — smarter but heavy / maybe; Qwen Research license
- *   default (1.5B) — recommended default
- *   lite (0.5B) — weak-GPU fallback
+ *   default (1.5B) — recommended on Netlify / local
+ *   lite (0.5B) — Pages CI / weak-GPU fallback
  */
 /** @type {ModelInfo[]} */
 export const MODEL_CATALOG = [
@@ -123,7 +136,7 @@ export const MODEL_CATALOG = [
     usable: "maybe",
     jpQuality: 1,
     license: "Qwen Research",
-    hint: "最も賢い候補。≈1.7 GB · VRAM ≈2.5 GB。統合GPUでは厳しい。Pages非推奨。",
+    hint: "最も賢い候補。≈1.7 GB · VRAM ≈2.5 GB。統合GPUでは厳しい。Pages不可。",
   },
   {
     key: "default",
@@ -139,7 +152,7 @@ export const MODEL_CATALOG = [
     jpQuality: 2,
     license: "Apache-2.0",
     isDefault: true,
-    hint: "実用的な日本語の最推奨。≈840 MB · VRAM ≈1.6 GB。CI / Pages 既定。",
+    hint: "実用日本語の最推奨。≈840 MB · 最大シャード≈111 MB。Netlify / ローカル向け（Pages非推奨）。",
   },
   {
     key: "lite",
@@ -154,15 +167,21 @@ export const MODEL_CATALOG = [
     usable: "yes",
     jpQuality: 3,
     license: "Apache-2.0",
-    hint: "弱GPU向け。≈280 MB · VRAM ≈950 MB。短文は可・流暢さは限定的。",
+    hint: "GitHub Pages 向け既定。≈280 MB · 最大シャード≈65 MB。短文は可・流暢さは限定的。",
   },
 ];
 
 /** @type {Record<string, ModelInfo>} */
 export const MODELS = Object.fromEntries(MODEL_CATALOG.map((m) => [m.key, m]));
 
-/** Key of the smartest *usable* model (not the largest/maybe). */
+/** Smartest *usable* on Netlify / local (not the largest/maybe). */
 export const DEFAULT_MODEL_KEY = "default";
+
+/** Pages CI publishes this — all shards stay under ~100 MB. */
+export const PAGES_MODEL_KEY = "lite";
+
+/** Soft per-file comfort used by GitHub Pages / static hosts (bytes). */
+export const PAGES_MAX_SHARD_BYTES = 100 * 1024 * 1024;
 
 /** @deprecated old dual-catalog alias — was 1.5B “plus”; now equals default */
 MODELS.plus = MODELS.default;
@@ -185,8 +204,33 @@ export function listModels() {
   return MODEL_CATALOG.slice().sort((a, b) => a.rank - b.rank);
 }
 
+/** True on github.io project/user Pages (and *.github.io custom preview hosts). */
+export function isGitHubPagesHost() {
+  if (typeof window === "undefined" || !window.location) return false;
+  const host = String(window.location.hostname || "").toLowerCase();
+  return host === "github.io" || host.endsWith(".github.io");
+}
+
+/**
+ * Prefer 0.5B on Pages when present; else smartest usable.
+ * @param {Array<ModelInfo & { available?: boolean }> | null | undefined} [avail]
+ */
+export function preferPagesSafeModel(avail) {
+  if (!isGitHubPagesHost()) {
+    return DEFAULT_MODEL_KEY;
+  }
+  if (Array.isArray(avail) && avail.length) {
+    const lite = avail.find((m) => m.key === PAGES_MODEL_KEY && m.available !== false);
+    if (lite) return PAGES_MODEL_KEY;
+    const any = avail.find((m) => m.available !== false);
+    return any ? any.key : PAGES_MODEL_KEY;
+  }
+  return PAGES_MODEL_KEY;
+}
+
+/** Host-aware default: lite on GitHub Pages, 1.5B elsewhere. */
 export function getDefaultModelKey() {
-  return DEFAULT_MODEL_KEY;
+  return isGitHubPagesHost() ? PAGES_MODEL_KEY : DEFAULT_MODEL_KEY;
 }
 
 /**
@@ -240,16 +284,26 @@ export function getSelectedModelKey() {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
     const resolved = resolveModel(v);
-    if (resolved) return resolved.key;
+    if (resolved) {
+      // Stale "default" prefs on Pages → prefer lite when that is the host default
+      if (
+        isGitHubPagesHost() &&
+        resolved.key === DEFAULT_MODEL_KEY &&
+        !localStorage.getItem(AGENT_ASSIGN_KEY)
+      ) {
+        return getDefaultModelKey();
+      }
+      return resolved.key;
+    }
   } catch (_) {
     /* private mode */
   }
-  return DEFAULT_MODEL_KEY;
+  return getDefaultModelKey();
 }
 
 export function setSelectedModelKey(key) {
   const resolved = resolveModel(key);
-  const k = resolved ? resolved.key : DEFAULT_MODEL_KEY;
+  const k = resolved ? resolved.key : getDefaultModelKey();
   try {
     localStorage.setItem(STORAGE_KEY, k);
   } catch (_) {
@@ -259,7 +313,183 @@ export function setSelectedModelKey(key) {
 }
 
 export function getActiveModel() {
-  return MODELS[getSelectedModelKey()] || MODELS[DEFAULT_MODEL_KEY];
+  return MODELS[getSelectedModelKey()] || MODELS[getDefaultModelKey()];
+}
+
+/**
+ * Normalize / fill a per-agent model-key map.
+ * @param {Partial<Record<AgentId, string>> | null | undefined} map
+ * @param {string} [fallbackKey]
+ * @returns {Record<AgentId, string>}
+ */
+export function normalizeAgentAssignments(map, fallbackKey = getDefaultModelKey()) {
+  const fb = resolveModel(fallbackKey)?.key || getDefaultModelKey();
+  /** @type {Record<AgentId, string>} */
+  const out = { "00": fb, "01": fb, "02": fb };
+  if (!map || typeof map !== "object") return out;
+  for (const agent of AGENT_IDS) {
+    const resolved = resolveModel(map[agent]);
+    out[agent] = resolved ? resolved.key : fb;
+  }
+  return out;
+}
+
+/**
+ * Defaults: all agents use the recommended 1.5B when possible.
+ * Migrates legacy engine-mode prefs (triple / strong-weak / switch-1) once.
+ * @returns {Record<AgentId, string>}
+ */
+export function getDefaultAgentAssignments() {
+  const k = getDefaultModelKey();
+  return { "00": k, "01": k, "02": k };
+}
+
+/**
+ * @returns {Record<AgentId, string>}
+ */
+export function getAgentAssignments() {
+  try {
+    const raw = localStorage.getItem(AGENT_ASSIGN_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return normalizeAgentAssignments(parsed);
+      }
+    }
+  } catch (_) {
+    /* private mode / bad JSON */
+  }
+
+  // One-shot migration from legacy engine-mode + single-model prefs
+  try {
+    const mode = localStorage.getItem(ENGINE_MODE_KEY);
+    if (mode === "strong-weak") {
+      return normalizeAgentAssignments({
+        "00": DEFAULT_MODEL_KEY,
+        "01": "lite",
+        "02": "lite",
+      });
+    }
+    if (mode === "switch-1" || mode === "triple-1.5") {
+      const k = getSelectedModelKey();
+      return normalizeAgentAssignments({ "00": k, "01": k, "02": k });
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  return getDefaultAgentAssignments();
+}
+
+/**
+ * @param {Partial<Record<AgentId, string>>} map
+ * @returns {Record<AgentId, string>}
+ */
+export function setAgentAssignments(map) {
+  const normalized = normalizeAgentAssignments(map);
+  try {
+    localStorage.setItem(AGENT_ASSIGN_KEY, JSON.stringify(normalized));
+  } catch (_) {
+    /* ignore */
+  }
+  // Keep legacy single-model key in sync with AGENT-00 (status / docs)
+  setSelectedModelKey(normalized["00"]);
+  return normalized;
+}
+
+/**
+ * @param {AgentId | string} agent
+ * @param {string} modelKey
+ * @returns {Record<AgentId, string>}
+ */
+export function setAgentAssignment(agent, modelKey) {
+  const current = getAgentAssignments();
+  if (AGENT_IDS.includes(/** @type {AgentId} */ (agent))) {
+    current[/** @type {AgentId} */ (agent)] = modelKey;
+  }
+  return setAgentAssignments(current);
+}
+
+/**
+ * Snap unavailable picks to the best available catalog key.
+ * @param {Record<AgentId, string>} assignments
+ * @param {Array<ModelInfo & { available: boolean }>} avail
+ * @returns {Record<AgentId, string>}
+ */
+export function coerceAssignmentsToAvailable(assignments, avail) {
+  const byKey = new Map((avail || []).map((m) => [m.key, m]));
+  const pagesPref = preferPagesSafeModel(avail);
+  const preferred =
+    (byKey.get(pagesPref)?.available && pagesPref) ||
+    (byKey.get(DEFAULT_MODEL_KEY)?.available && DEFAULT_MODEL_KEY) ||
+    (byKey.get(PAGES_MODEL_KEY)?.available && PAGES_MODEL_KEY) ||
+    (avail || []).find((m) => m.available)?.key ||
+    null;
+  /** @type {Record<AgentId, string>} */
+  const out = { ...normalizeAgentAssignments(assignments) };
+  if (!preferred) return out;
+  for (const agent of AGENT_IDS) {
+    if (!byKey.get(out[agent])?.available) out[agent] = preferred;
+  }
+  return out;
+}
+
+/**
+ * Unique model keys in first-seen agent order (00 → 01 → 02).
+ * @param {Record<AgentId, string>} assignments
+ * @returns {string[]}
+ */
+export function uniqueAssignmentKeys(assignments) {
+  const seen = new Set();
+  /** @type {string[]} */
+  const keys = [];
+  const map = normalizeAgentAssignments(assignments);
+  for (const agent of AGENT_IDS) {
+    const k = map[agent];
+    if (!seen.has(k)) {
+      seen.add(k);
+      keys.push(k);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Rough VRAM sum for distinct engines (shared keys count once).
+ * @param {Record<AgentId, string>} assignments
+ */
+export function estimateAssignmentVramMB(assignments) {
+  let sum = 0;
+  for (const key of uniqueAssignmentKeys(assignments)) {
+    const m = resolveModel(key);
+    if (m) sum += m.vramMB;
+  }
+  return sum;
+}
+
+/**
+ * @param {Record<AgentId, string>} assignments
+ * @param {Array<ModelInfo & { available: boolean, reason?: string }>} [avail]
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function areAssignmentsAvailable(assignments, avail) {
+  const list = avail || (await listModelAvailability());
+  const byKey = new Map(list.map((m) => [m.key, m]));
+  const map = normalizeAgentAssignments(assignments);
+  const missing = [];
+  for (const agent of AGENT_IDS) {
+    const info = byKey.get(map[agent]);
+    if (!info?.available) {
+      missing.push(
+        "AGENT-" +
+          agent +
+          ": " +
+          (info?.reason || map[agent] + " がありません")
+      );
+    }
+  }
+  if (missing.length) return { ok: false, reason: missing.join(" · ") };
+  return { ok: true };
 }
 
 /**
@@ -341,11 +571,20 @@ export function modelWeightsBase(model = getActiveModel()) {
   return modelsBase() + m.id + "/" + MODEL_HF_COMPAT_PREFIX;
 }
 
+/**
+ * WebLLM 0.2.84 cache backends: "cache" | "indexeddb" | "cross-origin" | "opfs".
+ * Cache API's Cache.add() often throws "network error" on large Pages shards;
+ * IndexedDB stores blobs without Cache.add and is more reliable here.
+ */
+export function preferredCacheBackend() {
+  return "indexeddb";
+}
+
 export function localAppConfig(model = getActiveModel()) {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
   const base = modelsBase();
   return {
-    cacheBackend: "cache",
+    cacheBackend: preferredCacheBackend(),
     model_list: [
       {
         model: modelWeightsBase(m),
@@ -372,23 +611,118 @@ function missingReason(model, configUrl) {
     : "";
   if (model.key === "hq") {
     return (
-      "高精度モデルがこの公開に含まれていません（≈1.7 GB）。" +
-      "「テンプレートで続行」で遊べます。配布に含める場合は公開者が `npm run fetch-model:hq`。" +
+      "このホストに 3B ファイルがありません（≈1.7 GB）。" +
+      "配置されれば選択可。公開者: `npm run fetch-model:hq` または `公開準備.bat`（全モデル同梱）。" +
+      "GitHub Pages は容量のため 3B を載せません。" +
       pathHint
     );
   }
   if (model.key === "lite") {
     return (
-      "軽量モデルがこの公開に含まれていません。" +
-      "標準モデルを選ぶか、「テンプレートで続行」を使ってください。" +
-      "（公開者: `npm run fetch-model:lite`）" +
+      "このホストに 0.5B ファイルがありません（≈280 MB）。" +
+      "GitHub Pages では CI が 0.5B を配置します。しばらく待つか「テンプレートで続行」を使ってください。" +
+      "（公開者: `npm run fetch-model:lite` / `fetch-model:pages`）" +
+      pathHint
+    );
+  }
+  if (model.key === "default") {
+    return (
+      "このホストに 1.5B ファイルがありません（≈840 MB · 最大シャード≈111 MB）。" +
+      "GitHub Pages では 1.5B を載せません（サイト≈1 GB 制限・大シャードで Cache 失敗）。" +
+      "フル LLM は Netlify / ローカルで `npm run fetch-model`。Pages では軽量 (0.5B) かテンプレートを使ってください。" +
       pathHint
     );
   }
   return (
     "モデルデータが読めません（models/…/resolve/main/mlc-chat-config.json）。" +
-    "GitHub Pages では CI が 1.5B を配置します。しばらく待つか「テンプレートで続行」を使ってください。" +
+    "「テンプレートで続行」を使うか、公開者がモデルを配置してください。" +
     pathHint
+  );
+}
+
+/**
+ * On GitHub Pages, reject models whose ndarray-cache lists a shard ≥100 MB.
+ * (1.5B params_shard_0.bin ≈111 MB → Cache.add network error in practice.)
+ * @param {ModelInfo} model
+ * @returns {Promise<{ ok: boolean, reason?: string, maxShardMB?: number }>}
+ */
+async function probeShardBudget(model) {
+  if (!isGitHubPagesHost()) return { ok: true };
+  const cacheUrl = modelWeightsBase(model) + "ndarray-cache.json";
+  try {
+    const res = await fetch(cacheUrl, { method: "GET", cache: "no-cache" });
+    if (!res.ok) return { ok: true }; // config probe already covers missing files
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("text/html")) return { ok: true };
+    const json = await res.json();
+    let maxBytes = 0;
+    let maxPath = "";
+    for (const rec of json.records || []) {
+      const n = typeof rec.nbytes === "number" ? rec.nbytes : 0;
+      if (n > maxBytes) {
+        maxBytes = n;
+        maxPath = rec.dataPath || "";
+      }
+    }
+    if (maxBytes >= PAGES_MAX_SHARD_BYTES) {
+      const mb = Math.round((maxBytes / (1024 * 1024)) * 10) / 10;
+      return {
+        ok: false,
+        maxShardMB: mb,
+        reason:
+          model.shortLabel +
+          " は最大シャードが約 " +
+          mb +
+          " MB（" +
+          (maxPath || "params_shard_*.bin") +
+          "）で、GitHub Pages の目安 100 MB/ファイルを超えます。" +
+          "ブラウザの Cache.add が network error になります。" +
+          "Pages では軽量 (0.5B) を選ぶか「テンプレートで続行」。" +
+          "標準 (1.5B) は Netlify / ローカル（`npm run fetch-model`）向けです。",
+      };
+    }
+    return { ok: true, maxShardMB: Math.round((maxBytes / (1024 * 1024)) * 10) / 10 };
+  } catch (_) {
+    return { ok: true };
+  }
+}
+
+/**
+ * User-facing Japanese explanation for WebLLM / Cache failures.
+ * @param {unknown} err
+ */
+export function explainLoadError(err) {
+  const raw =
+    err && typeof err === "object" && "message" in err && err.message
+      ? String(err.message)
+      : String(err || "error");
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("cache.add") ||
+    lower.includes("encountered a network error") ||
+    (lower.includes("cache") && lower.includes("network"))
+  ) {
+    if (isGitHubPagesHost()) {
+      return (
+        "モデル読み込みに失敗しました（Cache / ネットワーク）。" +
+        "GitHub Pages では大きなシャード（1.5B の params_shard_0 ≈111 MB）やサイト≈1 GB 制限で失敗しやすいです。" +
+        "軽量 (0.5B) が選べる場合はそれを使ってください。標準 (1.5B) のフル LLM は Netlify / ローカルが必要です。" +
+        "「テンプレートで続行」でも遊べます。"
+      );
+    }
+    return (
+      "モデル読み込みに失敗しました（Cache / ネットワーク）。" +
+      "通信切断・容量不足・破損ファイルの可能性があります。再読み込みするか「テンプレートで続行」を使ってください。" +
+      "（" +
+      raw +
+      "）"
+    );
+  }
+  if (err && typeof err === "object" && "code" in err && err.code === "MODEL_UNAVAILABLE") {
+    return raw + " 「テンプレートで続行」が使えます。";
+  }
+  return (
+    "モデル読み込みに失敗しました。「テンプレートで続行」が使えます。（" + raw + "）"
   );
 }
 
@@ -458,6 +792,16 @@ export async function probeModel(modelOrKey) {
         reason:
           "モデル設定が JSON ではありません（404 の HTML フォールバックの可能性）。" +
           "「テンプレートで続行」で遊べます。配置: models/…/resolve/main/",
+        configUrl,
+        wasmUrl,
+      };
+    }
+    const budget = await probeShardBudget(model);
+    if (!budget.ok) {
+      return {
+        ok: false,
+        model,
+        reason: budget.reason,
         configUrl,
         wasmUrl,
       };
@@ -812,6 +1156,146 @@ export async function loadSwitchEngine(modelKey, onProgress, prevEngine = null) 
     model,
     mode: "switch-1",
     agentMap,
+  };
+}
+
+/**
+ * Load engines from an explicit per-agent model map.
+ * Same model key → one shared runtime engine (VRAM-safe). Distinct keys →
+ * one engine each. Disk weights are still one copy per model id.
+ *
+ * @param {Partial<Record<AgentId, string>>} [assignments]
+ * @param {(p: {
+ *   text: string,
+ *   progress: number,
+ *   engineIndex?: number,
+ *   engineTotal?: number,
+ *   agent?: AgentId,
+ *   modelKey?: string,
+ * }) => void} [onProgress]
+ * @returns {Promise<{
+ *   engines: Record<string, import("@mlc-ai/web-llm").MLCEngineInterface>,
+ *   agentMap: Record<AgentId, {
+ *     engineId: string,
+ *     model: ModelInfo,
+ *     engine: import("@mlc-ai/web-llm").MLCEngineInterface,
+ *   }>,
+ *   assignments: Record<AgentId, string>,
+ *   mode: "per-agent",
+ *   uniqueKeys: string[],
+ * }>}
+ */
+export async function loadAgentAssignments(assignments, onProgress) {
+  const map = setAgentAssignments(normalizeAgentAssignments(assignments));
+  const uniqueKeys = uniqueAssignmentKeys(map);
+
+  for (const key of uniqueKeys) {
+    const probe = await probeModel(key);
+    if (!probe.ok) {
+      const err = new Error(probe.reason || "Model not available: " + key);
+      err.code = "MODEL_UNAVAILABLE";
+      err.model = probe.model;
+      throw err;
+    }
+  }
+
+  /** @type {Record<string, import("@mlc-ai/web-llm").MLCEngineInterface>} */
+  const enginesByKey = {};
+  /** @type {Array<import("@mlc-ai/web-llm").MLCEngineInterface | null>} */
+  const loaded = [];
+  const total = uniqueKeys.length;
+
+  try {
+    for (let i = 0; i < uniqueKeys.length; i++) {
+      const key = uniqueKeys[i];
+      const model = resolveModel(key) || MODELS[DEFAULT_MODEL_KEY];
+      const agentsUsing = AGENT_IDS.filter((a) => map[a] === key);
+      const agentLabel = agentsUsing.map((a) => "AGENT-" + a).join("/");
+      const idx = i + 1;
+
+      const engine = await createEngine(model, {
+        onProgress: (p) => {
+          const slice = (i + Math.max(0, Math.min(1, p.progress))) / total;
+          if (onProgress) {
+            onProgress({
+              text:
+                agentLabel +
+                " · " +
+                model.shortLabel +
+                " (" +
+                idx +
+                "/" +
+                total +
+                ") · " +
+                (p.text || ""),
+              progress: slice,
+              engineIndex: idx,
+              engineTotal: total,
+              agent: agentsUsing[0],
+              modelKey: key,
+            });
+          }
+        },
+      });
+      enginesByKey[key] = engine;
+      loaded.push(engine);
+      if (onProgress) {
+        onProgress({
+          text:
+            agentLabel +
+            " · " +
+            model.shortLabel +
+            " 準備完了 (" +
+            idx +
+            "/" +
+            total +
+            ")",
+          progress: idx / total,
+          engineIndex: idx,
+          engineTotal: total,
+          agent: agentsUsing[0],
+          modelKey: key,
+        });
+      }
+    }
+  } catch (e) {
+    await unloadAllEngines(loaded);
+    const detail = e && e.message ? e.message : String(e);
+    const err = new Error(
+      "エージェント別モデルの読み込みに失敗しました（" +
+        detail +
+        "）。VRAM 不足の場合は同じモデルを共有するか、軽量 (0.5B) を選んでください。"
+    );
+    err.code = "AGENT_ASSIGN_LOAD_FAILED";
+    err.cause = e;
+    throw err;
+  }
+
+  /** @type {Record<AgentId, { engineId: string, model: ModelInfo, engine: import("@mlc-ai/web-llm").MLCEngineInterface }>} */
+  const agentMap = {
+    "00": {
+      engineId: map["00"],
+      model: resolveModel(map["00"]) || MODELS[DEFAULT_MODEL_KEY],
+      engine: enginesByKey[map["00"]],
+    },
+    "01": {
+      engineId: map["01"],
+      model: resolveModel(map["01"]) || MODELS[DEFAULT_MODEL_KEY],
+      engine: enginesByKey[map["01"]],
+    },
+    "02": {
+      engineId: map["02"],
+      model: resolveModel(map["02"]) || MODELS[DEFAULT_MODEL_KEY],
+      engine: enginesByKey[map["02"]],
+    },
+  };
+
+  return {
+    engines: enginesByKey,
+    agentMap,
+    assignments: map,
+    mode: "per-agent",
+    uniqueKeys,
   };
 }
 

@@ -4,8 +4,10 @@
  *
  * Checks public/models by default; pass "dist" to check build output.
  *
- * Default 1.5B is always required (smartest usable / CI).
- * lite (0.5B) and hq (3B) are optional — verified only if present or flagged.
+ * By default, 1.5B (default) is required.
+ * GitHub Pages CI uses: --require-lite --allow-missing-default
+ *   (0.5B shards stay under ~100 MB; 1.5B shard0 ≈111 MB breaks Cache.add on Pages)
+ * hq (3B) is optional — verified only if present or --require-hq.
  */
 
 import fs from "node:fs";
@@ -40,9 +42,11 @@ const args = process.argv.slice(2).filter((a) => a !== "--");
 const requireLite = args.includes("--require-lite");
 const requireHq = args.includes("--require-hq");
 const requirePlus = args.includes("--require-plus"); // legacy alias → default already required
+const allowMissingDefault = args.includes("--allow-missing-default");
 const targetArg = args.find((a) => !a.startsWith("--")) || "public";
 const target = targetArg.replace(/[/\\]+$/, "");
 const modelsRoot = path.join(ROOT, target, "models");
+const PAGES_MAX_SHARD_BYTES = 100 * 1024 * 1024;
 
 function fail(msg) {
   console.error(`[verify-models] FAIL (${target}): ${msg}`);
@@ -142,15 +146,31 @@ function checkModel(model, { required }) {
     fail(`${model.id}: ndarray-cache.json has no dataPath records`);
   }
   const missingShards = [];
+  let maxShardBytes = 0;
+  let maxShardName = "";
   for (const rel of dataPaths) {
     const shardPath = path.join(weightsDir, rel);
     if (!fs.existsSync(shardPath) || fs.statSync(shardPath).size === 0) {
       missingShards.push(rel);
+      continue;
+    }
+    const sz = fs.statSync(shardPath).size;
+    if (sz > maxShardBytes) {
+      maxShardBytes = sz;
+      maxShardName = rel;
     }
   }
   if (missingShards.length) {
     fail(
       `${model.id}: missing ${missingShards.length} weight shard(s) e.g. ${missingShards.slice(0, 3).join(", ")}. Re-run fetch-model.`
+    );
+  }
+
+  // Pages CI: fail if any required/shipped model has a shard ≥100 MB
+  if (requireLite && maxShardBytes >= PAGES_MAX_SHARD_BYTES) {
+    fail(
+      `${model.id}: ${maxShardName} is ${(maxShardBytes / (1024 * 1024)).toFixed(1)} MB ` +
+        `(≥100 MB). GitHub Pages / Cache.add cannot reliably host this — use lite (0.5B) for Pages.`
     );
   }
 
@@ -163,21 +183,36 @@ function checkModel(model, { required }) {
   }
 
   console.log(
-    `  [${model.key}] OK  resolve/main config + wasm + ${dataPaths.size} shards · ~${sizeMB.toFixed(0)} MB`
+    `  [${model.key}] OK  resolve/main config + wasm + ${dataPaths.size} shards · ~${sizeMB.toFixed(0)} MB` +
+      (maxShardBytes
+        ? ` · max shard ${(maxShardBytes / (1024 * 1024)).toFixed(1)} MB`
+        : "")
   );
-  return { key: model.key, present: true, sizeMB, shards: dataPaths.size };
+  return {
+    key: model.key,
+    present: true,
+    sizeMB,
+    shards: dataPaths.size,
+    maxShardMB: maxShardBytes / (1024 * 1024),
+  };
 }
 
 if (!fs.existsSync(modelsRoot)) {
-  fail(`missing ${path.relative(ROOT, modelsRoot)} — run npm run fetch-model`);
+  fail(
+    `missing ${path.relative(ROOT, modelsRoot)} — run npm run fetch-model` +
+      (requireLite ? ":pages" : "")
+  );
 }
 
 if (requirePlus) {
-  console.log("[verify-models] note: --require-plus is legacy; default (1.5B) is always required.");
+  console.log(
+    "[verify-models] note: --require-plus is legacy; prefer --require-lite for Pages or default fetch-model for Netlify."
+  );
 }
 
 console.log(`[verify-models] checking ${target}/models …`);
-const def = checkModel(MODELS.default, { required: true });
+const requireDefault = !allowMissingDefault;
+const def = checkModel(MODELS.default, { required: requireDefault });
 const lite = checkModel(MODELS.lite, {
   required: requireLite || isPresent(MODELS.lite),
 });
@@ -185,9 +220,15 @@ const hq = checkModel(MODELS.hq, {
   required: requireHq || isPresent(MODELS.hq),
 });
 
+if (!def.present && !lite.present && !hq.present) {
+  fail("no models present — run npm run fetch-model or fetch-model:pages");
+}
+
 const totalMB = dirSizeBytes(modelsRoot) / (1024 * 1024);
 console.log(`[verify-models] OK (${target})`);
-console.log(`  default (1.5B): ${def.present ? "present" : "MISSING"}`);
+console.log(
+  `  default (1.5B): ${def.present ? "present" : allowMissingDefault ? "absent (Pages OK)" : "MISSING"}`
+);
 console.log(`  lite (0.5B):    ${lite.present ? "present" : "absent (optional)"}`);
 console.log(`  hq (3B):        ${hq.present ? "present" : "absent (optional)"}`);
 console.log(`  total:          ~${totalMB.toFixed(0)} MB`);
@@ -196,11 +237,11 @@ if (totalMB > 1000) {
     `  note: ~${totalMB.toFixed(0)} MB exceeds GitHub Pages soft comfort (~1 GB). Prefer Netlify / local for multi-model packs.`
   );
 }
-console.log(
-  `  app requests: models/${MODELS.default.id}/resolve/main/mlc-chat-config.json`
-);
 if (lite.present) {
-  console.log(`               models/${MODELS.lite.id}/resolve/main/mlc-chat-config.json`);
+  console.log(`  app (Pages): models/${MODELS.lite.id}/resolve/main/mlc-chat-config.json`);
+}
+if (def.present) {
+  console.log(`  app (Netlify/local): models/${MODELS.default.id}/resolve/main/mlc-chat-config.json`);
 }
 if (hq.present) {
   console.log(`               models/${MODELS.hq.id}/resolve/main/mlc-chat-config.json`);

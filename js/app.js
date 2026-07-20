@@ -23,22 +23,23 @@ import {
 } from "./fallback.js";
 
 import {
-  getSelectedModelKey,
-  setSelectedModelKey,
   getActiveModel,
   getDefaultModelKey,
   listModels,
   listModelAvailability,
-  listEngineModes,
-  getSelectedEngineMode,
-  setSelectedEngineMode,
-  resolveEngineMode,
-  isEngineModeAvailable,
-  SAFE_ENGINE_MODE,
+  resolveModel,
+  AGENT_IDS,
+  getAgentAssignments,
+  setAgentAssignments,
+  setAgentAssignment,
+  coerceAssignmentsToAvailable,
+  uniqueAssignmentKeys,
+  estimateAssignmentVramMB,
+  areAssignmentsAvailable,
+  loadAgentAssignments,
+  explainLoadError,
+  isGitHubPagesHost,
   hasWebGPU,
-  loadTripleEngines,
-  loadStrongWeakEngines,
-  loadSwitchEngine,
   createLlmQueue,
   createAgentLlmRouter,
   unloadAllEngines,
@@ -78,9 +79,8 @@ const gateHint = document.getElementById("gateHint");
 const gateActions = document.getElementById("gateActions");
 const gateSkip = document.getElementById("gateSkip");
 const gateLoad = document.getElementById("gateLoad");
-const gateModelPick = document.getElementById("gateModelPick");
-const gateModePick = document.getElementById("gateModePick");
-const gateModeWarn = document.getElementById("gateModeWarn");
+const gateAgentAssign = document.getElementById("gateAgentAssign");
+const gateAssignWarn = document.getElementById("gateAssignWarn");
 const hyp01El = document.getElementById("hyp01");
 const hyp02El = document.getElementById("hyp02");
 const phaseLabelEl = document.getElementById("phaseLabel");
@@ -131,7 +131,9 @@ const state = {
   activeAgent: null,
   turnPhase: "準備",
   paceMode: "normal",
-  engineMode: "switch-1",
+  engineMode: "per-agent",
+  /** @type {Record<"00"|"01"|"02", string> | null} */
+  agentModels: null,
 };
 
 const engineRef = { current: null };
@@ -143,8 +145,7 @@ let agentEngineMap = null;
 let loadedEngines = [];
 let catalogAvail = null;
 let loadingModel = false;
-let pickerBuilt = false;
-let modePickerBuilt = false;
+let assignPickerBuilt = false;
 
 function getPace() {
   return PACE_PRESETS[state.paceMode] || PACE_PRESETS.normal;
@@ -171,12 +172,32 @@ function syncPaceButton() {
   btnPace.title = "表示ペース: " + getPace().label + " → 次は " + PACE_PRESETS[next].label;
 }
 
+function assignmentShortLabel() {
+  const map = state.agentModels || agentEngineMap;
+  if (!map) return getActiveModel().shortLabel;
+  const bits = AGENT_IDS.map((id) => {
+    const key = map[id]?.model?.key || map[id]?.key || map[id];
+    const m =
+      (map[id] && map[id].model) ||
+      resolveModel(typeof key === "string" ? key : "") ||
+      null;
+    return m ? m.shortLabel : "?";
+  });
+  const uniq = [...new Set(bits)];
+  if (uniq.length === 1) return "00/01/02=" + uniq[0];
+  return (
+    "00=" +
+    bits[0] +
+    " · 01=" +
+    bits[1] +
+    " · 02=" +
+    bits[2]
+  );
+}
+
 function setBadge(mode) {
   if (mode === "llm") {
-    const em = resolveEngineMode(state.engineMode);
-    const m = getActiveModel();
-    const modeBit = em ? em.shortLabel : state.engineMode;
-    engineBadge.textContent = "LLM · " + modeBit + " · " + m.shortLabel;
+    engineBadge.textContent = "LLM · " + assignmentShortLabel();
     engineBadge.className = "llm";
   } else {
     engineBadge.textContent = "TEMPLATE";
@@ -679,7 +700,10 @@ function clampYesNo(raw) {
 }
 
 function forceYesNo(raw, origin, question) {
-  return clampYesNo(raw) || answerYesNoFallback(origin, question);
+  const clamped = clampYesNo(raw);
+  if (clamped) return clamped;
+  // Template: identity-match only (no taxonomy). LLM garbled output: same last resort.
+  return answerYesNoFallback(origin, question);
 }
 
 function cleanJapaneseLine(raw, maxLen) {
@@ -812,21 +836,28 @@ async function agent00Answer(question) {
 
   const fb = answerYesNoFallback(state.origin, question);
   const system =
-    "あなたは AGENT-00。役割（ORIGIN）は不変の真実「" +
+    "あなたは AGENT-00。ORIGIN（不変の真実）は「" +
     state.origin +
     "」。" +
-    "質問に ORIGIN だけを根拠に答えよ。" +
+    "はい／いいえ質問に、ORIGIN と一般的な常識・分類（例: 人間は動物か）に基づき正直に答えよ。" +
+    "字面の一致だけに頼らず、カテゴリ・性質・役割として妥当なら「はい」。" +
+    "ORIGIN と矛盾するなら「いいえ」。嘘・はぐらかし禁止。" +
     structuredOutRule() +
-    "発言行は「はい」か「いいえ」の1語のみ。";
-  const user = "質問: 「" + question + "」";
+    "思考行で簡潔に理由。発言行は「はい」か「いいえ」の1語のみ。";
+  const user =
+    "ORIGIN: 「" +
+    state.origin +
+    "」\n質問: 「" +
+    question +
+    "」\n常識に照らして正直に。発言ははい／いいえのみ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
-    temperature: 0.15,
-    max_tokens: 60,
-    top_p: 0.7,
+    temperature: 0.1,
+    max_tokens: 80,
+    top_p: 0.6,
     fallbackText: fb,
-    fallbackThink: "ORIGIN と照合する",
+    fallbackThink: "ORIGIN と常識で判断する（テンプレート時は文言一致のみ）",
   });
 
   const answer = forceYesNo(streamed.speak || streamed.raw, state.origin, question);
@@ -1105,20 +1136,12 @@ function endGame() {
 async function bootNarrative() {
   appendChatBubble("sys", "DIGITAL TATTOO — interrogation online");
   if (state.mode === "llm") {
-    const em = resolveEngineMode(state.engineMode);
+    appendChatBubble("sys", "engines: " + assignmentShortLabel());
+  } else {
     appendChatBubble(
       "sys",
-      "engine mode: " +
-        (em ? em.label : state.engineMode) +
-        " · " +
-        (state.engineMode === "triple-1.5"
-          ? "00→A / 01→B / 02→C · " + getActiveModel().id
-          : state.engineMode === "strong-weak"
-            ? "00=1.5B · 01/02=0.5B"
-            : getActiveModel().id)
+      "engine: template fallback（AGENT-00 は文言一致のみ。カテゴリ推論には LLM を読み込んでください）"
     );
-  } else {
-    appendChatBubble("sys", "engine: template fallback");
   }
   appendSpeech(
     "00",
@@ -1288,7 +1311,7 @@ function tryAudio() {
 }
 inputEl.addEventListener("focus", tryAudio, { once: true });
 
-// ── Model gate ───────────────────────────────────────────
+// ── Model gate (per-agent assignment) ────────────────────
 
 function enterFallback(reason) {
   state.mode = "fallback";
@@ -1300,7 +1323,7 @@ function enterFallback(reason) {
   gateLoad.hidden = true;
   gateHint.innerHTML =
     "下の <strong>テンプレートで続行</strong> でゲームを開始できます。<br>" +
-    "LLM を使う場合はモデル配置後に再読み込み（公開: CI の 1.5B / 手元: <code>npm run fetch-model</code>）。";
+    "GitHub Pages は軽量 (0.5B) のみ（CI）。標準 (1.5B) のフル LLM は Netlify / ローカル（<code>npm run fetch-model</code>）。";
   gateActions.classList.add("show");
   if (gateSkip) gateSkip.hidden = false;
 }
@@ -1311,204 +1334,148 @@ function usableTag(usable) {
   return "非推奨";
 }
 
-function buildModePicker() {
-  if (!gateModePick || modePickerBuilt) return;
-  modePickerBuilt = true;
-  gateModePick.innerHTML = "";
-  const selected = getSelectedEngineMode();
-  for (const m of listEngineModes()) {
-    const label = document.createElement("label");
-    label.className = "gate-mode-opt";
-    label.dataset.mode = m.id;
+function shortMissReason(reason) {
+  const r = String(reason || "このホストにファイルがありません");
+  return r.length > 72 ? r.slice(0, 70) + "…" : r;
+}
 
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "engineModePick";
-    input.value = m.id;
-    if (m.id === selected) input.checked = true;
+function buildAssignPicker() {
+  if (!gateAgentAssign || assignPickerBuilt) return;
+  assignPickerBuilt = true;
+  gateAgentAssign.innerHTML = "";
+  const assignments = getAgentAssignments();
 
-    const body = document.createElement("span");
-    body.className = "opt-body";
-    const lab = document.createElement("span");
-    lab.className = "opt-label";
-    lab.textContent = m.label;
-    if (m.experimental) {
-      const tag = document.createElement("span");
-      tag.className = "opt-tag exp";
-      tag.textContent = "実験";
-      lab.appendChild(document.createTextNode(" "));
-      lab.appendChild(tag);
+  for (const agent of AGENT_IDS) {
+    const col = document.createElement("div");
+    col.className = "gate-agent-col";
+    col.dataset.agent = agent;
+
+    const title = document.createElement("div");
+    title.className = "agent-col-title";
+    title.textContent = "AGENT-" + agent;
+    col.appendChild(title);
+
+    for (const m of listModels()) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gate-model-box";
+      btn.dataset.agent = agent;
+      btn.dataset.model = m.key;
+      btn.setAttribute("role", "radio");
+      btn.setAttribute("aria-checked", assignments[agent] === m.key ? "true" : "false");
+
+      const lab = document.createElement("span");
+      lab.className = "box-label";
+      lab.textContent = m.label;
+      if (m.isDefault) {
+        const tag = document.createElement("span");
+        tag.className = "opt-tag rec";
+        tag.textContent = "推奨";
+        lab.appendChild(document.createTextNode(" "));
+        lab.appendChild(tag);
+      }
+
+      const hint = document.createElement("span");
+      hint.className = "box-hint";
+      hint.textContent =
+        "≈" +
+        m.sizeMB +
+        " MB · VRAM ≈" +
+        Math.round(m.vramMB / 100) / 10 +
+        " GB · " +
+        usableTag(m.usable);
+
+      const miss = document.createElement("span");
+      miss.className = "box-miss";
+      miss.hidden = true;
+
+      btn.appendChild(lab);
+      btn.appendChild(hint);
+      btn.appendChild(miss);
+      col.appendChild(btn);
     }
-    if (m.recommended) {
-      const tag = document.createElement("span");
-      tag.className = "opt-tag rec";
-      tag.textContent = "推奨";
-      lab.appendChild(document.createTextNode(" "));
-      lab.appendChild(tag);
-    }
-    const hint = document.createElement("span");
-    hint.className = "opt-hint";
-    hint.textContent = m.hint;
-    const miss = document.createElement("span");
-    miss.className = "opt-miss";
-    miss.hidden = true;
-
-    body.appendChild(lab);
-    body.appendChild(hint);
-    body.appendChild(miss);
-    label.appendChild(input);
-    label.appendChild(body);
-    gateModePick.appendChild(label);
+    gateAgentAssign.appendChild(col);
   }
 }
 
-async function syncModePickerUI() {
-  if (!gateModePick) return;
-  buildModePicker();
-  const mode = getSelectedEngineMode();
-  const checks = await Promise.all(
-    listEngineModes().map(async (m) => {
-      const r = await isEngineModeAvailable(m.id, catalogAvail || undefined);
-      return [m.id, r];
-    })
-  );
-  const byId = new Map(checks);
-
-  for (const el of gateModePick.querySelectorAll(".gate-mode-opt")) {
-    const id = el.dataset.mode;
-    const input = el.querySelector('input[type="radio"]');
-    const missEl = el.querySelector(".opt-miss");
-    const info = byId.get(id);
-    const available = !!(info && info.ok);
-    el.classList.toggle("selected", mode === id && available);
-    el.classList.toggle("unavailable", !available);
-    input.disabled = !available || loadingModel;
-    input.checked = mode === id;
-    if (!available) {
-      missEl.hidden = false;
-      missEl.textContent = info?.reason || "利用不可";
-    } else {
-      missEl.hidden = true;
-    }
+function syncAssignWarn(assignments) {
+  if (!gateAssignWarn) return;
+  const keys = uniqueAssignmentKeys(assignments);
+  const vram = estimateAssignmentVramMB(assignments);
+  const parts = [];
+  if (keys.length >= 2) {
+    parts.push(
+      "異なるモデル " +
+        keys.length +
+        " 種 → エンジン " +
+        keys.length +
+        " 本（同じ選択は共有）。目安 VRAM 合計 ≈" +
+        Math.round(vram / 100) / 10 +
+        " GB。"
+    );
   }
-
-  if (gateModeWarn) {
-    const em = resolveEngineMode(mode);
-    if (em && em.warn && byId.get(mode)?.ok) {
-      gateModeWarn.hidden = false;
-      gateModeWarn.textContent = em.warn;
-    } else {
-      gateModeWarn.hidden = true;
-      gateModeWarn.textContent = "";
-    }
+  if (keys.includes("hq")) {
+    parts.push("高精度 (3B) は VRAM ≈2.5 GB。統合GPUでは読み込み失敗することがあります。");
+  }
+  if (vram >= 3500) {
+    parts.push("VRAM 合計が高めです。落ちる場合は全エージェントを標準 (1.5B) か軽量に揃えてください。");
+  }
+  if (parts.length) {
+    gateAssignWarn.hidden = false;
+    gateAssignWarn.textContent = parts.join(" ");
+  } else {
+    gateAssignWarn.hidden = true;
+    gateAssignWarn.textContent = "";
   }
 }
 
-function buildModelPicker() {
-  if (!gateModelPick || pickerBuilt) return;
-  pickerBuilt = true;
-  gateModelPick.innerHTML = "";
-  const selected = getSelectedModelKey();
-  for (const m of listModels()) {
-    const label = document.createElement("label");
-    label.className = "gate-model-opt";
-    label.dataset.model = m.key;
-
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "modelPick";
-    input.value = m.key;
-    if (m.key === selected) input.checked = true;
-
-    const body = document.createElement("span");
-    body.className = "opt-body";
-    const lab = document.createElement("span");
-    lab.className = "opt-label";
-    lab.textContent = m.label;
-    const hint = document.createElement("span");
-    hint.className = "opt-hint";
-    hint.textContent =
-      "≈" +
-      m.sizeMB +
-      " MB · VRAM ≈" +
-      Math.round(m.vramMB / 100) / 10 +
-      " GB · " +
-      usableTag(m.usable);
-    const miss = document.createElement("span");
-    miss.className = "opt-miss";
-    miss.hidden = true;
-
-    body.appendChild(lab);
-    body.appendChild(hint);
-    body.appendChild(miss);
-    label.appendChild(input);
-    label.appendChild(body);
-    gateModelPick.appendChild(label);
+async function syncAssignPickerUI() {
+  if (!gateAgentAssign) return;
+  buildAssignPicker();
+  let assignments = getAgentAssignments();
+  if (catalogAvail) {
+    assignments = setAgentAssignments(
+      coerceAssignmentsToAvailable(assignments, catalogAvail)
+    );
   }
-}
-
-function modelPickerRelevant() {
-  const mode = getSelectedEngineMode();
-  // triple locks to 1.5B; strong-weak uses fixed pair; switch-1 needs model pick
-  return mode === "switch-1";
-}
-
-async function syncModelPickerUI() {
-  if (!gateModelPick) return;
-  buildModelPicker();
-  const key = getSelectedModelKey();
   const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
-  const showModels = modelPickerRelevant();
-  gateModelPick.hidden = !showModels;
-  gateModelPick.setAttribute("aria-hidden", showModels ? "false" : "true");
-  const modelSectionLabel = document.getElementById("gateModelSectionLabel");
-  if (modelSectionLabel) modelSectionLabel.hidden = !showModels;
 
-  for (const el of gateModelPick.querySelectorAll(".gate-model-opt")) {
-    const k = el.dataset.model;
-    const input = el.querySelector('input[type="radio"]');
-    const missEl = el.querySelector(".opt-miss");
-    const info = byKey.get(k);
-    const available = !!(info && info.available);
-    el.classList.toggle("selected", key === k && available);
-    el.classList.toggle("unavailable", !available);
-    input.disabled = !available || loadingModel || !showModels;
-    input.checked = key === k;
+  for (const btn of gateAgentAssign.querySelectorAll(".gate-model-box")) {
+    const agent = btn.dataset.agent;
+    const key = btn.dataset.model;
+    const info = byKey.get(key);
+    const available = catalogAvail ? !!(info && info.available) : true;
+    const selected = assignments[agent] === key;
+    btn.classList.toggle("selected", selected && available);
+    btn.classList.toggle("unavailable", !available);
+    btn.disabled = !available || loadingModel;
+    btn.setAttribute("aria-checked", selected && available ? "true" : "false");
+    const missEl = btn.querySelector(".box-miss");
     if (!available) {
       missEl.hidden = false;
-      missEl.textContent = info?.reason || "ファイルなし";
+      missEl.textContent = shortMissReason(info?.reason);
     } else {
       missEl.hidden = true;
+      missEl.textContent = "";
     }
   }
 
-  const modeOk = (await isEngineModeAvailable(getSelectedEngineMode(), catalogAvail || undefined))
-    .ok;
-  const selected = byKey.get(key);
-  const needModel = showModels ? !!selected?.available : modeOk;
-  gateLoad.disabled = loadingModel || !needModel || !modeOk;
+  syncAssignWarn(assignments);
+  const check = await areAssignmentsAvailable(assignments, catalogAvail || undefined);
+  gateLoad.disabled = loadingModel || !check.ok;
   gateLoad.hidden = false;
+  gateLoad.textContent = "読み込む";
 }
 
-async function applyEngineModeChoice(modeId) {
-  setSelectedEngineMode(modeId);
-  if (modeId === "triple-1.5" || modeId === "strong-weak") {
-    setSelectedModelKey("default");
-  }
-  await syncModePickerUI();
-  await syncModelPickerUI();
-}
-
-function applyModelChoice(key) {
-  setSelectedModelKey(key);
-  syncModelPickerUI();
+function applyAgentModelChoice(agent, modelKey) {
+  setAgentAssignment(agent, modelKey);
+  syncAssignPickerUI();
 }
 
 async function enterLlm() {
-  const mode = getSelectedEngineMode();
+  const assignments = getAgentAssignments();
   loadingModel = true;
-  await syncModePickerUI();
-  await syncModelPickerUI();
+  await syncAssignPickerUI();
   gateLoad.disabled = true;
   gateLoad.textContent = "読み込み中…";
 
@@ -1519,7 +1486,6 @@ async function enterLlm() {
     setGateProgress(label, progress);
   };
 
-  // Tear down any previous engines
   if (loadedEngines.length) {
     await unloadAllEngines(loadedEngines);
     loadedEngines = [];
@@ -1529,31 +1495,16 @@ async function enterLlm() {
   llmRouter = null;
   agentEngineMap = null;
 
-  let result;
-  if (mode === "triple-1.5") {
-    setGateProgress("1.5B×3 エンジンを順に読み込み…", 0);
-    result = await loadTripleEngines("default", onProgress);
-    setSelectedModelKey("default");
-    loadedEngines = [result.engines.A, result.engines.B, result.engines.C];
-    engineRef.current = result.engines.A;
-  } else if (mode === "strong-weak") {
-    setGateProgress("強(1.5B) + 弱(0.5B) を読み込み…", 0);
-    result = await loadStrongWeakEngines(onProgress);
-    setSelectedModelKey("default");
-    loadedEngines = [result.engines.strong, result.engines.weak];
-    engineRef.current = result.engines.strong;
-  } else {
-    const model = getActiveModel();
-    setGateProgress(model.label + " を取得中…", 0);
-    result = await loadSwitchEngine(model.key, onProgress, engineRef.current);
-    loadedEngines = [result.engines.main];
-    engineRef.current = result.engines.main;
-  }
+  setGateProgress("選択モデルを読み込み…", 0);
+  const result = await loadAgentAssignments(assignments, onProgress);
 
+  loadedEngines = Object.values(result.engines);
+  engineRef.current = result.agentMap["00"].engine;
   agentEngineMap = result.agentMap;
   llmRouter = createAgentLlmRouter(result.agentMap);
   llmQueue = createLlmQueue(engineRef);
   state.engineMode = result.mode;
+  state.agentModels = result.assignments;
   state.mode = "llm";
   setBadge("llm");
   loadingModel = false;
@@ -1572,42 +1523,28 @@ gateSkip.addEventListener("click", () => {
   finishBoot();
 });
 
-if (gateModePick) {
-  gateModePick.addEventListener("change", async (e) => {
-    const t = e.target;
-    if (!t || t.name !== "engineModePick") return;
-    if (loadingModel || state.ready) return;
-    await applyEngineModeChoice(t.value);
-    const em = resolveEngineMode(t.value);
+if (gateAgentAssign) {
+  gateAgentAssign.addEventListener("click", (e) => {
+    const btn = e.target.closest(".gate-model-box");
+    if (!btn || btn.disabled || loadingModel || state.ready) return;
+    applyAgentModelChoice(btn.dataset.agent, btn.dataset.model);
+    const m = resolveModel(btn.dataset.model);
     gateMsg.textContent =
-      (em ? em.label : t.value) +
-      " を選択。「モデルを読み込む」を押してください。";
+      "AGENT-" +
+      btn.dataset.agent +
+      " → " +
+      (m ? m.label : btn.dataset.model) +
+      "。「読み込む」を押してください。";
   });
 }
 
-gateModelPick.addEventListener("change", (e) => {
-  const t = e.target;
-  if (!t || t.name !== "modelPick") return;
-  if (loadingModel || state.ready) return;
-  applyModelChoice(t.value);
-  gateMsg.textContent = getActiveModel().label + " を選択。「モデルを読み込む」を押してください。";
-});
-
 gateLoad.addEventListener("click", async () => {
   if (loadingModel || state.ready) return;
-  const mode = getSelectedEngineMode();
-  const modeCheck = await isEngineModeAvailable(mode, catalogAvail || undefined);
-  if (!modeCheck.ok) {
-    gateMsg.textContent = modeCheck.reason || "このモードは使えません。";
+  const assignments = getAgentAssignments();
+  const check = await areAssignmentsAvailable(assignments, catalogAvail || undefined);
+  if (!check.ok) {
+    gateMsg.textContent = check.reason || "選択したモデルがありません。";
     return;
-  }
-  if (mode === "switch-1") {
-    const key = getSelectedModelKey();
-    const info = (catalogAvail || []).find((m) => m.key === key);
-    if (!info?.available) {
-      gateMsg.textContent = info?.reason || "モデルがありません。";
-      return;
-    }
   }
   try {
     await enterLlm();
@@ -1615,7 +1552,7 @@ gateLoad.addEventListener("click", async () => {
   } catch (e) {
     console.error(e);
     loadingModel = false;
-    gateLoad.textContent = "モデルを読み込む";
+    gateLoad.textContent = "読み込む";
     if (loadedEngines.length) {
       await unloadAllEngines(loadedEngines);
       loadedEngines = [];
@@ -1624,38 +1561,50 @@ gateLoad.addEventListener("click", async () => {
     llmRouter = null;
     llmQueue = null;
     agentEngineMap = null;
-    await syncModePickerUI();
-    await syncModelPickerUI();
+    await syncAssignPickerUI();
 
-    const failedTriple = mode === "triple-1.5" || (e && e.code === "TRIPLE_LOAD_FAILED");
-    if (failedTriple) {
-      setSelectedEngineMode(SAFE_ENGINE_MODE);
-      await applyEngineModeChoice(SAFE_ENGINE_MODE);
+    const msg = explainLoadError(e);
+    if (e && (e.code === "AGENT_ASSIGN_LOAD_FAILED" || /VRAM|メモリ|memory/i.test(String(e.message || e)))) {
+      const safeKey = getDefaultModelKey();
+      const safe = {
+        "00": safeKey,
+        "01": safeKey,
+        "02": safeKey,
+      };
+      if (catalogAvail) {
+        const coerced = coerceAssignmentsToAvailable(safe, catalogAvail);
+        setAgentAssignments(coerced);
+      } else {
+        setAgentAssignments(safe);
+      }
+      await syncAssignPickerUI();
+      const label = resolveModel(safeKey)?.label || safeKey;
       gateMsg.textContent =
-        (e && e.message ? e.message : "1.5B×3 に失敗") +
-        " → 「推奨: 単一エンジン切替」に切り替えました。もう一度「モデルを読み込む」を押すか、テンプレートで続行できます。";
+        msg +
+        " → 全エージェントを " +
+        label +
+        " に揃えました。もう一度「読み込む」か、テンプレートで続行できます。";
       gateLoad.disabled = false;
-      gateLoad.textContent = "モデルを読み込む";
+      gateLoad.textContent = "読み込む";
       gateActions.classList.add("show");
       if (gateSkip) gateSkip.hidden = false;
       return;
     }
 
-    enterFallback(
-      "モデル読み込みに失敗しました。「テンプレートで続行」が使えます。（" +
-        (e.message || "error") +
-        "）"
-    );
+    enterFallback(msg);
   }
 });
 
 async function init() {
-  gateHint.innerHTML =
-    "モデルは <code>public/models/</code> に配置。<br>" +
-    "既定 1.5B: <code>npm run fetch-model</code> · 軽量 <code>:lite</code> · 高精度 <code>:hq</code><br>" +
-    "実験の <strong>1.5B×3</strong> はディスクコピー不要（同じ重みを3ランタイム）。VRAM ≈4GB+ 推奨。";
-  buildModePicker();
-  buildModelPicker();
+  const pages = isGitHubPagesHost();
+  gateHint.innerHTML = pages
+    ? "GitHub Pages では <strong>軽量 (0.5B)</strong> が既定（最大シャード≈65 MB）。" +
+      "標準 (1.5B) はシャード≈111 MB のため Pages では読めません — Netlify / ローカル向け。<br>" +
+      "同じモデルを選んだエージェントはエンジンを共有します。"
+    : "同一オリジンの <code>models/</code> のみ。標準 (1.5B) 推奨 · 軽量 (0.5B) · 高精度 (3B)。<br>" +
+      "取得: <code>npm run fetch-model</code> / <code>:lite</code> / <code>:hq</code> · Pages 向けは <code>fetch-model:pages</code>。<br>" +
+      "同じモデルを選んだエージェントはエンジンを共有します。";
+  buildAssignPicker();
   updateHud();
   setControlsVisible(false);
   syncPaceButton();
@@ -1669,47 +1618,29 @@ async function init() {
 
   setGateProgress("ローカルモデルを確認…", 0.02);
   catalogAvail = await listModelAvailability();
-  let key = getSelectedModelKey();
-  const byKey = new Map(catalogAvail.map((m) => [m.key, m]));
-  if (!byKey.get(key)?.available) {
-    const preferred =
-      catalogAvail.find((m) => m.key === getDefaultModelKey() && m.available) ||
-      catalogAvail.find((m) => m.available);
-    if (!preferred) {
-      await syncModePickerUI();
-      await syncModelPickerUI();
-      enterFallback(
-        (byKey.get(getDefaultModelKey())?.reason ||
-          "モデルデータがありません。") +
-          " 「テンプレートで続行」で遊べます。"
-      );
-      return;
-    }
-    key = preferred.key;
-    setSelectedModelKey(key);
+  const any = catalogAvail.some((m) => m.available);
+  if (!any) {
+    await syncAssignPickerUI();
+    enterFallback(
+      (pages
+        ? "Pages 用の 0.5B がまだありません（CI 配置待ちの可能性）。"
+        : "利用可能なモデルファイルがありません。") +
+        "「テンプレートで続行」で遊べます。"
+    );
+    return;
   }
 
-  // Default preference: experimental triple when available; else safest mode
-  let mode = getSelectedEngineMode();
-  const modeCheck = await isEngineModeAvailable(mode, catalogAvail);
-  if (!modeCheck.ok) {
-    const tripleOk = (await isEngineModeAvailable("triple-1.5", catalogAvail)).ok;
-    mode = tripleOk ? "triple-1.5" : SAFE_ENGINE_MODE;
-    setSelectedEngineMode(mode);
-  }
-
-  await applyEngineModeChoice(getSelectedEngineMode());
-  setGateProgress("モードとモデルを選んで読み込んでください", 0);
+  setAgentAssignments(coerceAssignmentsToAvailable(getAgentAssignments(), catalogAvail));
+  await syncAssignPickerUI();
+  setGateProgress("エージェントごとに LLM を選んで読み込んでください", 0);
   gatePct.textContent = "—";
-  const em = resolveEngineMode(getSelectedEngineMode());
+  const defLabel = resolveModel(getDefaultModelKey())?.label || "モデル";
   gateMsg.textContent =
-    (em ? em.label : "モード") +
-    " が選択可能です。「モデルを読み込む」を押してください。" +
-    (getSelectedEngineMode() === "triple-1.5"
-      ? "（実験: VRAM 不足ならタブが落ちることがあります）"
-      : "");
+    "AGENT-00 / 01 / 02 にモデルを割り当て、「読み込む」を押してください（既定: " +
+    defLabel +
+    "）。";
   gateLoad.disabled = false;
-  gateLoad.textContent = "モデルを読み込む";
+  gateLoad.textContent = "読み込む";
   gateActions.classList.add("show");
 }
 

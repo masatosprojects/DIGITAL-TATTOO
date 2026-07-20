@@ -1,8 +1,11 @@
 # Deploy DIGITAL TATTOO to GitHub Pages.
-# Default = smartest usable model: Qwen2.5-1.5B (~840 MB) — fetched in CI only.
-# Do not commit public/models binaries.
-# lite (0.5B) / hq (3B ≈1.7 GB) are NOT fetched in CI (Pages soft ~1 GB).
-# Full pack (~2.8 GB): Netlify / self-host via npm run fetch-model:all.
+# Practical pack: lite (0.5B) only — max shard ≈65 MB, fits Pages soft ~1 GB
+# and avoids Cache.add failures from 1.5B shards ≈111 MB.
+# 1.5B / 3B: selectable when files exist (Netlify / 公開準備.bat full pack).
+# Override to fetch more: repo var FETCH_MODELS=pages|default|all
+#   or workflow_dispatch "model_pack" input.
+#
+# Full 0.5+1.5+3B: 公開準備.bat / npm run prepare-publish:all (Netlify / self-host).
 #
 # One-time setup (repo Settings):
 #   1. Settings → Pages → Build and deployment → Source: GitHub Actions
@@ -11,8 +14,8 @@
 #
 # Site URL (project Pages): https://<user>.github.io/<repo>/
 #
-# WebLLM requires weights under models/<id>/resolve/main/ (same-origin only;
-# never Hugging Face at runtime). fetch-model + verify-models enforce this.
+# WebLLM requires weights under models/<id>/resolve/main/ (same-origin only).
+# UI greys out missing / Pages-unsafe models at runtime — not hard-coded forever.
 
 name: Deploy GitHub Pages
 
@@ -20,6 +23,16 @@ on:
   push:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      model_pack:
+        description: "Models to fetch (lite=Pages-safe; pages=lite; default=1.5B; all=0.5+1.5+3B)"
+        type: choice
+        options:
+          - lite
+          - pages
+          - default
+          - all
+        default: lite
 
 permissions:
   contents: read
@@ -33,7 +46,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,33 +60,87 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Default 1.5B only (~840 MB). lite/hq are optional / Netlify self-host.
-      # Must write models/<id>/resolve/main/ (WebLLM URL layout) — verify fails otherwise.
-      - name: Fetch default WebLLM model (1.5B) into public/models
-        run: npm run fetch-model
+      - name: Fetch WebLLM models into public/models
+        env:
+          FETCH_MODELS: ${{ vars.FETCH_MODELS }}
+        run: |
+          PACK="${{ github.event.inputs.model_pack }}"
+          if [ -z "$PACK" ] || [ "$PACK" = "null" ]; then
+            PACK="${FETCH_MODELS:-lite}"
+          fi
+          echo "Model pack: $PACK"
+          case "$PACK" in
+            all)
+              npm run fetch-model:all
+              ;;
+            default|1.5b)
+              npm run fetch-model
+              ;;
+            pages|lite|0.5b|*)
+              npm run fetch-model:pages
+              ;;
+          esac
 
       - name: Verify model layout (resolve/main + shards)
-        run: npm run verify-models
+        env:
+          FETCH_MODELS: ${{ vars.FETCH_MODELS }}
+        run: |
+          PACK="${{ github.event.inputs.model_pack }}"
+          if [ -z "$PACK" ] || [ "$PACK" = "null" ]; then
+            PACK="${FETCH_MODELS:-lite}"
+          fi
+          case "$PACK" in
+            all)
+              npm run verify-models -- --require-lite --require-hq
+              ;;
+            default|1.5b)
+              npm run verify-models
+              ;;
+            *)
+              npm run verify-models -- --require-lite --allow-missing-default
+              ;;
+          esac
 
-      # Explicit Pages base (repo name is case-sensitive on github.io)
       - name: Build static site
         env:
           VITE_BASE: /${{ github.event.repository.name }}/
         run: npm run build
 
       - name: Verify dist/models is complete
-        run: npm run verify-models -- dist
-
-      # Fail the job if the path the browser will request is missing (would be a live 404)
-      - name: Assert Pages model config path exists in dist
+        env:
+          FETCH_MODELS: ${{ vars.FETCH_MODELS }}
         run: |
-          CFG="dist/models/Qwen2.5-1.5B-Instruct-q4f16_1-MLC/resolve/main/mlc-chat-config.json"
-          WASM="dist/models/libs/Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm"
-          test -f "$CFG" || { echo "FAIL missing $CFG (browser would 404)"; exit 1; }
-          test -f "$WASM" || { echo "FAIL missing $WASM"; exit 1; }
-          grep -q model_type "$CFG" || { echo "FAIL $CFG is not MLC JSON"; exit 1; }
-          echo "OK browser path: /${{ github.event.repository.name }}/models/.../resolve/main/mlc-chat-config.json"
+          PACK="${{ github.event.inputs.model_pack }}"
+          if [ -z "$PACK" ] || [ "$PACK" = "null" ]; then
+            PACK="${FETCH_MODELS:-lite}"
+          fi
+          case "$PACK" in
+            all)
+              npm run verify-models -- dist --require-lite --require-hq
+              ;;
+            default|1.5b)
+              npm run verify-models -- dist
+              ;;
+            *)
+              npm run verify-models -- dist --require-lite --allow-missing-default
+              ;;
+          esac
+
+      - name: Assert browser model paths exist in dist
+        run: |
+          CFG05="dist/models/Qwen2.5-0.5B-Instruct-q4f16_1-MLC/resolve/main/mlc-chat-config.json"
+          WASM05="dist/models/libs/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm"
+          if [ -f "$CFG05" ]; then
+            test -f "$WASM05" || { echo "FAIL missing $WASM05"; exit 1; }
+            grep -q model_type "$CFG05" || { echo "FAIL $CFG05 not MLC JSON"; exit 1; }
+            echo "OK lite (0.5B) present"
+          fi
+          CFG15="dist/models/Qwen2.5-1.5B-Instruct-q4f16_1-MLC/resolve/main/mlc-chat-config.json"
+          if [ -f "$CFG15" ]; then
+            echo "NOTE: 1.5B present in dist (may fail Cache.add on live Pages)"
+          fi
           du -sh dist/models
+          echo "OK site base: /${{ github.event.repository.name }}/models/.../resolve/main/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

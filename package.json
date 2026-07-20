@@ -7,6 +7,7 @@
   "scripts": {
     "fetch-model": "node scripts/fetch-model.mjs",
     "fetch-model:lite": "node scripts/fetch-model.mjs lite",
+    "fetch-model:pages": "node scripts/fetch-model.mjs lite",
     "fetch-model:hq": "node scripts/fetch-model.mjs hq",
     "fetch-model:plus": "node scripts/fetch-model.mjs default",
     "fetch-model:all": "node scripts/fetch-model.mjs --all",
@@ -15,8 +16,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "serve": "vite preview --host",
-    "prepare-publish": "npm install && npm run fetch-model && npm run verify-models && npm run build && npm run verify-models -- dist",
-    "prepare-publish:all": "npm install && npm run fetch-model:all && npm run verify-models && npm run build && npm run verify-models -- dist"
+    "prepare-publish": "npm install && npm run fetch-model:all && npm run verify-models -- --require-lite --require-hq && npm run build && npm run verify-models -- dist --require-lite --require-hq",
+    "prepare-publish:pages": "npm install && npm run fetch-model:pages && npm run verify-models -- --require-lite --allow-missing-default && npm run build && npm run verify-models -- dist --require-lite --allow-missing-default",
+    "prepare-publish:all": "npm run prepare-publish"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "0.2.84"

@@ -8,15 +8,15 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 | 順位 | key | model_id | ディスク | VRAM目安 | 日本語 | usable | 既定 |
 |------|-----|----------|----------|----------|--------|--------|------|
 | 1 | `hq` | `Qwen2.5-3B-Instruct-q4f16_1-MLC` | ≈**1.7 GB** | ≈**2.5 GB** | ★★★ 最も自然 | **maybe** | — |
-| 2 | `default` | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | ≈**840 MB** | ≈**1.6 GB** | ★★ 実用十分 | **yes** | **★ CI/推奨** |
-| 3 | `lite` | `Qwen2.5-0.5B-Instruct-q4f16_1-MLC` | ≈**280 MB** | ≈**0.95 GB** | ★ 短文向き | **yes** | 弱GPU用 |
+| 2 | `default` | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | ≈**840 MB** | ≈**1.6 GB** | ★★ 実用十分 | **yes** | **★ Netlify/ローカル推奨** |
+| 3 | `lite` | `Qwen2.5-0.5B-Instruct-q4f16_1-MLC` | ≈**280 MB** | ≈**0.95 GB** | ★ 短文向き | **yes** | **★ GitHub Pages CI** |
 
 ### usable の正直評価
 
 | key | 判定 | 理由 |
 |-----|------|------|
-| `default` (1.5B) | **yes** | 一般的な WebGPU ノート（専用GPU / 余裕のある iGPU）で安定。Pages 1 GB ソフト枠内。 |
-| `lite` (0.5B) | **yes** | 弱GPUでも動きやすい。ただし質問・議論の日本語は崩れやすい。 |
+| `default` (1.5B) | **yes** | Netlify / ローカル向け。最大シャード ≈**111 MB**（`params_shard_0.bin`）のため **GitHub Pages では Cache.add が失敗しやすい**。 |
+| `lite` (0.5B) | **yes** | **Pages CI 既定**。最大シャード ≈65 MB。弱GPUでも動きやすいが日本語は崩れやすい。 |
 | `hq` (3B) | **maybe** | 品質は最良候補だが ≈2.5 GB VRAM・≈1.7 GB 配信。統合GPUや Pages では現実的でないことが多い。 |
 | 7B 級 | **no** | WebLLM にビルドはあるが ≈5 GB VRAM・数 GB 配信 → 本作品のブラウザ前提から除外。 |
 
@@ -26,7 +26,7 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 - **1.5B**: 尋問ゲーム用途では「十分に読める日本語」。長文の論理一貫性や固有表現はまだ弱い。
 - **3B**: 1.5B より明らかに自然で指示追従も良いが、クラウド級の流暢さではない。ブラウザ小型量子化の上限に近い。
 
-**既定を 1.5B にした理由:** 「実際に使える中で最も賢い」＝ 3B は多くのユーザーで VRAM/容量が厳しいため、推奨デフォルトは 1.5B。0.5B は軽量オプションとして残す。
+**既定の使い分け:** Netlify / ローカルは 1.5B（実用日本語）。GitHub Pages は 0.5B（シャードが 100 MB 未満・サイト≈1 GB 以内）。0.5B は軽量フォールバックでもある。
 
 ### ライセンス
 
@@ -66,15 +66,17 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 
 ## デプロイどれを載せるか
 
-| 構成 | サイズ | GitHub Pages | 推奨ホスト |
-|------|--------|--------------|------------|
-| **default のみ (1.5B)** | ≈840 MB | **OK（CI 既定）** | Pages / Netlify |
-| lite 追加 | +≈280 MB ≈1.1 GB | きつめ・超過しやすい | Netlify |
-| hq 追加 | +≈1.7 GB | **不可寄り** | Netlify / 自前 |
-| **全パック** | ≈**2.8 GB** | **不可** | Netlify / 自前のみ |
+| 構成 | サイズ | 最大シャード | GitHub Pages | 推奨ホスト |
+|------|--------|--------------|--------------|------------|
+| **lite のみ (0.5B)** | ≈280 MB | ≈**65 MB** | **OK（CI 既定）** | **Pages** |
+| **default のみ (1.5B)** | ≈840 MB | ≈**111 MB** | **不可寄り**（Cache.add network error） | **Netlify / ローカル** |
+| lite + default | ≈1.1 GB | 111 MB | 不可 | Netlify |
+| hq 追加 | +≈1.7 GB | 大 | **不可** | Netlify / 自前 |
+| **全パック** | ≈**2.8 GB** | 大 | **不可** | Netlify / 自前のみ |
 
-複数の大型モデルを Pages に載せないこと。CI は **default のみ**。  
-`triple-1.5` は Pages の default だけで試せる（追加ダウンロード不要・VRAM だけ厳しい）。
+**重要:** 1.5B の `params_shard_0.bin` ≈111 MB は Pages の目安 100 MB/ファイルを超え、WebLLM の `Cache.add()` が network error になりやすい。CI は **`npm run fetch-model:pages`（= lite）** のみ。フル LLM が必要なら Netlify か `npm run fetch-model` のローカル。
+
+キャッシュは WebLLM `cacheBackend: "indexeddb"`（Cache API の Cache.add を回避）。
 
 ## `js/llm.js` — 使う API
 

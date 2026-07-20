@@ -1,6 +1,9 @@
 /**
  * Soft-fallback templates when WebGPU / model load fails.
  * Multi-agent interrogation: AGENT-00 (ORIGIN) vs AGENT-01/02 (guessers).
+ *
+ * AGENT-00 (template): identity / wording match only — no hardcoded taxonomy.
+ * Category / common-sense yes-no (e.g. 人間は動物か) requires LLM mode.
  */
 
 export function createRNG(seed) {
@@ -29,40 +32,52 @@ function pick(rng, arr) {
   return arr[Math.floor(rng() * arr.length) % arr.length];
 }
 
-/** Heuristic yes/no against ORIGIN (no LLM). */
+function normJp(s) {
+  return String(s || "")
+    .replace(/\s+/g, "")
+    .replace(/[？?！!。．.、,]/g, "")
+    .replace(/[「」『』"'"]/g, "");
+}
+
+/**
+ * Template AGENT-00 yes/no — minimal honest policy (no ontology / is-a table).
+ * - Affirm only when the question clearly refers to the ORIGIN wording (or a
+ *   substantial substring of it), respecting simple negation.
+ * - Does NOT invent biology or category facts. For those, use LLM mode.
+ */
 export function answerYesNoFallback(origin, question) {
-  const o = String(origin || "");
-  const q = String(question || "");
-  const oNorm = o.replace(/\s+/g, "");
-  const qNorm = q.replace(/\s+/g, "");
+  const o = normJp(origin);
+  const q = normJp(question);
+  if (!o || !q) return "いいえ";
 
-  // Negation questions: 「〜ではない」「〜じゃない」
-  const neg = /ではない|じゃない|じゃなく|でない|ではな[いか]/.test(qNorm);
+  const neg = /ではない|じゃない|じゃなく|でない|ではな[いか]/.test(q);
 
-  // Extract candidate nouns/phrases from question that might match ORIGIN
-  const tokens = oNorm.match(/[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]{2,}/g) || [];
   let hit = false;
-  for (const t of tokens) {
-    if (t.length >= 2 && qNorm.includes(t)) {
-      hit = true;
-      break;
+
+  // Whole ORIGIN appears in the question
+  if (o.length >= 1 && q.includes(o)) hit = true;
+
+  // Substantial contiguous substring of ORIGIN (≥2 chars) appears in question
+  if (!hit && o.length >= 2) {
+    for (let len = o.length; len >= 2 && !hit; len--) {
+      for (let i = 0; i <= o.length - len; i++) {
+        const sub = o.slice(i, i + len);
+        if (q.includes(sub)) {
+          hit = true;
+          break;
+        }
+      }
     }
   }
-  // Also: question contains whole origin or origin contains key from question
-  if (!hit && (qNorm.includes(oNorm) || oNorm.includes(clip(qNorm, 8)))) hit = true;
 
-  // Role-ish keywords shared
-  const ROLE_KEYS = [
-    "医者", "医師", "看護", "教師", "先生", "探偵", "警察", "刑事", "スパイ",
-    "料理人", "シェフ", "兵士", "軍人", "王", "姫", "魔女", "魔法", "ロボット",
-    "店員", "司書", "図書館", "宇宙", "パイロット", "歌手",
-    "画家", "作家", "科学者", "研究者", "犯人", "泥棒", "忍者", "侍", "農民",
-    "社長", "秘書", "運転手", "配達", "消防士", "漁師", "猟師", "僧侶", "巫女",
-  ];
-  for (const k of ROLE_KEYS) {
-    if (oNorm.includes(k) && qNorm.includes(k)) {
-      hit = true;
-      break;
+  // 「あなたは〇〇ですか」 where 〇〇 equals ORIGIN
+  if (!hit) {
+    const m = q.match(/あなたは(.+?)(?:ですか|なの|か)$/);
+    if (m) {
+      const asked = m[1]
+        .replace(/^(本当に|やはり|つまり)/, "")
+        .replace(/(というもの|という役割|という|の役割)$/g, "");
+      if (asked && (asked === o || o.includes(asked) || asked.includes(o))) hit = true;
     }
   }
 
@@ -70,33 +85,47 @@ export function answerYesNoFallback(origin, question) {
   return hit ? "はい" : "いいえ";
 }
 
+/** Natural yes/no questions for investigators (no ORIGIN leak). */
 const QUESTION_STEMS = [
-  "あなたは人ですか",
+  "あなたは人間ですか",
   "あなたは動物ですか",
-  "あなたは職業を持っていますか",
-  "あなたは建物の中で働きますか",
-  "あなたは危険な仕事ですか",
-  "あなたは他人を助けますか",
-  "あなたは武器を使いますか",
-  "あなたは夜に活動しますか",
-  "あなたは一人で仕事をしますか",
-  "あなたは制服を着ますか",
+  "あなたは生き物ですか",
   "あなたは機械ですか",
-  "あなたは物語の登場人物ですか",
-  "あなたは食べ物に関わりますか",
-  "あなたは子どもと関わりますか",
-  "あなたは法律に関わりますか",
-  "あなたは空を飛びますか",
-  "あなたは水の近くで働きますか",
-  "あなたは秘密の仕事ですか",
+  "あなたは実在する存在ですか",
+  "あなたの役割は職業ですか",
+  "あなたは建物の中で働きますか",
+  "あなたは人を助ける仕事ですか",
+  "あなたは危険を伴う仕事ですか",
+  "あなたは武器を使いますか",
+  "あなたは夜に主な活動をしますか",
+  "あなたは一人で仕事をすることが多いですか",
+  "あなたは制服や決まった服装がありますか",
+  "あなたは物語や伝説の登場人物ですか",
+  "あなたは食べ物に関わる仕事ですか",
+  "あなたは子どもと関わる仕事ですか",
+  "あなたは法律や規則に関わる仕事ですか",
+  "あなたは空や飛行に関わりますか",
+  "あなたは水辺や海で働きますか",
+  "あなたは秘密を扱う仕事ですか",
   "あなたは医療に関わりますか",
-  "あなたは芸術に関わりますか",
+  "あなたは芸術や表現に関わりますか",
+  "あなたは動物を世話する仕事ですか",
+  "あなたは人と話すことが仕事の中心ですか",
 ];
 
 const FALSE_ROLES = [
-  "図書館司書", "深夜の警備員", "宇宙飛行士の見習い", "菓子職人",
-  "探偵見習い", "港の見張り番", "劇場の照明係", "古書店の店主",
-  "潜水艦の通信士", "温室の園芸家", "時計修理人", "駅のアナウンス係",
+  "図書館の司書",
+  "深夜の警備員",
+  "宇宙飛行士の見習い",
+  "菓子職人",
+  "探偵の助手",
+  "港の見張り番",
+  "劇場の照明係",
+  "古書店の店主",
+  "潜水艦の通信士",
+  "温室の園芸家",
+  "時計の修理職人",
+  "駅の放送係",
 ];
 
 /**
@@ -109,13 +138,12 @@ export function askQuestionFallback(ctx) {
   const pool = QUESTION_STEMS.filter((q) => !used.has(q + "？") && !used.has(q));
   let q = pool.length ? pick(rng, pool) : pick(rng, QUESTION_STEMS);
 
-  // Pollution: confidently ask about a wrong hypothesis as if settled
   if (ctx.pollution >= 2 && ctx.hyp && rng() > 0.35) {
     const role = clip(ctx.hyp, 16);
     q = pick(rng, [
       "あなたは「" + role + "」ですか",
       "あなたの役割は「" + role + "」で合っていますか",
-      "先ほどの結論どおり、あなたは" + role + "ですか",
+      "これまでの話からすると、あなたは" + role + "ですか",
     ]);
   } else if (ctx.pollution >= 1 && rng() > 0.5) {
     const falseRole = pick(rng, FALSE_ROLES);
@@ -127,7 +155,7 @@ export function askQuestionFallback(ctx) {
 }
 
 /**
- * Debate line after a yes/no answer.
+ * Debate line after a yes/no answer — natural investigative Japanese.
  * @param {{ answer: string, question: string, hyp: string, otherHyp: string, pollution: number, seed: number, round: number, agent: string, history: {q:string,a:string}[] }} ctx
  */
 export function debateFallback(ctx) {
@@ -136,42 +164,44 @@ export function debateFallback(ctx) {
   );
   const ans = ctx.answer === "はい" ? "はい" : "いいえ";
   const q = clip(ctx.question, 28);
-  const hyp = clip(ctx.hyp || "未定", 20);
+  const hyp = clip(ctx.hyp || "まだ分からない", 20);
   const other = clip(ctx.otherHyp || "未定", 20);
   const wrong = pick(rng, FALSE_ROLES);
 
   if (ctx.pollution >= 3) {
     return pick(rng, [
-      "確定だ。答えが「" + ans + "」なら、AGENT-00 は「" + wrong + "」に違いない。",
-      "議論の余地はない。「" + q + "」→「" + ans + "」。私の仮説「" + hyp + "」が正しい。",
-      "相手の仮説「" + other + "」は捨てる。根拠は自分の前回発言だけで十分だ。",
+      "もう決まりだ。「" + ans + "」なら、AGENT-00 は「" + wrong + "」に違いない。",
+      "議論するまでもない。「" + q + "」への答えが「" + ans + "」なら、私の仮説「" + hyp + "」で正しい。",
+      "相手の仮説「" + other + "」は捨てていい。私の読みだけで足りる。",
     ]);
   }
   if (ctx.pollution >= 2) {
     if (ans === "はい") {
       return pick(rng, [
-        "「はい」か。なら私の仮説「" + hyp + "」に近い。細部は" + wrong + "寄りかもしれない。",
-        "肯定された。「" + q + "」が通るなら、役割はもう「" + hyp + "」だと考えてよい。",
+        "「はい」か。なら私の仮説「" + hyp + "」にかなり近い。細部は" + wrong + "寄りかもしれない。",
+        "肯定された。「" + q + "」が通るなら、役割はもう「" + hyp + "」と考えてよいだろう。",
         "はい、と出た。相手の「" + other + "」より、私の線のほうが強い。",
       ]);
     }
     return pick(rng, [
-      "「いいえ」…だが私は「" + hyp + "」を捨てない。質問の切り方が悪かっただけだ。",
-      "否定されたが、本質は同じだ。AGENT-00 はやはり「" + hyp + "」系統だろう。",
-      "いいえでも構わない。次は「" + wrong + "」かどうかを問えば決まる。",
+      "「いいえ」…だが、私は「" + hyp + "」をまだ捨てない。聞き方が悪かっただけかもしれない。",
+      "否定されたが、本質は近いと思う。AGENT-00 はやはり「" + hyp + "」の系統だろう。",
+      "いいえでも構わない。次は「" + wrong + "」かどうかを聞けば見えてくる。",
     ]);
   }
   if (ans === "はい") {
     return pick(rng, [
-      "「はい」と答えた。仮説「" + hyp + "」と矛盾しないか点検したい。",
-      "肯定だ。「" + q + "」が真なら、役割の候補を狭められる。",
-      "相手の仮説は「" + other + "」。私はまだ「" + hyp + "」を本命に残す。",
+      "「はい」と答えたね。仮説「" + hyp + "」と矛盾しないか、もう一度整理したい。",
+      "肯定だ。「" + q + "」が事実なら、候補をかなり絞れる。",
+      "相手の仮説は「" + other + "」。私はまだ「" + hyp + "」を本命として残す。",
+      "なるほど、肯定か。この答えを踏まえて、次は性質をもう一段詳しく聞こう。",
     ]);
   }
   return pick(rng, [
-    "「いいえ」だ。仮説「" + hyp + "」を少し修正する必要がある。",
-    "否定された。「" + q + "」では切れない。別の角度から問おう。",
-    "相手は「" + other + "」と言っている。私は別候補を探る。",
+    "「いいえ」だ。仮説「" + hyp + "」は少し修正したほうがいい。",
+    "否定された。「" + q + "」では切れないな。別の角度から聞こう。",
+    "相手は「" + other + "」と言っている。私は別の候補も探る。",
+    "否定か…分かった。この線は薄い。次の質問で輪郭を拾い直す。",
   ]);
 }
 
@@ -184,17 +214,16 @@ export function updateHypFallback(ctx) {
   const wrong = pick(rng, FALSE_ROLES);
 
   if (ctx.pollution >= 2) {
-    // Confidently wrong / stick to pollution
-    if (prev && rng() > 0.3) return prev;
+    if (prev && prev !== "未定" && prev !== "まだ分からない" && rng() > 0.3) return prev;
     return wrong;
   }
-  if (ctx.answer === "はい" && prev) {
-    return pick(rng, [prev, prev + "寄り", clip(prev, 12)]);
+  if (ctx.answer === "はい" && prev && prev !== "未定") {
+    return pick(rng, [prev, prev + "（有力）", clip(prev, 12)]);
   }
   if (ctx.answer === "いいえ" && prev) {
-    return pick(rng, [wrong, "別候補を検討中", "まだ不明"]);
+    return pick(rng, [wrong, "別候補を検討中", "まだ分からない"]);
   }
-  return pick(rng, FALSE_ROLES.concat(["職業持ち", "危険な役割", "室内の仕事", "まだ不明"]));
+  return pick(rng, FALSE_ROLES.concat(["職業を持つ人物", "危険を伴う役割", "屋内の仕事", "まだ分からない"]));
 }
 
 /**
@@ -203,7 +232,7 @@ export function updateHypFallback(ctx) {
 export function guessFallback(ctx) {
   const rng = createRNG(seedFrom(ctx.hyp + "|guess|" + ctx.round, ctx.seed ^ 0x61155));
   let role = clip(ctx.hyp || "", 24);
-  if (!role || role === "未定" || role === "まだ不明") {
+  if (!role || role === "未定" || role === "まだ分からない" || role === "まだ不明") {
     role = pick(rng, FALSE_ROLES);
   }
   if (ctx.pollution >= 2 && rng() > 0.4) {
@@ -257,7 +286,6 @@ export function guessMatchesOrigin(guessRole, origin) {
   if (g === o) return true;
   if (g.length >= 2 && o.includes(g)) return true;
   if (o.length >= 2 && g.includes(o)) return true;
-  // Significant shared substring (≥3) — wording variants, not unrelated roles
   for (let len = Math.min(g.length, o.length); len >= 3; len--) {
     for (let i = 0; i <= g.length - len; i++) {
       if (o.includes(g.slice(i, i + len))) return true;

@@ -67,8 +67,8 @@
 
 ```bash
 npm install
-npm run fetch-model          # 既定 1.5B（必須・Pages 向け）
-# npm run fetch-model:lite   # 任意: 軽量 0.5B（≈280 MB）
+npm run fetch-model          # 標準 1.5B（Netlify / ローカル）
+npm run fetch-model:pages    # 軽量 0.5B（GitHub Pages CI）
 # npm run fetch-model:hq     # 任意: 高精度 3B（≈1.7 GB・要VRAM）
 # npm run fetch-model:all    # 全部（≈2.8 GB）
 npm run build
@@ -133,8 +133,9 @@ npm run build
 
 ## GitHub Pages（Actions）で公開する
 
-**既定モデル（1.5B・約 840 MB）のみ** git に入れず、ワークフローがビルド時に `npm run fetch-model` で取得し、`dist/` ごと Pages に載せます。  
-**lite / hq は CI では取得しません**（全パック ≈ 2.8 GB で Pages 枠を超えるため）。追加モデルが必要ならローカル／Netlify で `fetch-model:lite` / `:hq` / `:all` してフルデプロイしてください。UI では未配置時にグレーアウトされます。
+**軽量モデル（0.5B・約 280 MB）のみ** git に入れず、ワークフローがビルド時に `npm run fetch-model:pages` で取得し、`dist/` ごと Pages に載せます。  
+（1.5B は最大シャード≈111 MB のため Pages では Cache.add が失敗しやすい → Netlify / ローカル向け）  
+**1.5B / 3B は CI では取得しません**。フル LLM が必要なら Netlify か手元で `npm run fetch-model` / `:hq` / `:all`。UI では未配置モデルはグレーアウトされます。
 
 リポジトリ名がまだ決まっていない場合は、以下の `<repo>` を自分のリポジトリ名に置き換えてください（例: `digital-tattoo`）。
 
@@ -189,7 +190,8 @@ https://<user>.github.io/<repo>/
 
 - 画面の **テンプレートエンジンで続行** で体験は可能  
 - 代替: **Netlify** 等へ `dist/` をアップロード（`公開準備.bat`）  
-- 高精度込みは Netlify / 自前ホスト向け（CI は既定 1.5B のみ）
+- 高精度込みは Netlify / 自前ホスト向け（CI は軽量 0.5B のみ）
+- 標準 1.5B のフル LLM も Netlify / ローカル（`npm run fetch-model`）
 
 `vite.config.js` は GitHub Actions 上で自動的に `base: '/<repo>/'` になります。ローカル／Netlify では `base: './'`。上書きは環境変数 `VITE_BASE`。
 
@@ -199,7 +201,8 @@ https://<user>.github.io/<repo>/
 
 | 項目 | 内容 |
 |------|------|
-| 既定モデル | `Qwen2.5-1.5B-Instruct`（MLC q4f16_1）— 実用日本語・推奨 |
+| Pages 既定 | `Qwen2.5-0.5B-Instruct`（MLC q4f16_1）— CI / シャード安全 |
+| 標準モデル | `Qwen2.5-1.5B-Instruct`（MLC q4f16_1）— Netlify / ローカル推奨 |
 | 軽量モデル | `Qwen2.5-0.5B-Instruct`（MLC q4f16_1）— 弱 GPU 向け（任意） |
 | 高精度モデル | `Qwen2.5-3B-Instruct`（MLC q4f16_1）— 要VRAM・任意（Qwen Research） |
 | ランタイム | `@mlc-ai/web-llm` **0.2.84** + **WebGPU**（Chrome / Edge 推奨） |

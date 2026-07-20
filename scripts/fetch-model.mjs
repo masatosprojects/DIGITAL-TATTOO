@@ -3,8 +3,9 @@
  * so the art can run fully offline from same-origin paths.
  *
  * Usage (needs network once):
- *   npm run fetch-model            # default 1.5B only (~840 MB) — CI / Pages
- *   npm run fetch-model:lite       # 0.5B only (~280 MB)
+ *   npm run fetch-model            # default 1.5B only (~840 MB) — Netlify / local
+ *   npm run fetch-model:pages      # lite 0.5B (~280 MB) — GitHub Pages CI (shard-safe)
+ *   npm run fetch-model:lite       # alias of pages / weak-GPU
  *   npm run fetch-model:hq         # 3B only (~1.7 GB) — Netlify / strong GPU
  *   npm run fetch-model -- --all   # all three (~2.8 GB)
  *   node scripts/fetch-model.mjs lite
@@ -20,10 +21,10 @@
  *   what WebLLM requests — never Hugging Face at runtime.
  *
  * Size honesty (q4f16_1 weights from HF tree, wasm extra):
- *   lite 0.5B  ≈ 280 MB  · VRAM ≈ 0.95 GB · usable yes
- *   default 1.5B ≈ 840 MB · VRAM ≈ 1.6 GB · usable yes ← CI default
- *   hq 3B      ≈ 1.7 GB  · VRAM ≈ 2.5 GB · usable maybe · Pages NO
- *   all three  ≈ 2.8 GB  → far over GitHub Pages soft 1 GB
+ *   lite 0.5B  ≈ 280 MB  · max shard ≈65 MB  · Pages CI OK
+ *   default 1.5B ≈ 840 MB · max shard ≈111 MB · Pages Cache.add fails — Netlify/local
+ *   hq 3B      ≈ 1.7 GB  · Pages NO
+ *   all three  ≈ 2.8 GB  → Netlify / full local only
  */
 
 import fs from "node:fs";
@@ -321,9 +322,10 @@ async function main() {
     present_keys: present,
     approx_size_MB: Math.round(dirSizeBytes(OUT_ROOT) / (1024 * 1024)),
     note:
-      "Runtime loads via same-origin …/resolve/main/ only. CI fetches default (1.5B); lite/hq optional. No HF CDN at runtime.",
+      "Runtime loads via same-origin …/resolve/main/ only. No HF CDN at runtime. " +
+      "Full publish (公開準備.bat): all three. Pages CI: lite+default (~1.1 GB); hq via FETCH_MODELS=all.",
     deploy_size_note:
-      "Default 1.5B ≈ 840 MB (Pages OK). Lite ≈ 280 MB. HQ 3B ≈ 1.7 GB (Pages NO). All ≈ 2.8 GB — Netlify/full local only.",
+      "lite≈280MB + default≈840MB ≈1.1GB (Pages practical). +hq≈1.7GB → all≈2.8GB (Netlify/self-host).",
   };
   await fs.promises.writeFile(
     path.join(OUT_ROOT, "manifest.json"),
