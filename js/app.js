@@ -1255,8 +1255,10 @@ function enterFallback(reason) {
   gateLoad.disabled = true;
   gateLoad.hidden = true;
   gateHint.innerHTML =
-    "テンプレートで起動します。<code>npm run fetch-model</code> 後に再読み込みで LLM 利用可。";
+    "下の <strong>テンプレートで続行</strong> でゲームを開始できます。<br>" +
+    "LLM を使う場合はモデル配置後に再読み込み（公開: CI の 1.5B / 手元: <code>npm run fetch-model</code>）。";
   gateActions.classList.add("show");
+  if (gateSkip) gateSkip.hidden = false;
 }
 
 function usableTag(usable) {
@@ -1401,7 +1403,9 @@ gateLoad.addEventListener("click", async () => {
     gateLoad.textContent = "モデルを読み込む";
     syncModelPickerUI();
     enterFallback(
-      "読み込み失敗。テンプレートで続行可。（" + (e.message || "error") + "）"
+      "モデル読み込みに失敗しました。「テンプレートで続行」が使えます。（" +
+        (e.message || "error") +
+        "）"
     );
   }
 });
@@ -1417,7 +1421,9 @@ async function init() {
   syncPaceButton();
 
   if (!hasWebGPU()) {
-    enterFallback("WebGPU 不可。Chrome / Edge かテンプレートで続行。");
+    enterFallback(
+      "WebGPU が使えません。Chrome / Edge の最新版で開くか、「テンプレートで続行」を押してください。"
+    );
     return;
   }
 
@@ -1431,7 +1437,11 @@ async function init() {
       catalogAvail.find((m) => m.available);
     if (!preferred) {
       syncModelPickerUI();
-      enterFallback(byKey.get(getDefaultModelKey())?.reason || "モデルなし。");
+      enterFallback(
+        (byKey.get(getDefaultModelKey())?.reason ||
+          "モデルデータがありません。") +
+          " 「テンプレートで続行」で遊べます。"
+      );
       return;
     }
     key = preferred.key;

@@ -83,11 +83,14 @@ function checkModel(model, { required }) {
   const wasmPath = path.join(modelsRoot, "libs", model.wasm);
   const legacyFlatConfig = path.join(modelsRoot, model.id, "mlc-chat-config.json");
   const modelDir = path.join(modelsRoot, model.id);
+  const weightsDir = path.join(modelDir, "resolve", "main");
+  const ndarrayCachePath = path.join(weightsDir, "ndarray-cache.json");
 
   if (fs.existsSync(legacyFlatConfig) && !fs.existsSync(configPath)) {
     fail(
       `legacy flat layout detected at models/${model.id}/mlc-chat-config.json. ` +
-        `Re-run npm run fetch-model to migrate into models/${model.id}/resolve/main/`
+        `WebLLM needs models/${model.id}/resolve/main/mlc-chat-config.json — ` +
+        `re-run npm run fetch-model (do not ship flat weights).`
     );
   }
 
@@ -100,9 +103,55 @@ function checkModel(model, { required }) {
           : model.key === "lite"
             ? "run npm run fetch-model:lite"
             : "run npm run fetch-model";
-      fail(`missing ${path.relative(ROOT, configPath)} or wasm — ${hint}`);
+      fail(
+        `missing ${path.relative(ROOT, configPath)} or wasm — ${hint}. ` +
+          `Build must fail if resolve/main config is absent (would 404 on Pages).`
+      );
     }
     return { key: model.key, present: false };
+  }
+
+  // Ensure config is real JSON (not an HTML placeholder)
+  let configRaw;
+  try {
+    configRaw = fs.readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(configRaw);
+    if (!parsed.model_type) {
+      fail(`${path.relative(ROOT, configPath)} lacks model_type — not a valid MLC config`);
+    }
+  } catch (e) {
+    fail(`${path.relative(ROOT, configPath)} is not valid JSON: ${e.message}`);
+  }
+
+  if (!fs.existsSync(ndarrayCachePath)) {
+    fail(`missing ${path.relative(ROOT, ndarrayCachePath)} — incomplete fetch`);
+  }
+
+  let cache;
+  try {
+    cache = JSON.parse(fs.readFileSync(ndarrayCachePath, "utf8"));
+  } catch (e) {
+    fail(`ndarray-cache.json unreadable: ${e.message}`);
+  }
+
+  const dataPaths = new Set();
+  for (const rec of cache.records || []) {
+    if (rec.dataPath) dataPaths.add(rec.dataPath);
+  }
+  if (dataPaths.size === 0) {
+    fail(`${model.id}: ndarray-cache.json has no dataPath records`);
+  }
+  const missingShards = [];
+  for (const rel of dataPaths) {
+    const shardPath = path.join(weightsDir, rel);
+    if (!fs.existsSync(shardPath) || fs.statSync(shardPath).size === 0) {
+      missingShards.push(rel);
+    }
+  }
+  if (missingShards.length) {
+    fail(
+      `${model.id}: missing ${missingShards.length} weight shard(s) e.g. ${missingShards.slice(0, 3).join(", ")}. Re-run fetch-model.`
+    );
   }
 
   const sizeMB = dirSizeBytes(modelDir) / (1024 * 1024);
@@ -113,8 +162,10 @@ function checkModel(model, { required }) {
     );
   }
 
-  console.log(`  [${model.key}] OK  config + wasm · model dir ~${sizeMB.toFixed(0)} MB`);
-  return { key: model.key, present: true, sizeMB };
+  console.log(
+    `  [${model.key}] OK  resolve/main config + wasm + ${dataPaths.size} shards · ~${sizeMB.toFixed(0)} MB`
+  );
+  return { key: model.key, present: true, sizeMB, shards: dataPaths.size };
 }
 
 if (!fs.existsSync(modelsRoot)) {

@@ -14,16 +14,20 @@ import { defineConfig } from "vite";
  * Runtime never fetches Hugging Face / CDN; only same-origin models/.
  */
 function resolveBase() {
+  let base;
   if (process.env.VITE_BASE) {
-    return process.env.VITE_BASE;
-  }
-  if (process.env.GITHUB_ACTIONS && process.env.GITHUB_REPOSITORY) {
+    base = process.env.VITE_BASE;
+  } else if (process.env.GITHUB_ACTIONS && process.env.GITHUB_REPOSITORY) {
+    // Preserve repo case (DIGITAL-TATTOO) — Pages paths are case-sensitive.
     const repo = process.env.GITHUB_REPOSITORY.split("/")[1];
-    if (repo) {
-      return `/${repo}/`;
-    }
+    base = repo ? `/${repo}/` : "./";
+  } else {
+    base = "./";
   }
-  return "./";
+  if (base !== "./" && base !== "." && !base.endsWith("/")) {
+    base += "/";
+  }
+  return base;
 }
 
 export default defineConfig({

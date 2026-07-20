@@ -48,18 +48,32 @@ jobs:
         run: npm ci
 
       # Default 1.5B only (~840 MB). lite/hq are optional / Netlify self-host.
+      # Must write models/<id>/resolve/main/ (WebLLM URL layout) — verify fails otherwise.
       - name: Fetch default WebLLM model (1.5B) into public/models
         run: npm run fetch-model
 
-      - name: Verify model layout (resolve/main)
+      - name: Verify model layout (resolve/main + shards)
         run: npm run verify-models
 
-      # vite.config.js sets base to /<repo>/ when GITHUB_ACTIONS + GITHUB_REPOSITORY
+      # Explicit Pages base (repo name is case-sensitive on github.io)
       - name: Build static site
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
         run: npm run build
 
       - name: Verify dist/models is complete
         run: npm run verify-models -- dist
+
+      # Fail the job if the path the browser will request is missing (would be a live 404)
+      - name: Assert Pages model config path exists in dist
+        run: |
+          CFG="dist/models/Qwen2.5-1.5B-Instruct-q4f16_1-MLC/resolve/main/mlc-chat-config.json"
+          WASM="dist/models/libs/Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm"
+          test -f "$CFG" || { echo "FAIL missing $CFG (browser would 404)"; exit 1; }
+          test -f "$WASM" || { echo "FAIL missing $WASM"; exit 1; }
+          grep -q model_type "$CFG" || { echo "FAIL $CFG is not MLC JSON"; exit 1; }
+          echo "OK browser path: /${{ github.event.repository.name }}/models/.../resolve/main/mlc-chat-config.json"
+          du -sh dist/models
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

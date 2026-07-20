@@ -7,12 +7,17 @@
  *   resolveModel(idOrKey)     — look up by key or full model_id
  *   getDefaultModelKey()      — smartest *usable* model (1.5B)
  *   getSelectedModelKey() / setSelectedModelKey(key)
+ *   getSelectedEngineMode() / setSelectedEngineMode(mode)
  *   probeModel / isModelAvailable / listModelAvailability
  *   loadModel(idOrKey, opts)  — unload previous, load selected, persist preference
- *   createLlmQueue(engineRef)
+ *   createEngine(modelKey, opts)
+ *   loadTripleEngines(modelKey, onProgress)  — 1.5B × 3 runtime engines (same disk files)
+ *   loadStrongWeakEngines(onProgress)        — 00=1.5B, 01/02=0.5B
+ *   generateWithEngine(engine, messages, opts)
+ *   createLlmQueue(engineRef) / createAgentLlmRouter(binding)
  *
  * Keep catalog in sync with scripts/fetch-model.mjs (web-llm 0.2.84).
- * See MODELS.md for ranking, deploy sizes, and fluency honesty.
+ * See MODELS.md for ranking, deploy sizes, engine modes, and fluency honesty.
  */
 
 import { CreateMLCEngine } from "@mlc-ai/web-llm";
@@ -151,9 +156,35 @@ export function resolveModel(idOrKey) {
   return null;
 }
 
+/**
+ * Same-origin `models/` root. Must survive GitHub project Pages quirks:
+ * - absolute base `/DIGITAL-TATTOO/` (CI) even when the page URL has no trailing slash
+ * - relative base `./` on domain roots — resolve against the page *directory*
+ *   (…/DIGITAL-TATTOO without slash is a directory, not a file)
+ */
 export function modelsBase() {
-  const viteBase = import.meta.env.BASE_URL || "./";
-  return new URL("models/", new URL(viteBase, window.location.href)).href;
+  const raw = import.meta.env.BASE_URL || "./";
+  let base;
+  if (raw === "./" || raw === "." || raw === "") {
+    const path = window.location.pathname;
+    let dir;
+    if (path.endsWith("/")) {
+      dir = path;
+    } else {
+      const last = path.split("/").pop() || "";
+      // Strip only real files (index.html); bare /repo names are directories on Pages
+      dir = last.includes(".")
+        ? path.replace(/\/[^/]*$/, "/") || "/"
+        : path + "/";
+    }
+    base = new URL(dir, window.location.origin);
+  } else {
+    base = new URL(raw, window.location.href);
+  }
+  if (!base.pathname.endsWith("/")) {
+    base.pathname += "/";
+  }
+  return new URL("models/", base).href;
 }
 
 export function getSelectedModelKey() {
@@ -213,22 +244,57 @@ export function hasWebGPU() {
   return typeof navigator !== "undefined" && !!navigator.gpu;
 }
 
-function missingReason(model) {
+function missingReason(model, configUrl) {
+  const pathHint = configUrl
+    ? " 期待パス: " + configUrl.replace(/^https?:\/\/[^/]+/, "")
+    : "";
   if (model.key === "hq") {
     return (
-      "高精度用ファイルがありません。公開者が `npm run fetch-model:hq` " +
-      "（または `fetch-model:all`）を実行してください。≈1.7 GB・要VRAM。"
+      "高精度モデルがこの公開に含まれていません（≈1.7 GB）。" +
+      "「テンプレートで続行」で遊べます。配布に含める場合は公開者が `npm run fetch-model:hq`。" +
+      pathHint
     );
   }
   if (model.key === "lite") {
     return (
-      "軽量モデルがありません。公開者が `npm run fetch-model:lite` を実行してください。"
+      "軽量モデルがこの公開に含まれていません。" +
+      "標準モデルを選ぶか、「テンプレートで続行」を使ってください。" +
+      "（公開者: `npm run fetch-model:lite`）" +
+      pathHint
     );
   }
   return (
-    "ローカルモデルが見つかりません（models/…/resolve/main/）。" +
-    "`npm run fetch-model` のあと再読み込みしてください。"
+    "モデルデータが読めません（models/…/resolve/main/mlc-chat-config.json）。" +
+    "GitHub Pages では CI が 1.5B を配置します。しばらく待つか「テンプレートで続行」を使ってください。" +
+    pathHint
   );
+}
+
+/** HEAD can fail on some hosts; fall back to a tiny ranged GET. */
+async function probeWasm(wasmUrl) {
+  try {
+    const head = await fetch(wasmUrl, { method: "HEAD", cache: "no-cache" });
+    if (head.ok) {
+      const ct = (head.headers.get("content-type") || "").toLowerCase();
+      if (ct.includes("text/html")) return { ok: false };
+      return { ok: true };
+    }
+  } catch (_) {
+    /* try GET */
+  }
+  try {
+    const get = await fetch(wasmUrl, {
+      method: "GET",
+      cache: "no-cache",
+      headers: { Range: "bytes=0-15" },
+    });
+    if (!(get.ok || get.status === 206)) return { ok: false };
+    const ct = (get.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("text/html")) return { ok: false };
+    return { ok: true };
+  } catch (_) {
+    return { ok: false };
+  }
 }
 
 /**
@@ -250,13 +316,15 @@ export async function probeModel(modelOrKey) {
   try {
     const [c, w] = await Promise.all([
       fetch(configUrl, { method: "GET", cache: "no-cache" }),
-      fetch(wasmUrl, { method: "HEAD", cache: "no-cache" }),
+      probeWasm(wasmUrl),
     ]);
     if (!c.ok || !w.ok) {
       return {
         ok: false,
         model,
-        reason: missingReason(model),
+        reason: missingReason(model, configUrl),
+        configUrl,
+        wasmUrl,
       };
     }
     const ct = (c.headers.get("content-type") || "").toLowerCase();
@@ -266,7 +334,10 @@ export async function probeModel(modelOrKey) {
         ok: false,
         model,
         reason:
-          "モデル設定が JSON ではありません（配置不足の可能性）。公開準備.bat で dist/models を作り直してください。",
+          "モデル設定が JSON ではありません（404 の HTML フォールバックの可能性）。" +
+          "「テンプレートで続行」で遊べます。配置: models/…/resolve/main/",
+        configUrl,
+        wasmUrl,
       };
     }
     return { ok: true, model, configUrl, wasmUrl };
@@ -274,7 +345,12 @@ export async function probeModel(modelOrKey) {
     return {
       ok: false,
       model,
-      reason: "ローカルモデルの確認に失敗しました: " + (e && e.message ? e.message : String(e)),
+      reason:
+        "ローカルモデルの確認に失敗しました。「テンプレートで続行」が使えます。（" +
+        (e && e.message ? e.message : String(e)) +
+        "）",
+      configUrl,
+      wasmUrl,
     };
   }
 }
