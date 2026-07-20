@@ -391,7 +391,10 @@ export async function loadModel(idOrKey, opts = {}) {
   return { engine, model };
 }
 
-/** Serialize LLM calls — WebLLM is single-flight per engine. */
+/**
+ * Serialize LLM calls — WebLLM is single-flight per engine.
+ * Supports streaming via opts.onDelta(delta, fullSoFar) when stream !== false.
+ */
 export function createLlmQueue(engineRef) {
   let chain = Promise.resolve();
 
@@ -399,14 +402,33 @@ export function createLlmQueue(engineRef) {
     const run = async () => {
       const engine = engineRef.current;
       if (!engine) throw new Error("LLM engine not ready");
-      const reply = await engine.chat.completions.create({
+      const wantStream = opts.stream !== false && typeof opts.onDelta === "function";
+      const base = {
         messages,
         temperature: opts.temperature ?? 0.7,
         max_tokens: opts.max_tokens ?? 120,
         top_p: opts.top_p ?? 0.9,
+      };
+
+      if (!wantStream) {
+        const reply = await engine.chat.completions.create(base);
+        const text = reply?.choices?.[0]?.message?.content;
+        return String(text || "").trim();
+      }
+
+      const chunks = await engine.chat.completions.create({
+        ...base,
+        stream: true,
       });
-      const text = reply?.choices?.[0]?.message?.content;
-      return String(text || "").trim();
+      let full = "";
+      for await (const chunk of chunks) {
+        const delta = chunk?.choices?.[0]?.delta?.content;
+        if (delta) {
+          full += delta;
+          opts.onDelta(delta, full);
+        }
+      }
+      return String(full || "").trim();
     };
     const next = chain.then(run, run);
     chain = next.catch(() => {});

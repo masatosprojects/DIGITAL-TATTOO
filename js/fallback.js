@@ -198,7 +198,7 @@ export function updateHypFallback(ctx) {
 }
 
 /**
- * Formal guess string 「AGENT-00 の役割は〇〇である」
+ * Formal guess string 「あなたは〇〇です。」
  */
 export function guessFallback(ctx) {
   const rng = createRNG(seedFrom(ctx.hyp + "|guess|" + ctx.round, ctx.seed ^ 0x61155));
@@ -209,36 +209,55 @@ export function guessFallback(ctx) {
   if (ctx.pollution >= 2 && rng() > 0.4) {
     role = pick(rng, FALSE_ROLES);
   }
-  return "AGENT-00 の役割は" + role + "である";
+  return formatGuess(role);
 }
 
-/** Normalize free text into a formal guess line. */
+/** Normalize free text into formal guess: 「あなたは〇〇です。」 */
 export function formatGuess(roleText) {
   let r = String(roleText || "").trim();
-  r = r.replace(/^AGENT-00\s*の役割は/, "").replace(/である[。.]?$/, "").trim();
+  r = r
+    .replace(/^あなたは/, "")
+    .replace(/^AGENT-00\s*の役割は/, "")
+    .replace(/(です|だ|である)[。.]?$/, "")
+    .trim();
   r = clip(r, 40);
-  return "AGENT-00 の役割は" + r + "である";
+  return "あなたは" + r + "です。";
 }
 
 /** Extract role from formal guess for comparison. */
 export function extractGuessRole(guessLine) {
-  const m = String(guessLine || "").match(/AGENT-00\s*の役割は(.+?)である/);
+  const s = String(guessLine || "").trim();
+  let m = s.match(/あなたは(.+?)(?:です|だ|である)/);
   if (m) return m[1].trim();
-  return String(guessLine || "")
+  m = s.match(/AGENT-00\s*の役割は(.+?)である/);
+  if (m) return m[1].trim();
+  return s
+    .replace(/^あなたは/, "")
     .replace(/^AGENT-00\s*の役割は/, "")
-    .replace(/である[。.]?$/, "")
+    .replace(/(です|だ|である)[。.]?$/, "")
     .trim();
 }
 
-/** Loose match: guess correct if ORIGIN contains guess or vice versa (short phrases). */
+/** Soft normalize for lenient wording (spaces / です・だ); not for wrong roles. */
+export function normalizeRoleKey(s) {
+  return String(s || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[「」『』"'"]/g, "")
+    .replace(/[。．.！!？?、,/／]/g, "")
+    .replace(/(というもの|という)$/g, "")
+    .replace(/(です|だ|である|であります)$/g, "");
+}
+
+/** Loose match: correct role with slight wording leniency; wrong role stays wrong. */
 export function guessMatchesOrigin(guessRole, origin) {
-  const g = String(guessRole || "").replace(/\s+/g, "");
-  const o = String(origin || "").replace(/\s+/g, "");
+  const g = normalizeRoleKey(guessRole);
+  const o = normalizeRoleKey(origin);
   if (!g || !o) return false;
   if (g === o) return true;
   if (g.length >= 2 && o.includes(g)) return true;
   if (o.length >= 2 && g.includes(o)) return true;
-  // Token overlap: significant shared substring length >= 3
+  // Significant shared substring (≥3) — wording variants, not unrelated roles
   for (let len = Math.min(g.length, o.length); len >= 3; len--) {
     for (let i = 0; i <= g.length - len; i++) {
       if (o.includes(g.slice(i, i + len))) return true;
