@@ -849,7 +849,22 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
   return { ...parts, raw, beatStart };
 }
 
-function clampYesNo(raw) {
+/** AGENT-00's answer vocabulary — a 5-point scale instead of bare yes/no,
+ * so a partial / uncertain match doesn't get forced to either extreme. */
+const ANSWER_LEVELS = Object.freeze([
+  "はい",
+  "どちらかというとはい",
+  "どちらとも言えない",
+  "どちらかというといいえ",
+  "いいえ",
+]);
+/** Regex alternation of the 5 answer phrases, longest-first so a hedge phrase
+ * matches whole rather than being cut short by the bare はい／いいえ inside it. */
+const ANSWER_TOKEN_ALT = ANSWER_LEVELS.slice()
+  .sort((a, b) => b.length - a.length)
+  .join("|");
+
+function clampAnswer(raw) {
   let t = String(raw || "").trim();
   // Prefer the explicit 発言 / 答 line so thinking text cannot flip the answer.
   const speakMatch = t.match(/(?:発言|答(?:え)?)[:：]\s*([^\n]+)/i);
@@ -859,35 +874,50 @@ function clampYesNo(raw) {
     .replace(/\s+/g, "")
     .toLowerCase();
 
-  // Exact / near-exact first (0.5B often echoes just the word).
+  // Exact / near-exact first (0.5B often echoes just the phrase). Hedge /
+  // neutral phrasings must be checked before the bare はい／いいえ patterns
+  // below, since "どちらかというとはい" would also satisfy a loose /はい/ scan.
+  if (/^(どちらかというと|どちらかといえば|やや)(はい|そうです|そうだ)[。．.!！]*$/.test(t)) {
+    return "どちらかというとはい";
+  }
+  if (/^(どちらかというと|どちらかといえば|やや)(いいえ|違います|違う)[。．.!！]*$/.test(t)) {
+    return "どちらかというといいえ";
+  }
+  if (/^(どちらとも言えな|どちらともいえな|何とも言えな|なんとも言えな|分からな|わからな|不明|判断できな)/.test(t)) {
+    return "どちらとも言えない";
+  }
   if (/^(はい|yes|ｙｅｓ|true)[。．.!！]*$/.test(t)) return "はい";
   if (/^(いいえ|いや|no|ｎｏ|false)[。．.!！]*$/.test(t)) return "いいえ";
 
+  const neutral = /どちらとも言えな|どちらともいえな|何とも言えな|なんとも言えな|判断できな/.test(t);
+  if (neutral) return "どちらとも言えない";
+
+  const hedge = /どちらかというと|どちらかといえば|やや|たぶん|おそらく|多分/.test(t);
   const hasYes = /はい|yes|ｙｅｓ|肯定|そうです|そうだ|うん|ええ/.test(t);
   // Avoid bare 「ない」 — it appears inside unrelated phrases and flips answers.
-  const hasNo = /いいえ|いや(?!っ)|(?:^|[^ぁ-ん])no(?:[^a-z]|$)|ｎｏ|否定|違う|ちがう|ではありません|ではない/.test(
+  const hasNo = /いいえ|いや(?!っ)|(?:^|[^ぁ-ん])no(?:[^a-z]|$)|ｎｏ|否定|違[いう]|ちがう|ではありません|ではない/.test(
     t
   );
-  if (hasYes && !hasNo) return "はい";
-  if (hasNo && !hasYes) return "いいえ";
+  if (hasYes && !hasNo) return hedge ? "どちらかというとはい" : "はい";
+  if (hasNo && !hasYes) return hedge ? "どちらかというといいえ" : "いいえ";
   if (hasYes && hasNo) {
     const yi = t.search(/はい|yes|肯定/);
     const ni = t.search(/いいえ|いや|否定|違う|ちがう|ではありません/);
-    if (yi >= 0 && (ni < 0 || yi < ni)) return "はい";
-    if (ni >= 0) return "いいえ";
+    if (yi >= 0 && (ni < 0 || yi < ni)) return hedge ? "どちらかというとはい" : "はい";
+    if (ni >= 0) return hedge ? "どちらかというといいえ" : "いいえ";
   }
   if (/^はい/.test(t) || /^y/.test(t)) return "はい";
   if (/^いいえ/.test(t) || /^いや/.test(t) || /^n/.test(t)) return "いいえ";
   return null;
 }
 
-function forceYesNo(raw, origin, question) {
+function forceAnswer(raw, origin, question) {
   // Clear identity (ORIGIN literally in the question) → reliable path over LLM.
   // Category asks without ORIGIN wording (動物 etc.) still use LLM / clamp.
   if (isClearOriginIdentityAsk(origin, question)) {
     return answerYesNoFallback(origin, question);
   }
-  const clamped = clampYesNo(raw);
+  const clamped = clampAnswer(raw);
   if (clamped) return clamped;
   // Template / garbled LLM only — identity match, never taxonomy dictionary.
   return answerYesNoFallback(origin, question);
@@ -905,6 +935,14 @@ function cleanJapaneseLine(raw, maxLen) {
         ""
       )
       .trim();
+  // Strip a leftover leading list marker ("1. " / "1、" / "1) " — sanitizeJapanese()
+  // drops the "." / ")" but leaves the bare digit glued to the sentence).
+  t = t.replace(/^[0-9０-９]{1,2}\s*/, "");
+  // Strip a leaked self-tag ("エージェント01 あなたは..." — the model naming
+  // itself before its real content; 0.5B does this constantly). Only strip
+  // when more text follows, so a genuine bare-tag echo still falls through
+  // to isBadInvestigatorQuestion / isBadHypothesis and gets templated.
+  t = t.replace(/^エージェント[0-9０-９]{1,2}(?=.)\s*/, "");
   return clip(t, maxLen || 120);
 }
 
@@ -919,8 +957,12 @@ function ensureQuestionMark(q) {
 function isMetaFormatQuestion(q) {
   const t = String(q || "").toLowerCase().replace(/\s+/g, "");
   if (!t) return true;
-  // Bare yes/no is not a question from 01/02.
-  if (/^(はい|いいえ|yes|no)[。．!?？]*$/.test(t)) return true;
+  // Bare answer-level token is not a question from 01/02 (with or without a
+  // leaked speaker tag, e.g. 「エージェント01 はい？」— asker echoing an answer).
+  if (new RegExp("^(" + ANSWER_TOKEN_ALT + "|yes|no)[。．!?？]*$").test(t)) return true;
+  if (new RegExp("^エージェント\\d{0,2}(" + ANSWER_TOKEN_ALT + "|yes|no)[。．!?？]*$").test(t)) {
+    return true;
+  }
   if (
     /はいと?いいえで答|はい\/いいえで答|はい・いいえで答|yes\s*or\s*no|答えさせ|回答形式|形式で答|はいまたはいいえで|「はい」か「いいえ」で答/.test(
       t
@@ -951,9 +993,10 @@ function isHistoryEchoQuestion(q) {
   if (/→|Q&A|履歴|直前の質問|エージェント00の答え/.test(t)) return true;
   if (/\[\s*エージェント\d{0,2}/.test(raw)) return true;
 
-  // Quoted prior Q plus はい/いいえ (with or without closing brackets)
+  // Quoted prior Q plus an answer-level token (はい／いいえ／どちらとも言えない
+  // etc, with or without closing brackets)
   const quoteAsks = (raw.match(/「[^」]*[？?]/g) || []).length;
-  const hasAnswerToken = /「?(はい|いいえ)[」？?。．!！]*/.test(t);
+  const hasAnswerToken = new RegExp("「?(" + ANSWER_TOKEN_ALT + ")[」？?。．!！]*").test(t);
   if (quoteAsks >= 1 && hasAnswerToken) return true;
   if ((raw.match(/「/g) || []).length >= 2 && hasAnswerToken) return true;
 
@@ -961,7 +1004,7 @@ function isHistoryEchoQuestion(q) {
   if (
     /エージェント\d{0,2}/.test(t) &&
     /ですか/.test(t) &&
-    /はい|いいえ/.test(t)
+    (new RegExp(ANSWER_TOKEN_ALT).test(t))
   ) {
     return true;
   }
@@ -972,8 +1015,75 @@ function isHistoryEchoQuestion(q) {
   return false;
 }
 
+/**
+ * Reject literal echoes of the developer instruction text itself (0.5B
+ * often parrots the prompt's own instruction line back as its "answer" —
+ * e.g. 「エージェント00への質問文を1つ作る。？」as a "question", or
+ * 「議論の最初。答えから以下に述べよ。」as a discussion "opinion").
+ * Shared across question / opinion / hypothesis extraction — all three saw
+ * this exact failure mode in testing.
+ */
+const INSTRUCTION_ECHO_PHRASES = [
+  "質問文を1つ作る",
+  "質問文を一つ作る",
+  "履歴と違う内容",
+  "具体的な日本語の質問文",
+  "投げかける",
+  "回答形式の説明",
+  "メタ発言",
+  "1語のみ",
+  "議論の最初",
+  "答えから何が言えるか述べよ",
+];
+function isInstructionEchoText(t) {
+  const s = String(t || "").replace(/\s+/g, "");
+  if (!s) return true;
+  return INSTRUCTION_ECHO_PHRASES.some((p) => s.includes(p));
+}
+
+/**
+ * Detect a leaked "思考:" scratchpad label at the start of text.
+ * sanitizeJapanese() strips the colon (not in the allowed charset), so a
+ * failed 発言:/思考: split shows up as a bare "思考" token glued to the front
+ * of otherwise-unrelated text (e.g. 「1 思考 あなたはまだ分からない。」 when
+ * splitThinkSpeak() couldn't find the 発言: delimiter and the whole raw
+ * completion — including the scratchpad label — was used verbatim).
+ * (思考 only, not 発言: "発言する仕事ですか" etc. are legitimate questions.)
+ */
+function isFormatLeakText(raw) {
+  const t = String(raw || "").replace(/\s+/g, "");
+  return /^\d*思考(?!力)/.test(t);
+}
+
 function isBadInvestigatorQuestion(q) {
-  return isMetaFormatQuestion(q) || isHistoryEchoQuestion(q);
+  return (
+    isMetaFormatQuestion(q) ||
+    isHistoryEchoQuestion(q) ||
+    isInstructionEchoText(q) ||
+    isFormatLeakText(q)
+  );
+}
+
+/**
+ * Reject non-hypothesis "hypothesis" output (0.5B often rambles a narrative
+ * paragraph or echoes the question/history instead of a short role guess).
+ */
+function isBadHypothesis(h, question) {
+  const t = String(h || "").replace(/\s+/g, "");
+  if (!t) return true;
+  if (t.length > 30) return true;
+  if (/[？?]/.test(t)) return true;
+  if (isFormatLeakText(h)) return true;
+  if (isInstructionEchoText(h)) return true;
+  // A hypothesis is a role guess, never an answer-level echo or a speaker-tag leak.
+  if (new RegExp(ANSWER_TOKEN_ALT).test(t)) return true;
+  if (/^エージェント\d{0,2}/.test(t)) return true;
+  if ((t.match(/エージェント\d{0,2}/g) || []).length >= 2) return true;
+  if (question) {
+    const q = String(question).replace(/\s+/g, "");
+    if (q && q.length >= 6 && (t.includes(q.slice(0, 10)) || q.includes(t))) return true;
+  }
+  return false;
 }
 
 function historyBlock(limit = 8) {
@@ -1009,7 +1119,7 @@ function investigatorContext(agent) {
     namingClarityRule() +
     "\nORIGIN は知らされていない。" +
     "あなたと同僚は自由に日本語で話し合う。" +
-    "エージェント00だけが質問に「はい／いいえ」で答える（あなたは答えない）。\n" +
+    "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
     "あなた(" +
     selfName +
     ")の仮説: 「" +
@@ -1114,7 +1224,11 @@ async function agent00Answer(question) {
   const panel = createThinkPanel("00", "思考過程 · エージェント00 が ORIGIN に照合…");
   panel.addSection("ORIGIN (00のみ)", state.origin, "origin");
   panel.addSection("質問", question, "out");
-  panel.addSection("post-process", "clampYesNo（00のみ）→ はい｜いいえ", "warn");
+  panel.addSection(
+    "post-process",
+    "clampAnswer（00のみ）→ " + ANSWER_LEVELS.join(" ｜ "),
+    "warn"
+  );
 
   const fb = answerYesNoFallback(state.origin, question);
   const system =
@@ -1122,29 +1236,31 @@ async function agent00Answer(question) {
     state.origin +
     "」。" +
     namingClarityRule() +
-    "あなただけが「はい」か「いいえ」で答える。質問への判定は ORIGIN と常識のみ。" +
-    "字面一致だけに頼らない。当てはまるならはい、当てはまらないならいいえ。" +
+    "あなただけが質問に答える。判定は ORIGIN と常識のみ、字面一致だけに頼らない。" +
+    "回答は次の5段階から1つだけ選ぶ: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
+    "完全に当てはまるなら「はい」、完全に当てはまらないなら「いいえ」。" +
+    "一部だけ当てはまる・条件次第なら「どちらかというとはい」または「どちらかというといいえ」。" +
+    "判断材料が本当に足りない・五分五分なら「どちらとも言えない」。安易に多用しない。" +
     "嘘・詩・はぐらかし禁止。「代理人」禁止。" +
-    "出力は必ず2行: 思考: （短い理由） 次の行 発言: はい または 発言: いいえ。" +
-    "発言行は「はい」か「いいえ」の1語のみ。";
+    "出力は必ず2行: 思考: （短い理由） 次の行 発言: （上記5つのいずれか1つのみ、他の語は書かない）。";
   const user =
     "ORIGIN = 「" +
     state.origin +
     "」\n質問 = 「" +
     question +
-    "」\n判定して。発言は はい か いいえ のみ。";
+    "」\n5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）から1つだけ選んで判定して。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
     temperature: 0,
-    max_tokens: 64,
+    max_tokens: 80,
     top_p: 0.5,
     fallbackText: fb,
     fallbackThink: "ORIGIN と常識で判定（テンプレート時は文言一致のみ）",
   });
 
-  // clampYesNo / forceYesNo apply ONLY to エージェント00 answers.
-  const answer = forceYesNo(streamed.speak || streamed.raw, state.origin, question);
+  // clampAnswer / forceAnswer apply ONLY to エージェント00 answers.
+  const answer = forceAnswer(streamed.speak || streamed.raw, state.origin, question);
   panel.addSection("clamped", answer, "out");
   panel.collapse();
 
@@ -1195,7 +1311,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "」の意味 (2) 自分の仮説の更新または除外 (3) " +
     partnerName +
     "の仮説への短い反応。" +
-    "あなた自身は「はい」「いいえ」だけで答えない（それはエージェント00の役割）。" +
+    "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
     "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
     structuredOutRule();
   const user =
@@ -1227,7 +1343,9 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     : streamed.raw
       ? cleanJapaneseLine(streamed.raw, 160)
       : null;
-  if (!opinion) opinion = fb;
+  if (!opinion || isInstructionEchoText(opinion) || isFormatLeakText(opinion)) {
+    opinion = fb;
+  }
 
   let newHyp = null;
   const hypSystem =
@@ -1260,7 +1378,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     });
     if (resH && resH.raw) {
       const sp = splitThinkSpeak(resH.raw);
-      newHyp = cleanJapaneseLine(sp.speak || resH.raw, 40);
+      const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
+      if (!isBadHypothesis(candidate, question)) newHyp = candidate;
     }
   }
   if (!newHyp) {

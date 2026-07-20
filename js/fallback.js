@@ -178,14 +178,28 @@ export function askQuestionFallback(ctx) {
 }
 
 /**
- * Debate line after a yes/no answer — natural investigative Japanese.
+ * Classify AGENT-00's 5-point answer into yes-ish / no-ish / neutral, so
+ * template text branches correctly on hedge answers instead of only the
+ * two extremes (ctx.answer can be any of the 5 ANSWER_LEVELS values, even
+ * in this fallback path — a single transient LLM error mid-session falls
+ * back to templates for one turn while the rest of the game stays on LLM).
+ */
+function answerPolarity(answer) {
+  if (answer === "はい" || answer === "どちらかというとはい") return "yes";
+  if (answer === "いいえ" || answer === "どちらかというといいえ") return "no";
+  return "neutral";
+}
+
+/**
+ * Debate line after AGENT-00's 5-point answer — natural investigative Japanese.
  * @param {{ answer: string, question: string, hyp: string, otherHyp: string, pollution: number, seed: number, round: number, agent: string, history: {q:string,a:string}[] }} ctx
  */
 export function debateFallback(ctx) {
   const rng = createRNG(
     seedFrom(ctx.agent + "|" + ctx.answer + "|" + ctx.round + "|" + ctx.question, ctx.seed ^ 0xdeb8)
   );
-  const ans = ctx.answer === "はい" ? "はい" : "いいえ";
+  const ans = ctx.answer || "どちらとも言えない";
+  const polarity = answerPolarity(ans);
   const q = clip(ctx.question, 28);
   const hyp = clip(ctx.hyp || "まだ分からない", 20);
   const other = clip(ctx.otherHyp || "未定", 20);
@@ -199,32 +213,46 @@ export function debateFallback(ctx) {
     ]);
   }
   if (ctx.pollution >= 2) {
-    if (ans === "はい") {
+    if (polarity === "yes") {
       return pick(rng, [
-        "「はい」か。なら私の仮説「" + hyp + "」にかなり近い。細部は" + wrong + "寄りかもしれない。",
-        "肯定された。「" + q + "」が通るなら、エージェント00の役割はもう「" + hyp + "」と考えてよいだろう。",
-        "はい、と出た。同僚の「" + other + "」より、私の線のほうが強い。",
+        "「" + ans + "」か。なら私の仮説「" + hyp + "」にかなり近い。細部は" + wrong + "寄りかもしれない。",
+        "肯定寄りだ。「" + q + "」が通るなら、エージェント00の役割はもう「" + hyp + "」と考えてよいだろう。",
+        ans + "、と出た。同僚の「" + other + "」より、私の線のほうが強い。",
+      ]);
+    }
+    if (polarity === "no") {
+      return pick(rng, [
+        "「" + ans + "」…だが、私は「" + hyp + "」をまだ捨てない。聞き方が悪かっただけかもしれない。",
+        "否定寄りだが、本質は近いと思う。エージェント00 はやはり「" + hyp + "」の系統だろう。",
+        ans + "でも構わない。次は「" + wrong + "」かどうかを聞けば見えてくる。",
       ]);
     }
     return pick(rng, [
-      "「いいえ」…だが、私は「" + hyp + "」をまだ捨てない。聞き方が悪かっただけかもしれない。",
-      "否定されたが、本質は近いと思う。エージェント00 はやはり「" + hyp + "」の系統だろう。",
-      "いいえでも構わない。次は「" + wrong + "」かどうかを聞けば見えてくる。",
+      "「" + ans + "」か…判断材料が足りない。もう少し核心に迫る質問が要る。",
+      "五分五分らしい。「" + hyp + "」も「" + other + "」もまだ両方生きている。",
+      "はっきりしないな。次の質問で白黒つけたい。",
     ]);
   }
-  if (ans === "はい") {
+  if (polarity === "yes") {
     return pick(rng, [
-      "「はい」と答えたね。仮説「" + hyp + "」と矛盾しないか、もう一度整理したい。",
-      "肯定だ。「" + q + "」が事実なら、候補をかなり絞れる。",
+      "「" + ans + "」と答えたね。仮説「" + hyp + "」と矛盾しないか、もう一度整理したい。",
+      "肯定寄りだ。「" + q + "」が事実に近いなら、候補をかなり絞れる。",
       "同僚の仮説は「" + other + "」。私はまだ「" + hyp + "」を本命として残す。",
-      "なるほど、肯定か。この答えを踏まえて、次は性質をもう一段詳しく聞こう。",
+      "なるほど、肯定寄りか。この答えを踏まえて、次は性質をもう一段詳しく聞こう。",
+    ]);
+  }
+  if (polarity === "no") {
+    return pick(rng, [
+      "「" + ans + "」だ。仮説「" + hyp + "」は少し修正したほうがいい。",
+      "否定寄りだ。「" + q + "」では切れないな。別の角度から聞こう。",
+      "同僚は「" + other + "」と言っている。私は別の候補も探る。",
+      "否定寄りか…分かった。この線は薄い。次の質問で輪郭を拾い直す。",
     ]);
   }
   return pick(rng, [
-    "「いいえ」だ。仮説「" + hyp + "」は少し修正したほうがいい。",
-    "否定された。「" + q + "」では切れないな。別の角度から聞こう。",
-    "同僚は「" + other + "」と言っている。私は別の候補も探る。",
-    "否定か…分かった。この線は薄い。次の質問で輪郭を拾い直す。",
+    "「" + ans + "」か。まだどちらとも決めがたい。質問の切り口を変えよう。",
+    "判断が難しいところだ。「" + hyp + "」と「" + other + "」、どちらも候補に残す。",
+    "五分五分では前に進めない。もっと絞り込める聞き方をしよう。",
   ]);
 }
 
@@ -240,11 +268,15 @@ export function updateHypFallback(ctx) {
     if (prev && prev !== "未定" && prev !== "まだ分からない" && rng() > 0.3) return prev;
     return wrong;
   }
-  if (ctx.answer === "はい" && prev && prev !== "未定") {
+  const polarity = answerPolarity(ctx.answer);
+  if (polarity === "yes" && prev && prev !== "未定") {
     return pick(rng, [prev, prev + "（有力）", clip(prev, 12)]);
   }
-  if (ctx.answer === "いいえ" && prev) {
+  if (polarity === "no" && prev) {
     return pick(rng, [wrong, "別候補を検討中", "まだ分からない"]);
+  }
+  if (polarity === "neutral" && prev && prev !== "未定") {
+    return pick(rng, [prev, "まだ分からない", "別候補を検討中"]);
   }
   return pick(rng, FALSE_ROLES.concat(["職業を持つ人物", "危険を伴う役割", "屋内の仕事", "まだ分からない"]));
 }
