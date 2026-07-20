@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DIGITAL TATTOO — 伝言リレー</title>
+    <style>
+        :root {
+            --bg: #050805;
+            --fg: #c8e6c8;
+            --dim: #5a7a5a;
+            --green: #39ff14;
+            --amber: #c8b060;
+            --warn: #c05050;
+            --handoff: #7ec87e;
+            --scan: rgba(57, 255, 20, 0.03);
+            --font: "Cascadia Code", "Consolas", "MS Gothic", "Yu Gothic", "Hiragino Sans", ui-monospace, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--bg);
+            color: var(--fg);
+            font-family: var(--font);
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        #atmosphere {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(ellipse at 20% 10%, rgba(40, 70, 50, 0.18) 0%, transparent 55%),
+                radial-gradient(ellipse at 80% 90%, rgba(30, 50, 40, 0.12) 0%, transparent 50%),
+                repeating-linear-gradient(
+                    0deg,
+                    transparent,
+                    transparent 2px,
+                    var(--scan) 2px,
+                    var(--scan) 4px
+                );
+            opacity: 0.55;
+        }
+
+        #app {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            max-width: 920px;
+            margin: 0 auto;
+            padding: 12px 14px 0;
+        }
+
+        #status {
+            flex: 0 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 12px;
+            font-size: 0.65rem;
+            letter-spacing: 0.12em;
+            color: var(--dim);
+            padding: 4px 2px 8px;
+            border-bottom: 1px solid rgba(90, 122, 90, 0.25);
+            user-select: none;
+        }
+
+        #status .brand {
+            color: var(--green);
+            opacity: 0.75;
+        }
+
+        #coherenceBar {
+            flex: 1;
+            max-width: 180px;
+            height: 3px;
+            background: rgba(90, 122, 90, 0.2);
+            align-self: center;
+            overflow: hidden;
+        }
+
+        #coherenceBar > i {
+            display: block;
+            height: 100%;
+            width: 100%;
+            background: var(--green);
+            transition: width 0.4s ease, background 0.6s ease;
+        }
+
+        #engineBadge {
+            font-size: 0.55rem;
+            letter-spacing: 0.08em;
+            color: var(--dim);
+            white-space: nowrap;
+        }
+        #engineBadge.llm { color: var(--green); opacity: 0.7; }
+        #engineBadge.fallback { color: var(--amber); opacity: 0.85; }
+
+        #originPin {
+            flex: 0 0 auto;
+            font-size: 0.68rem;
+            line-height: 1.45;
+            color: var(--amber);
+            opacity: 0;
+            max-height: 0;
+            overflow: hidden;
+            padding: 0 2px;
+            border-bottom: 1px solid transparent;
+            transition: opacity 0.35s, max-height 0.35s, padding 0.35s;
+        }
+        #originPin.show {
+            opacity: 0.92;
+            max-height: 4.5em;
+            padding: 8px 2px 10px;
+            border-bottom-color: rgba(200, 176, 96, 0.22);
+        }
+        #originPin .tag {
+            color: var(--dim);
+            letter-spacing: 0.1em;
+            font-size: 0.6rem;
+            margin-right: 0.6em;
+        }
+
+        #log {
+            flex: 1 1 auto;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 16px 2px 20px;
+            font-size: clamp(0.82rem, 1.6vw, 0.95rem);
+            line-height: 1.75;
+            word-break: break-word;
+            scroll-behavior: smooth;
+        }
+
+        #log::-webkit-scrollbar { width: 6px; }
+        #log::-webkit-scrollbar-thumb {
+            background: rgba(90, 122, 90, 0.4);
+        }
+
+        .line {
+            margin: 0 0 0.55em;
+            white-space: pre-wrap;
+        }
+
+        .line.system { color: var(--dim); }
+        .line.ai { color: var(--fg); }
+        .line.user { color: var(--amber); }
+        .line.handoff {
+            color: var(--handoff);
+            border-left: 2px solid rgba(126, 200, 126, 0.45);
+            padding-left: 0.55em;
+            margin: 0.85em 0 0.65em;
+            opacity: 0.95;
+        }
+        .line.archive {
+            color: var(--dim);
+            opacity: 0.72;
+            font-size: 0.92em;
+        }
+        .line.corrupt { color: #a8c8a0; }
+        .line.collapse {
+            color: #9ab89a;
+            letter-spacing: 0.02em;
+            animation: flicker 0.55s steps(2) infinite;
+        }
+
+        .agent-tag {
+            color: var(--green);
+            opacity: 0.85;
+            margin-right: 0.35em;
+        }
+
+        .caret {
+            display: inline-block;
+            width: 0.55em;
+            height: 1.05em;
+            background: var(--green);
+            vertical-align: text-bottom;
+            margin-left: 1px;
+            animation: blink 1s step-end infinite;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        @keyframes flicker {
+            0%, 100% { opacity: 0.9; }
+            50% { opacity: 0.55; }
+        }
+
+        #inputRow {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 0;
+            padding: 10px 2px 14px;
+            border-top: 1px solid rgba(90, 122, 90, 0.3);
+            background: rgba(5, 8, 5, 0.92);
+        }
+
+        #promptMark {
+            color: var(--green);
+            font-size: 0.95rem;
+            user-select: none;
+            padding-right: 6px;
+        }
+
+        #userInput {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--fg);
+            font-family: inherit;
+            font-size: clamp(0.82rem, 1.6vw, 0.95rem);
+            caret-color: var(--green);
+            min-width: 0;
+        }
+
+        #userInput::placeholder { color: var(--dim); opacity: 0.7; }
+        #userInput:disabled {
+            opacity: 0.45;
+            cursor: wait;
+        }
+
+        #warn {
+            position: absolute;
+            bottom: 52px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.65rem;
+            color: var(--warn);
+            letter-spacing: 0.1em;
+            opacity: 0;
+            transition: opacity 0.25s;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        #warn.show { opacity: 1; }
+
+        #app.shake-low {
+            animation: shake1 0.5s ease-in-out infinite;
+        }
+        #app.shake-mid {
+            animation: shake2 0.28s ease-in-out infinite;
+        }
+        #app.shake-high {
+            animation: shake3 0.14s linear infinite;
+        }
+
+        @keyframes shake1 {
+            0%, 100% { transform: translate(0); }
+            25% { transform: translate(-0.5px, 0.5px); }
+            75% { transform: translate(0.5px, -0.5px); }
+        }
+        @keyframes shake2 {
+            0%, 100% { transform: translate(0); }
+            20% { transform: translate(-1.5px, 1px); }
+            40% { transform: translate(1px, -1px); }
+            60% { transform: translate(-1px, -0.5px); }
+            80% { transform: translate(1.5px, 0.5px); }
+        }
+        @keyframes shake3 {
+            0%, 100% { transform: translate(0) skewX(0deg); }
+            25% { transform: translate(-3px, 1px) skewX(-0.3deg); }
+            50% { transform: translate(2px, -2px) skewX(0.4deg); }
+            75% { transform: translate(-1px, 2px) skewX(-0.2deg); }
+        }
+
+        #glitchOverlay {
+            position: fixed;
+            inset: 0;
+            z-index: 20;
+            pointer-events: none;
+            opacity: 0;
+            mix-blend-mode: screen;
+            background:
+                linear-gradient(90deg, transparent 40%, rgba(57, 255, 20, 0.04) 50%, transparent 60%),
+                repeating-linear-gradient(
+                    0deg,
+                    transparent 0,
+                    transparent 3px,
+                    rgba(200, 50, 50, 0.03) 3px,
+                    rgba(200, 50, 50, 0.03) 4px
+                );
+            transition: opacity 0.5s;
+        }
+        #glitchOverlay.active { opacity: 1; }
+
+        /* ── Model loading gate ── */
+        #modelGate {
+            position: fixed;
+            inset: 0;
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            padding: 24px;
+            background:
+                radial-gradient(ellipse at 50% 40%, rgba(40, 70, 50, 0.22) 0%, transparent 55%),
+                rgba(5, 8, 5, 0.97);
+            transition: opacity 0.45s, visibility 0.45s;
+        }
+        #modelGate.hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+        #modelGate .gate-brand {
+            color: var(--green);
+            font-size: clamp(1.1rem, 3vw, 1.45rem);
+            letter-spacing: 0.18em;
+            opacity: 0.9;
+        }
+        #modelGate .gate-sub {
+            color: var(--dim);
+            font-size: 0.7rem;
+            letter-spacing: 0.14em;
+            margin-top: -6px;
+        }
+        #gateMsg {
+            color: var(--fg);
+            font-size: 0.85rem;
+            text-align: center;
+            max-width: 36em;
+            line-height: 1.6;
+            min-height: 2.8em;
+        }
+        #gateBar {
+            width: min(320px, 80vw);
+            height: 3px;
+            background: rgba(90, 122, 90, 0.25);
+            overflow: hidden;
+        }
+        #gateBar > i {
+            display: block;
+            height: 100%;
+            width: 0%;
+            background: var(--green);
+            transition: width 0.2s ease;
+        }
+        #gatePct {
+            color: var(--dim);
+            font-size: 0.7rem;
+            letter-spacing: 0.12em;
+        }
+        #gateHint {
+            color: var(--dim);
+            font-size: 0.65rem;
+            text-align: center;
+            max-width: 34em;
+            line-height: 1.55;
+            margin-top: 8px;
+            opacity: 0.85;
+        }
+        #gateActions {
+            display: none;
+            margin-top: 8px;
+        }
+        #gateActions.show { display: block; }
+        #gateSkip {
+            background: transparent;
+            border: 1px solid rgba(90, 122, 90, 0.45);
+            color: var(--fg);
+            font-family: inherit;
+            font-size: 0.75rem;
+            letter-spacing: 0.08em;
+            padding: 8px 16px;
+            cursor: pointer;
+        }
+        #gateSkip:hover {
+            border-color: var(--green);
+            color: var(--green);
+        }
+
+        @media (max-width: 520px) {
+            #status { font-size: 0.55rem; letter-spacing: 0.06em; }
+            #coherenceBar { max-width: 80px; }
+            #originPin { font-size: 0.62rem; }
+            #engineBadge { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div id="atmosphere" aria-hidden="true"></div>
+    <div id="glitchOverlay" aria-hidden="true"></div>
+
+    <div id="modelGate" role="status" aria-live="polite">
+        <div class="gate-brand">DIGITAL TATTOO</div>
+        <div class="gate-sub">BATON RELAY · IN-BROWSER LLM</div>
+        <div id="gateMsg">WebGPU を確認しています…</div>
+        <div id="gateBar"><i id="gateFill"></i></div>
+        <div id="gatePct">—</div>
+        <div id="gateHint">
+            同一オリジンの <code>models/</code> のみ（実行中の外部通信なし）。Chrome / Edge + WebGPU。<br>
+            育ちは文脈であり重み更新ではない — 推論のみ。
+        </div>
+        <div id="gateActions">
+            <button type="button" id="gateSkip">テンプレートエンジンで続行</button>
+        </div>
+    </div>
+
+    <div id="app">
+        <div id="status">
+            <span class="brand">DIGITAL TATTOO // BATON RELAY</span>
+            <div id="coherenceBar" title="coherence"><i id="coherenceFill"></i></div>
+            <span id="coherenceLabel">世代 0 · COH 100%</span>
+            <span id="engineBadge">LLM …</span>
+        </div>
+
+        <div id="originPin" aria-live="polite">
+            <span class="tag">ORIGIN</span><span id="originText"></span>
+        </div>
+
+        <div id="log" aria-live="polite"></div>
+
+        <div id="warn">日本語のみ入力できます</div>
+        <form id="inputRow" autocomplete="off">
+            <span id="promptMark">&gt;</span>
+            <input type="text" id="userInput" maxlength="240" lang="ja"
+                   placeholder="モデル準備中…" spellcheck="false" disabled>
+        </form>
+    </div>
+
+    <script type="module" src="./js/app.js"></script>
+</body>
+</html>

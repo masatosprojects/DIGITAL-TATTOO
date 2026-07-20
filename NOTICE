@@ -1,0 +1,44 @@
+DIGITAL TATTOO — third-party notices
+====================================
+
+This distribution includes third-party software and model weights.
+The following attribution notices are provided for informational purposes.
+
+-------------------------------------------------------------------------------
+Qwen2.5-0.5B-Instruct (model weights; MLC q4f16_1 build)
+-------------------------------------------------------------------------------
+Copyright 2024 Alibaba Cloud
+
+Licensed under the Apache License, Version 2.0.
+Upstream: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
+License:  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/blob/main/LICENSE
+MLC build: https://huggingface.co/mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC
+(Base model license: Apache-2.0. The MLC quantized artifacts are a
+redistribution/derivative of that model for MLC-LLM / WebLLM.)
+
+-------------------------------------------------------------------------------
+@mlc-ai/web-llm and MLC-LLM runtime
+-------------------------------------------------------------------------------
+Copyright contributors to the MLC / WebLLM projects
+
+Licensed under the Apache License, Version 2.0.
+WebLLM: https://github.com/mlc-ai/web-llm
+MLC-LLM: https://github.com/mlc-ai/mlc-llm
+License text: http://www.apache.org/licenses/LICENSE-2.0
+
+-------------------------------------------------------------------------------
+MLC model library WASM (binary-mlc-llm-libs)
+-------------------------------------------------------------------------------
+Precompiled WebGPU model library used by WebLLM, e.g.
+Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm
+
+Source: https://github.com/mlc-ai/binary-mlc-llm-libs
+(Compiled artifacts accompanying MLC-LLM / WebLLM; treat under the same
+Apache-2.0 terms as the MLC-LLM / WebLLM projects unless a separate
+notice is published in that repository.)
+
+-------------------------------------------------------------------------------
+Full Apache License 2.0 text
+-------------------------------------------------------------------------------
+See licenses/Apache-2.0.txt in this distribution, or:
+http://www.apache.org/licenses/LICENSE-2.0

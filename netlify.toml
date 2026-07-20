@@ -1,0 +1,13 @@
+# Optional: Git-connected Netlify deploys.
+# Drag-and-drop users: upload the *contents* of dist/ (must include models/ ≈ 300 MB).
+#
+# Build command must fetch models — binaries are gitignored.
+[build]
+  command = "npm run prepare-publish"
+  publish = "dist"
+
+# Large model shards — do not transform or compress oddly
+[[headers]]
+  for = "/models/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

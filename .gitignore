@@ -1,0 +1,13 @@
+﻿node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+.setup-ok
+
+# Model weights / wasm (hundreds of MB) — fetch with: npm run fetch-model
+# Deploy MUST include public/models (= dist/models after build). Do not commit binaries.
+public/models/**
+!public/models/.gitkeep
+!public/models/README.md
