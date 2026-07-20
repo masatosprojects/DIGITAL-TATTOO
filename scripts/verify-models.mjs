@@ -166,7 +166,7 @@ function checkModel(model, { required }) {
     );
   }
 
-  # Pages CI: large shards OK with IndexedDB; warn only (do not fail).
+  // Pages CI: large shards OK with IndexedDB; warn only (do not fail).
   if (requireLite && maxShardBytes >= PAGES_MAX_SHARD_BYTES) {
     console.log(
       `  note: ${model.id} ${maxShardName} is ${(maxShardBytes / (1024 * 1024)).toFixed(1)} MB ` +

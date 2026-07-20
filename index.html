@@ -499,7 +499,8 @@
             border-top: 1px solid rgba(90, 122, 90, 0.25);
         }
         #controls.show { display: flex; }
-        #controls button {
+        #controls button,
+        #downloadRow button {
             background: transparent;
             border: 1px solid rgba(90, 122, 90, 0.45);
             color: var(--fg);
@@ -509,13 +510,37 @@
             padding: 6px 12px;
             cursor: pointer;
         }
-        #controls button:hover {
+        #controls button:hover,
+        #downloadRow button:hover {
             border-color: var(--green);
             color: var(--green);
         }
-        #controls button:disabled {
+        #controls button:disabled,
+        #downloadRow button:disabled {
             opacity: 0.4;
             cursor: not-allowed;
+        }
+
+        /* Separate from #controls so download stays findable even if other controls hide */
+        #downloadRow {
+            display: none;
+            flex: 0 0 auto;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+            padding: 8px 2px 0;
+            border-top: 1px solid rgba(90, 122, 90, 0.25);
+        }
+        #downloadRow.show { display: flex; }
+        #downloadRow #btnDownload {
+            border-color: rgba(57, 255, 20, 0.55);
+            color: var(--green);
+            font-weight: 600;
+        }
+        #downloadRow .download-hint {
+            font-size: 0.62rem;
+            color: var(--dim);
+            letter-spacing: 0.04em;
         }
 
         #warn {
@@ -918,7 +943,11 @@
             <button type="button" id="btnGuess">正式推測を要求</button>
             <button type="button" id="btnPause">一時停止</button>
             <button type="button" id="btnPace" title="表示ペース切替">じっくり</button>
+        </div>
+
+        <div id="downloadRow" aria-live="polite">
             <button type="button" id="btnDownload" title="思考・発言・ORIGINをテキスト保存" disabled>記録をダウンロード</button>
+            <span class="download-hint">プレイ中・終了後いつでも保存できます</span>
         </div>
 
         <div id="warn">日本語のみ入力できます</div>

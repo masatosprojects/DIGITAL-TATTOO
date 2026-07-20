@@ -106,6 +106,7 @@ const btnPause = document.getElementById("btnPause");
 const btnPace = document.getElementById("btnPace");
 const btnDownload = document.getElementById("btnDownload");
 const controlsEl = document.getElementById("controls");
+const downloadRowEl = document.getElementById("downloadRow");
 
 const state = {
   ready: false,
@@ -164,12 +165,19 @@ function logSession(entry) {
     label: entry.label || "",
     text: entry.text == null ? "" : String(entry.text),
   });
-  if (btnDownload) btnDownload.disabled = sessionLog.length === 0;
+  syncDownloadUi();
 }
 
 function clearSessionLog() {
   sessionLog.length = 0;
-  if (btnDownload) btnDownload.disabled = true;
+  syncDownloadUi();
+}
+
+/** Show download once ORIGIN / any log exists; keep visible through play + end. */
+function syncDownloadUi() {
+  const has = sessionLog.length > 0 || !!state.origin;
+  if (downloadRowEl) downloadRowEl.classList.toggle("show", has);
+  if (btnDownload) btnDownload.disabled = !has;
 }
 
 function pad2(n) {
@@ -370,6 +378,8 @@ function updateHud() {
 
 function setControlsVisible(show) {
   if (controlsEl) controlsEl.classList.toggle("show", !!show);
+  // Download lives outside #controls — refresh whenever control visibility changes.
+  syncDownloadUi();
 }
 
 function showOriginPin() {
@@ -1377,7 +1387,7 @@ function endGame() {
   if (btnInject) btnInject.disabled = true;
   if (btnGuess) btnGuess.disabled = true;
   if (btnPause) btnPause.disabled = true;
-  if (btnDownload) btnDownload.disabled = sessionLog.length === 0 && !state.origin;
+  syncDownloadUi();
   inputEl.disabled = true;
   inputEl.placeholder = state.won ? "解明完了 — 記録をダウンロードできます" : "終了 — 記録をダウンロードできます";
   if (state.loopTimer) {
@@ -1539,6 +1549,7 @@ if (btnDownload) {
 document.addEventListener("click", (e) => {
   if (e.target.closest && e.target.closest(".think-panel")) return;
   if (e.target.closest && e.target.closest("#controls")) return;
+  if (e.target.closest && e.target.closest("#downloadRow")) return;
   if (!inputEl.disabled) inputEl.focus();
 });
 
@@ -1853,6 +1864,7 @@ async function init() {
   buildAssignPicker();
   updateHud();
   setControlsVisible(false);
+  syncDownloadUi();
   syncPaceButton();
 
   if (!hasWebGPU()) {
