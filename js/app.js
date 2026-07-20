@@ -794,10 +794,11 @@ async function llmChat(system, user, opts) {
       { role: "user", content: user },
     ];
     let text;
-    // Wolf mode speaks as ids outside AGENT_IDS ("D1".."D5") — the router only
-    // knows 00/01/02, so anything else falls back to the plain shared queue
-    // (wolf mode always shares one physical engine across every role anyway).
-    if (llmRouter && agent && AGENT_IDS.includes(agent)) {
+    // Route through the router whenever it actually has a binding for this
+    // agent id — wolf mode registers "D1".."D5" there too (see enterLlm),
+    // so discussants get the same recoverEngine()-on-dead-engine behavior
+    // as 00/01/02 instead of silently failing forever on a dead engine.
+    if (llmRouter && agent && llmRouter.agentMap && llmRouter.agentMap[agent]) {
       text = await llmRouter.chat(agent, messages, opts);
     } else if (llmQueue) {
       text = await llmQueue.chat(messages, opts);
@@ -1108,12 +1109,27 @@ function isFormatLeakText(raw) {
   return /^\d*思考(?!力)/.test(t);
 }
 
+/**
+ * Reject a "question" whose entire substance, once the 「あなたは」boilerplate
+ * and trailing punctuation are stripped, is just an echoed placeholder or an
+ * answer-level token (e.g. 「未定？」「あなたはいいえ？」— the model
+ * regurgitated the prompt's own 「あなたの仮説: 「未定」」 or an answer word
+ * instead of asking anything).
+ */
+function isPlaceholderEchoQuestion(q) {
+  let t = String(q || "").replace(/\s+/g, "").replace(/[？?。．.！!]+$/g, "");
+  t = t.replace(/^あなたは/, "").replace(/^あなたの/, "");
+  const bare = ["未定", "まだ分からない", "別候補を検討中", ...ANSWER_LEVELS];
+  return bare.includes(t) || t === "";
+}
+
 function isBadInvestigatorQuestion(q) {
   return (
     isMetaFormatQuestion(q) ||
     isHistoryEchoQuestion(q) ||
     isInstructionEchoText(q) ||
-    isFormatLeakText(q)
+    isFormatLeakText(q) ||
+    isPlaceholderEchoQuestion(q)
   );
 }
 
@@ -1298,11 +1314,13 @@ async function agent00Answer(question) {
     "2. 質問が、その大分類（人間か・生き物か・実在するか等）を聞いているのか、細かい性質を聞いているのかを見分ける。\n" +
     "3. 大分類の質問には、ORIGIN が属する分類から素直に判定する。職業・役割は基本的に人間が担うので、" +
     "「人間ですか」「実在する人物ですか」のような質問には、ORIGIN が人間の職業・役割である限り原則「はい」寄りになる。" +
-    "「動物ですか」「機械ですか」等、ORIGIN の分類と明らかに異なる質問には「いいえ」。\n" +
+    "「機械ですか」等、ORIGIN の分類と明らかに異なる質問には「いいえ」。" +
+    "厳密には人間も生物学的には動物だが、日常会話の「動物ですか」は人間を含まない使い方が多い点に注意し、" +
+    "定義が割れて自信が持てない場合は無理に「はい」「いいえ」に決めず「どちらかというと」を使ってよい。\n" +
     "4. 細かい性質の質問（服装・場所・時間帯など）は ORIGIN の内容と常識から個別に判定する。\n" +
     "例:\n" +
     "ORIGIN=「弁護士」/ 質問「あなたは人間ですか？」→ 発言: はい （職業は人間が担うため）\n" +
-    "ORIGIN=「弁護士」/ 質問「あなたは動物ですか？」→ 発言: いいえ\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは動物ですか？」→ 発言: どちらかというといいえ （日常会話では人間と動物を分けて言うことが多いため）\n" +
     "ORIGIN=「弁護士」/ 質問「あなたは屋内で働きますか？」→ 発言: どちらかというとはい （法廷や事務所が多いが常に屋内とは限らない）\n" +
     "ORIGIN=「深夜の警備員」/ 質問「あなたは夜に主な活動をしますか？」→ 発言: はい\n" +
     "回答は次の5段階から1つだけ選ぶ: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
@@ -2796,6 +2814,16 @@ async function enterLlm() {
   setGateProgress("選択モデルを読み込み…", 0);
   const result = await loadAgentAssignments(assignments, onProgress);
 
+  // 人狼モード: 討論者5人も 00/01/02 と同じ物理エンジンに束ねてルーターへ登録する。
+  // こうしないと discussant 側の呼び出しには recoverEngine() による復旧が一切効かず、
+  // 一度死んだエンジンにセッション終了までずっと空振りし続けてしまう。
+  if (state.gameFormat === "wolf" && result.agentMap["00"]) {
+    const base = result.agentMap["00"];
+    for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
+      result.agentMap["D" + i] = { engineId: base.engineId, model: base.model, engine: base.engine };
+    }
+  }
+
   loadedEngines = Object.values(result.engines);
   engineRef.current = result.agentMap["00"].engine;
   agentEngineMap = result.agentMap;
@@ -2804,7 +2832,7 @@ async function enterLlm() {
       agentEngineMap = map;
       const unique = [];
       const seen = new Set();
-      for (const agent of AGENT_IDS) {
+      for (const agent of Object.keys(map)) {
         const eng = map[agent]?.engine;
         if (eng && !seen.has(eng)) {
           seen.add(eng);
@@ -2813,6 +2841,13 @@ async function enterLlm() {
       }
       loadedEngines = unique;
       engineRef.current = map["00"]?.engine || null;
+      // discussant エイリアスは別オブジェクトなので、回復後のエンジンを明示的に再同期する。
+      if (state.gameFormat === "wolf" && map["00"]) {
+        for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
+          const key = "D" + i;
+          if (map[key]) map[key].engine = map["00"].engine;
+        }
+      }
     },
   });
   llmQueue = createLlmQueue(engineRef);
