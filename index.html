@@ -661,6 +661,27 @@
             width: min(360px, 88vw);
             margin-top: 4px;
         }
+        #gateModePick {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: min(400px, 90vw);
+            margin-top: 4px;
+            max-height: min(36vh, 280px);
+            overflow-y: auto;
+        }
+        #gateModeWarn {
+            width: min(400px, 90vw);
+            font-size: 0.68rem;
+            line-height: 1.5;
+            color: var(--amber);
+            border: 1px solid rgba(200, 176, 96, 0.35);
+            background: rgba(40, 32, 8, 0.55);
+            padding: 8px 10px;
+            text-align: left;
+        }
+        #gateModeWarn[hidden] { display: none !important; }
+        .gate-mode-opt,
         .gate-model-opt {
             display: flex;
             align-items: flex-start;
@@ -673,29 +694,62 @@
             font-family: inherit;
             color: var(--fg);
         }
+        .gate-mode-opt:hover:not(.unavailable),
         .gate-model-opt:hover:not(:disabled):not(.unavailable) {
             border-color: rgba(57, 255, 20, 0.45);
         }
+        .gate-mode-opt.selected,
         .gate-model-opt.selected {
             border-color: var(--green);
             background: rgba(20, 40, 24, 0.65);
         }
+        .gate-mode-opt.unavailable,
         .gate-model-opt.unavailable,
         .gate-model-opt:disabled { opacity: 0.42; cursor: not-allowed; }
+        .gate-mode-opt input,
         .gate-model-opt input { margin-top: 3px; accent-color: var(--green); }
+        .gate-mode-opt .opt-body,
         .gate-model-opt .opt-body { flex: 1; min-width: 0; }
+        .gate-mode-opt .opt-label,
         .gate-model-opt .opt-label { font-size: 0.8rem; letter-spacing: 0.06em; }
+        .gate-mode-opt .opt-hint,
         .gate-model-opt .opt-hint {
             font-size: 0.62rem;
             color: var(--dim);
             line-height: 1.45;
             margin-top: 3px;
         }
+        .gate-mode-opt .opt-miss,
         .gate-model-opt .opt-miss {
             font-size: 0.6rem;
             color: var(--amber);
             margin-top: 4px;
             line-height: 1.4;
+        }
+        .opt-tag {
+            display: inline-block;
+            font-size: 0.55rem;
+            letter-spacing: 0.08em;
+            padding: 1px 5px;
+            border: 1px solid rgba(90, 122, 90, 0.5);
+            color: var(--dim);
+            vertical-align: middle;
+        }
+        .opt-tag.exp {
+            border-color: rgba(200, 176, 96, 0.55);
+            color: var(--amber);
+        }
+        .opt-tag.rec {
+            border-color: rgba(57, 255, 20, 0.45);
+            color: var(--green);
+        }
+        .gate-section-label {
+            width: min(400px, 90vw);
+            font-size: 0.62rem;
+            letter-spacing: 0.14em;
+            color: var(--dim);
+            text-align: left;
+            margin-top: 6px;
         }
         #gateLoad {
             background: transparent;
@@ -780,6 +834,10 @@
         <div class="gate-brand">DIGITAL TATTOO</div>
         <div class="gate-sub">INTERROGATION · IN-BROWSER LLM</div>
         <div id="gateMsg">WebGPU を確認しています…</div>
+        <div class="gate-section-label">エンジンモード</div>
+        <div id="gateModePick" role="radiogroup" aria-label="エンジンモード選択"></div>
+        <div id="gateModeWarn" hidden></div>
+        <div class="gate-section-label" id="gateModelSectionLabel">モデル（単一エンジン時）</div>
         <div id="gateModelPick" role="radiogroup" aria-label="モデル選択"></div>
         <button type="button" id="gateLoad" disabled>モデルを読み込む</button>
         <div id="gateBar"><i id="gateFill"></i></div>

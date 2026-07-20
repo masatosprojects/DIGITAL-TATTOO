@@ -35,6 +35,35 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 | 0.5B / 1.5B | **Apache-2.0** | Netlify 等への同梱は条件付きで可（NOTICE 維持） |
 | 3B (`hq`) | **Qwen Research** | Apache ではない。商用・再配布条件を必ず原文確認。 |
 
+## エンジンモード（マルチエンジン）
+
+ゲート UI で選択。選択キーは `ENGINE_MODE_KEY`（`digital-tattoo-engine-mode`）。
+
+| mode id | UI ラベル | エンジン数 | ディスク | VRAM 目安 | 備考 |
+|---------|-----------|------------|----------|-----------|------|
+| `triple-1.5` | 実験: 1.5B×3同時 | **3** | **1.5B を1セットのみ** | ≈**4 GB+**（1.5B×3） | 実験。タブ落ちあり得る |
+| `switch-1` | 推奨: 単一エンジン切替 | **1** | 選んだモデル1つ | モデル表どおり | **最も安全・推奨** |
+| `strong-weak` | 00強+01/02弱 | **2** | 1.5B + 0.5B | ≈1.6+0.95 GB | 両方のファイルが必要 |
+
+### `triple-1.5` が意味すること（正直）
+
+- **やること:** 同じ `Qwen2.5-1.5B-Instruct-…` の重みファイルを、**ランタイムで WebLLM エンジンを3つ**立ち上げる。  
+  AGENT-00 → engine A、AGENT-01 → B、AGENT-02 → C。
+- **やらないこと:** ディスクに重みを3コピーしない。`fetch-model` を3回する必要はない。
+- **成功時:** 各エージェントが独立エンジン。ゲームループが許す範囲で真の並列推論が可能（現状のループは主に逐次だが、エンジン間の待ち行列は分離）。
+- **失敗時:** 途中まで載ったエンジンはすべて unload。メッセージで **switch-1** か **strong-weak** を案内。ゲートは安全側（単一）に寄せられる。
+- **現実:** 多くのノート PC / 統合 GPU では VRAM 不足でクラッシュしやすい。専用 GPU で余裕があるときだけ試す実験パス。
+
+### `switch-1`（推奨）
+
+エンジンは1つ。話者ごとの差は **システムプロンプト／役割** で切替（モデル重みは共有）。VRAM と安定性が最良。
+
+### `strong-weak`
+
+- AGENT-00 = 1.5B（強）
+- AGENT-01 / 02 = 0.5B（弱・共有エンジン）
+- ディスクに `default` と `lite` の両方が必要（`npm run fetch-model` + `fetch-model:lite`）
+
 ## デプロイどれを載せるか
 
 | 構成 | サイズ | GitHub Pages | 推奨ホスト |
@@ -44,31 +73,39 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 | hq 追加 | +≈1.7 GB | **不可寄り** | Netlify / 自前 |
 | **全パック** | ≈**2.8 GB** | **不可** | Netlify / 自前のみ |
 
-複数の大型モデルを Pages に載せないこと。CI は **default のみ**。
+複数の大型モデルを Pages に載せないこと。CI は **default のみ**。  
+`triple-1.5` は Pages の default だけで試せる（追加ダウンロード不要・VRAM だけ厳しい）。
 
 ## `js/llm.js` — 使う API
 
 ```js
 import {
-  listModels,              // → ModelInfo[]（rank 昇順）
-  listModelAvailability,   // → + available / reason
+  listModels,
+  listModelAvailability,
+  listEngineModes,
   resolveModel,
-  getDefaultModelKey,      // "default"
-  loadModel,               // ★ 推奨
+  getDefaultModelKey,
+  getSelectedEngineMode,
+  setSelectedEngineMode,
+  loadModel,
+  createEngine,
+  loadTripleEngines,
+  loadStrongWeakEngines,
+  loadSwitchEngine,
+  generateWithEngine,
   createLlmQueue,
+  createAgentLlmRouter,
   hasWebGPU,
   MODELS,
   MODEL_CATALOG,
   STORAGE_KEY,
+  ENGINE_MODE_KEY,
 } from "./llm.js";
 
-const catalog = await listModelAvailability();
-// 未配置 → available:false・UI で無効化
-
-const { engine, model } = await loadModel("default", {
-  onProgress: ({ text, progress }) => {},
-  prevEngine: engineRef.current,
-});
+const { engines, agentMap } = await loadTripleEngines("default", ({ text, progress }) => {});
+// engines.A/B/C — same on-disk weights, three runtimes
+const router = createAgentLlmRouter(agentMap);
+await router.chat("01", messages, { onDelta, stream: true });
 ```
 
 `ModelInfo` フィールド: `key`, `rank`, `label`, `sizeMB`, `vramMB`, `minVramHint`, `usable`, `jpQuality`, `license`, `isDefault?`.
@@ -80,7 +117,7 @@ const { engine, model } = await loadModel("default", {
 
 ```bash
 npm run fetch-model          # default 1.5B（必須・Pages）
-npm run fetch-model:lite     # 0.5B
+npm run fetch-model:lite     # 0.5B（strong-weak 用）
 npm run fetch-model:hq       # 3B
 npm run fetch-model:all      # 全部 ≈2.8 GB
 npm run verify-models        # default 必須・他はあれば検証
@@ -90,10 +127,15 @@ npm run verify-models        # default 必須・他はあれば検証
 
 ## Gate DOM
 
-`#gateModelPick` は `listModels()` から動的生成。未配置は disabled + サイズ表示。
+- `#gateModePick` — エンジンモード（triple / switch / strong-weak）
+- `#gateModeWarn` — triple などの警告文
+- `#gateModelPick` — `switch-1` 時のみモデル選択（`listModels()`）
+
+未配置は disabled。triple は 1.5B がローカルにあるときだけ有効。
 
 ## `app.js`
 
-ゲームループは `app.js` 所有。モデルは上記 API のみ。yes/no クランプと単一エンジン設計は維持。
+ゲームループは `app.js` 所有。モードに応じて 00/01/02 を `createAgentLlmRouter` 経由で正しいエンジンへ。  
+思考パネルに `engine A|B|C · model_id` を表示。yes/no クランプと 3-panel UI・同一オリジンは維持。
 
 このファイルと `scripts/fetch-model.mjs` / `js/llm.js` のカタログを同期すること。
