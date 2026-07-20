@@ -359,6 +359,17 @@
             box-shadow: 0 1px 2px rgba(40, 20, 50, 0.08);
         }
         .bubble.b02 .b-who { color: #7a5a98; }
+        /* 人狼モード: 討論者5人ぶんの吹き出し色（左右交互） */
+        .bubble.bD1 { margin-right: auto; background: #fff6e4; border: 1px solid rgba(180, 140, 60, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD1 .b-who { color: #9a7a28; }
+        .bubble.bD2 { margin-left: auto; background: #f0eaf6; border: 1px solid rgba(140, 110, 170, 0.45); border-bottom-right-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD2 .b-who { color: #7a5a98; }
+        .bubble.bD3 { margin-right: auto; background: #e8f4f0; border: 1px solid rgba(70, 150, 130, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD3 .b-who { color: #2d7a63; }
+        .bubble.bD4 { margin-left: auto; background: #f4ece8; border: 1px solid rgba(180, 110, 80, 0.5); border-bottom-right-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD4 .b-who { color: #a5603a; }
+        .bubble.bD5 { margin-right: auto; background: #eaeef7; border: 1px solid rgba(90, 120, 190, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD5 .b-who { color: #4a63a8; }
         .bubble.bsys {
             margin: 0 auto 10px;
             max-width: 100%;
@@ -668,6 +679,49 @@
             overflow-y: auto;
             padding: 2px;
         }
+        #gateFormatPick,
+        #gateWolfModelPick {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            width: min(720px, 94vw);
+            margin-top: 4px;
+        }
+        #gateWolfModelPick { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .gate-format-box {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 4px;
+            padding: 10px 10px;
+            border: 1px solid rgba(90, 122, 90, 0.35);
+            background: rgba(8, 14, 8, 0.55);
+            cursor: pointer;
+            text-align: left;
+            font-family: inherit;
+            color: var(--fg);
+            min-height: 3.6em;
+        }
+        .gate-format-box:hover:not(:disabled) { border-color: rgba(57, 255, 20, 0.45); }
+        .gate-format-box.selected {
+            border-color: var(--green);
+            background: rgba(20, 40, 24, 0.65);
+            box-shadow: inset 0 0 0 1px rgba(57, 255, 20, 0.25);
+        }
+        .gate-format-box .box-label {
+            font-size: 0.74rem;
+            letter-spacing: 0.04em;
+            line-height: 1.35;
+        }
+        .gate-format-box .box-hint {
+            font-size: 0.58rem;
+            color: var(--dim);
+            line-height: 1.4;
+        }
+        #gateWolfModelPick[hidden],
+        #gateWolfModelLabel[hidden],
+        #gateAgentAssign[hidden],
+        #gateAssignLabel[hidden] { display: none !important; }
         .gate-agent-col {
             display: flex;
             flex-direction: column;
@@ -826,6 +880,11 @@
                 max-height: min(48vh, 380px);
                 width: min(400px, 92vw);
             }
+            #gateFormatPick,
+            #gateWolfModelPick {
+                grid-template-columns: 1fr;
+                width: min(400px, 92vw);
+            }
             .gate-section-label,
             #gateAssignWarn {
                 width: min(400px, 92vw);
@@ -862,8 +921,21 @@
         <div class="gate-brand">DIGITAL TATTOO</div>
         <div class="gate-sub">INTERROGATION · IN-BROWSER LLM</div>
         <div id="gateMsg">WebGPU を確認しています…</div>
-        <div class="gate-section-label">エージェント別 LLM（ボックスを選択）</div>
+        <div class="gate-section-label">ゲーム形式</div>
+        <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
+            <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
+                <span class="box-label">尋問モード（2人）</span>
+                <span class="box-hint">AGENT-01/02 の2人が尋問する従来のゲーム。</span>
+            </button>
+            <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
+                <span class="box-label">人狼モード（5人・ハルシネーター追放）</span>
+                <span class="box-hint">討論者5人のうち1人が秘密のハルシネーター。周期的に追放投票。</span>
+            </button>
+        </div>
+        <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
         <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
+        <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
+        <div id="gateWolfModelPick" role="radiogroup" aria-label="人狼モードモデル選択" hidden></div>
         <div id="gateAssignWarn" hidden></div>
         <button type="button" id="gateLoad" disabled>読み込む</button>
         <div id="gateBar"><i id="gateFill"></i></div>

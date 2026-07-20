@@ -1527,7 +1527,13 @@ export async function loadModel(idOrKey, opts = {}) {
 }
 
 /**
- * True when WebLLM/TVM left the engine unusable (shared-engine cascade risk).
+ * True when WebLLM/TVM left the engine unusable (shared-engine cascade risk),
+ * OR the underlying WebGPU device itself died (driver reset / TDR timeout —
+ * observed in the wild as "Failed to execute 'requestDevice' on 'GPUAdapter':
+ * ... DXGI_ERROR_DEVICE_REMOVED"). Both cases must trigger recoverEngine() —
+ * otherwise every subsequent call in the session hits the same dead engine
+ * and silently falls back to templates forever, with no way to recover short
+ * of a full page reload.
  * @param {unknown} err
  */
 export function isLlmDeadError(err) {
@@ -1541,7 +1547,17 @@ export function isLlmDeadError(err) {
     msg.includes("model not loaded") ||
     msg.includes("not loaded before") ||
     msg.includes("engine not ready") ||
-    msg.includes("llm engine not ready")
+    msg.includes("llm engine not ready") ||
+    // WebGPU device loss (driver crash/reset/TDR) — requestDevice/adapter
+    // failures and explicit device-lost callbacks all land here.
+    msg.includes("device_removed") ||
+    msg.includes("devicelost") ||
+    msg.includes("device was lost") ||
+    msg.includes("device lost") ||
+    msg.includes("requestdevice") ||
+    msg.includes("gpuadapter") ||
+    msg.includes("dxgi_error") ||
+    msg.includes("lost access to the gpu")
   );
 }
 

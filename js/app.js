@@ -58,6 +58,16 @@ const MIN_DISCUSS_BEFORE_GUESS = 10;
 /** 00 の各回答のあと、01↔02 が最低これだけ交互に議論してから次の質問へ。 */
 const DISCUSSION_TURNS_PER_ANSWER = 4;
 
+// ── 人狼モード（ハルシネーター追放） ──────────────────
+/** 討論者の人数。全員を同一エンジンで役割だけ切り替えて動かす。 */
+const WOLF_ROSTER_SIZE = 5;
+/** 1クール = AGENT-00 への質問これだけで、その後に追放投票。 */
+const WOLF_QUESTIONS_PER_COURS = 3;
+/** 00 の各回答のあと、討論者たちがこれだけ順番に発言してから次の質問へ。 */
+const WOLF_DISCUSSION_TURNS_PER_ANSWER = 10;
+/** 生存者がこれ以下になったら人狼フェーズ（投票）を打ち切り、尋問だけ続行。 */
+const WOLF_MIN_ALIVE_FOR_VOTE = 3;
+
 const PACE_PRESETS = {
   slow: { charsPerSec: 7, typeMs: 12, bufferMs: 520, label: "じっくり" },
   normal: { charsPerSec: 10, typeMs: 6, bufferMs: 320, label: "標準" },
@@ -84,6 +94,10 @@ const gateSkip = document.getElementById("gateSkip");
 const gateLoad = document.getElementById("gateLoad");
 const gateAgentAssign = document.getElementById("gateAgentAssign");
 const gateAssignWarn = document.getElementById("gateAssignWarn");
+const gateFormatPick = document.getElementById("gateFormatPick");
+const gateAssignLabel = document.getElementById("gateAssignLabel");
+const gateWolfModelLabel = document.getElementById("gateWolfModelLabel");
+const gateWolfModelPick = document.getElementById("gateWolfModelPick");
 const hyp01El = document.getElementById("hyp01");
 const hyp02El = document.getElementById("hyp02");
 const phaseLabelEl = document.getElementById("phaseLabel");
@@ -96,6 +110,10 @@ const thinkSlots = {
   "01": document.getElementById("think01"),
   "02": document.getElementById("think02"),
 };
+// 人狼モード: 討論者5人ぶんの think panel は panel01 の think-slot 1箇所へ集約。
+for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
+  thinkSlots["D" + i] = thinkSlots["01"];
+}
 const speechSlots = {
   "00": document.getElementById("speech00"),
   "01": document.getElementById("speech01"),
@@ -141,6 +159,18 @@ const state = {
   engineMode: "per-agent",
   /** @type {Record<"00"|"01"|"02", string> | null} */
   agentModels: null,
+
+  // ── 人狼モード ──
+  /** "duo"（従来の01/02二人尋問）| "wolf"（5人+ハルシネーター追放） */
+  gameFormat: "duo",
+  /** @type {{ id: string, name: string, alive: boolean, isHallucinator: boolean, hyp: string }[]} */
+  wolfRoster: [],
+  wolfCours: 0,
+  wolfQInCours: 0,
+  /** クールごとの投票結果ログ（GM欄描画用） */
+  wolfVoteLog: [],
+  /** ハルシネーターを正しく追放済みなら true（以後は純粋な尋問として続行） */
+  wolfPurged: false,
 };
 
 const engineRef = { current: null };
@@ -319,7 +349,7 @@ function setBadge(mode) {
 function setTurn(agent, phaseText) {
   state.activeAgent = agent || null;
   if (phaseText) state.turnPhase = phaseText;
-  updateHud();
+  currentUpdateHud();
 }
 
 function updateHud() {
@@ -439,6 +469,9 @@ function agentDisplayName(agent) {
   if (agent === "00") return "エージェント00";
   if (agent === "01") return "エージェント01";
   if (agent === "02") return "エージェント02";
+  if (agent === "GM") return "運営（GM）";
+  const wolf = /^D([1-5])$/.exec(agent || "");
+  if (wolf) return "討論者" + wolf[1];
   return "エージェント" + agent;
 }
 
@@ -755,7 +788,10 @@ async function llmChat(system, user, opts) {
       { role: "user", content: user },
     ];
     let text;
-    if (llmRouter && agent) {
+    // Wolf mode speaks as ids outside AGENT_IDS ("D1".."D5") — the router only
+    // knows 00/01/02, so anything else falls back to the plain shared queue
+    // (wolf mode always shares one physical engine across every role anyway).
+    if (llmRouter && agent && AGENT_IDS.includes(agent)) {
       text = await llmRouter.chat(agent, messages, opts);
     } else if (llmQueue) {
       text = await llmQueue.chat(messages, opts);
@@ -1558,10 +1594,30 @@ async function gameLoop() {
   }
 }
 
+// ── モード共通ディスパッチ（duo / wolf） ──────────────────
+function currentUpdateHud() {
+  if (state.gameFormat === "wolf") updateWolfHud();
+  else updateHud();
+}
+function currentGameLoopTick() {
+  if (state.gameFormat === "wolf") wolfGameLoop();
+  else gameLoop();
+}
+function currentCanStartGuessRound() {
+  if (state.gameFormat === "wolf") return state.phase === "playing";
+  return canStartGuessRound();
+}
+function currentGuessBlockedReason() {
+  if (state.gameFormat === "wolf") {
+    return state.phase === "playing" ? "" : "まだ開始していません";
+  }
+  return guessBlockedReason();
+}
+
 function endGame() {
   state.phase = "ended";
   state.activeAgent = null;
-  updateHud();
+  currentUpdateHud();
   setControlsVisible(true);
   if (btnInject) btnInject.disabled = true;
   if (btnGuess) btnGuess.disabled = true;
@@ -1574,6 +1630,642 @@ function endGame() {
     state.loopTimer = null;
   }
   appendChatBubble("sys", "セッション終了。下の「記録をダウンロード」でテキスト保存できます。");
+}
+
+// ══════════════════════════════════════════════════════════
+// 人狼モード（ハルシネーター追放） — 討論者5人のうち1人が秘密裏に
+// もっともらしい虚偽を混ぜる。周期的な追放投票でそれを暴く。
+// AGENT-00 の扱い（agent00Answer 等）は duo モードと完全共通。
+// ══════════════════════════════════════════════════════════
+
+function wolfNamingClarityRule() {
+  return (
+    "呼称ルール: エージェント00＝尋問の対象。討論者1〜討論者5＝尋問する側の仲間5人（あなたもその1人）。" +
+    "「代理人」は絶対禁止（誤訳）。"
+  );
+}
+
+function wolfAliveRoster() {
+  return state.wolfRoster.filter((m) => m.alive);
+}
+
+function wolfMemberById(id) {
+  return state.wolfRoster.find((m) => m.id === id) || null;
+}
+
+function initWolfRoster() {
+  const ids = [];
+  for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) ids.push("D" + i);
+  const hallucinatorIdx = Math.floor(Math.random() * ids.length);
+  state.wolfRoster = ids.map((id, i) => ({
+    id,
+    name: agentDisplayName(id),
+    alive: true,
+    isHallucinator: i === hallucinatorIdx,
+    hyp: "未定",
+  }));
+  state.wolfCours = 1;
+  state.wolfQInCours = 0;
+  state.wolfVoteLog = [];
+  state.wolfPurged = false;
+}
+
+/** ハルシネーター役だけに追加するシステムプロンプト。 */
+function hallucinatorAddendum() {
+  return (
+    "重要（あなただけの秘密の役回り）: あなたはこの中で唯一、時々もっともらしいが微妙に事実と異なる発言を混ぜる。" +
+    "直前のエージェント00の回答を少し言い換えて歪める・存在しない過去のやり取りをほのめかす・根拠のない断定をする、のいずれかを時々行う。" +
+    "ただし自分から「嘘をついている」「ハルシネーターだ」とは絶対に明かさない。不自然に動揺しない。他の討論者と同じ口調・熱量を保つ。"
+  );
+}
+
+function wolfHistoryBlock(limit = 6) {
+  const take = state.history.slice(-limit);
+  if (!take.length) return "（まだ質問なし）";
+  return take
+    .map(
+      (h, i) =>
+        (i + 1) +
+        ". [" +
+        agentDisplayName(h.asker) +
+        "→エージェント00] 「" +
+        h.q +
+        "」→「" +
+        h.a +
+        "」"
+    )
+    .join("\n");
+}
+
+function wolfHypSummary(excludeId) {
+  const others = wolfAliveRoster().filter((m) => m.id !== excludeId);
+  if (!others.length) return "（他に生存者なし）";
+  return others.map((m) => m.name + ": 「" + clip(m.hyp, 24) + "」").join(" / ");
+}
+
+function wolfInvestigatorContext(speakerId) {
+  const self = wolfMemberById(speakerId);
+  const selfName = self ? self.name : agentDisplayName(speakerId);
+  return (
+    "あなたは" +
+    selfName +
+    "（尋問する側・討論者チームの一員）。対象はエージェント00だけ。\n" +
+    wolfNamingClarityRule() +
+    "\nORIGIN は知らされていない。討論者同士は自由に日本語で話し合う。" +
+    "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
+    "他の討論者の仮説: " +
+    wolfHypSummary(speakerId) +
+    "\nあなた(" +
+    selfName +
+    ")の仮説: 「" +
+    clip(self ? self.hyp : "未定", 40) +
+    "」\nQ&A履歴:\n" +
+    wolfHistoryBlock()
+  );
+}
+
+async function wolfAskQuestion(askerId) {
+  const asker = wolfMemberById(askerId);
+  const name = asker ? asker.name : agentDisplayName(askerId);
+  setTurn(askerId, name + " が質問中");
+  const panel = createThinkPanel(askerId, "思考過程 · " + name + " が質問を作成…");
+  panel.addSection("注意", "ORIGIN はプロンプトに含まれない · 発言は質問文（はい/いいえではない）", "warn");
+
+  const fallbackQ = askQuestionFallback({
+    history: state.history,
+    hyp: asker ? asker.hyp : "未定",
+    pollution: 0,
+    seed: state.seed,
+    round: state.wolfCours * 10 + state.wolfQInCours,
+    agent: askerId,
+  });
+
+  let question = null;
+  let beatStart = performance.now();
+
+  if (state.pendingInject) {
+    question = ensureQuestionMark(state.pendingInject);
+    panel.addSection("オペレーター注入", question, "out");
+    panel.setLive("注入質問を使用: " + question);
+    state.pendingInject = null;
+  } else {
+    const system =
+      "あなたは" +
+      name +
+      "。" +
+      wolfNamingClarityRule() +
+      "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
+      "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
+      "質問はエージェント00がはい／いいえ寄りで答えられる内容にする（例: 「あなたは人間ですか？」）。" +
+      "禁止: 回答形式の説明・メタ発言を質問にすること。禁止: 「代理人」という語。" +
+      structuredOutRule() +
+      "発言行の例: あなたは生き物ですか？" +
+      (asker && asker.isHallucinator ? hallucinatorAddendum() : "");
+    const user =
+      wolfInvestigatorContext(askerId) +
+      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
+      "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
+
+    panel.addSection("params", "stream · max_tokens=100", "meta");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: askerId,
+      temperature: 0.5,
+      max_tokens: 100,
+      fallbackText: fallbackQ,
+      fallbackThink: "身分やカテゴリを確認する質問をする",
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.speak) {
+      question = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
+    } else if (streamed.raw) {
+      question = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+    }
+  }
+
+  if (!question || isBadInvestigatorQuestion(question)) {
+    panel.addSection(
+      "質問補正",
+      "メタ／履歴エコー／形式崩れを検知 → テンプレート質問へ",
+      "warn"
+    );
+    question = fallbackQ;
+  }
+  panel.addSection("最終質問", question, "out");
+  panel.collapse();
+
+  appendChatBubble("ask", "[" + name + "] → エージェント00: " + question);
+  await paceAfterBeat(question, beatStart);
+  return question;
+}
+
+async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeakerLine) {
+  const speaker = wolfMemberById(speakerId);
+  const name = speaker ? speaker.name : agentDisplayName(speakerId);
+  setTurn(speakerId, name + " が議論中 (" + turnIndex + ")");
+  const panel = createThinkPanel(
+    speakerId,
+    "思考過程 · " + name + " 議論 " + turnIndex + "/" + WOLF_DISCUSSION_TURNS_PER_ANSWER
+  );
+
+  const otherFirst = wolfAliveRoster().find((m) => m.id !== speakerId);
+  const fb = debateFallback({
+    answer,
+    question,
+    hyp: speaker ? speaker.hyp : "未定",
+    otherHyp: otherFirst ? otherFirst.hyp : "未定",
+    pollution: 0,
+    seed: state.seed,
+    round: state.wolfCours * 100 + turnIndex,
+    agent: speakerId,
+    history: state.history,
+  });
+
+  const system =
+    "あなたは" +
+    name +
+    "。" +
+    wolfNamingClarityRule() +
+    "討論者チームで、エージェント00の直前の答えについて議論する。" +
+    "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
+    "必須: (1) エージェント00の答え「" +
+    answer +
+    "」の意味 (2) 自分の仮説の更新または除外 (3) 他の討論者の発言への短い反応。" +
+    "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
+    "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
+    structuredOutRule() +
+    (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "");
+  const user =
+    wolfInvestigatorContext(speakerId) +
+    "\n直前の質問（→エージェント00）: 「" +
+    question +
+    "」\nエージェント00の答え: 「" +
+    answer +
+    "」\n" +
+    (lastSpeakerLine
+      ? "直前の発言: 「" + lastSpeakerLine + "」\nそれに反応しつつ深めて。"
+      : "議論の最初。答えから何が言えるか述べよ。") +
+    "\n議論ターン " +
+    turnIndex +
+    "/" +
+    WOLF_DISCUSSION_TURNS_PER_ANSWER +
+    "。";
+
+  const streamed = await streamIntoPanel(panel, system, user, {
+    agent: speakerId,
+    temperature: 0.55,
+    max_tokens: 140,
+    fallbackText: fb,
+    fallbackThink: "答えから候補を整理する",
+  });
+
+  let opinion = streamed.speak
+    ? cleanJapaneseLine(streamed.speak, 160)
+    : streamed.raw
+      ? cleanJapaneseLine(streamed.raw, 160)
+      : null;
+  if (!opinion || isInstructionEchoText(opinion) || isFormatLeakText(opinion)) {
+    opinion = fb;
+  }
+
+  let newHyp = null;
+  const hypSystem =
+    "あなたは" +
+    name +
+    "。エージェント00の役割についての短い仮説を1語〜短い句で。" +
+    wolfNamingClarityRule() +
+    structuredOutRule() +
+    "発言行は仮説だけ。「代理人」禁止。";
+  const hypUser =
+    "旧仮説: 「" +
+    (speaker ? speaker.hyp : "未定") +
+    "」\n質問: 「" +
+    question +
+    "」→ エージェント00「" +
+    answer +
+    "」\n議論: 「" +
+    clip(opinion, 80) +
+    "」";
+  if (state.mode === "llm") {
+    const hypPanelNote = panel.addSection("仮説更新中…", "…", "belief");
+    const resH = await llmChat(hypSystem, hypUser, {
+      agent: speakerId,
+      temperature: 0.55,
+      max_tokens: 40,
+      onDelta: (_d, full) => {
+        hypPanelNote.textContent = full;
+      },
+      stream: true,
+    });
+    if (resH && resH.raw) {
+      const sp = splitThinkSpeak(resH.raw);
+      const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
+      if (!isBadHypothesis(candidate, question)) newHyp = candidate;
+    }
+  }
+  if (!newHyp) {
+    newHyp = updateHypFallback({
+      hyp: speaker ? speaker.hyp : "未定",
+      answer,
+      pollution: 0,
+      seed: state.seed,
+      round: state.wolfCours * 100 + turnIndex,
+    });
+  }
+  if (speaker) speaker.hyp = newHyp;
+  panel.addSection("仮説", newHyp, "belief");
+
+  panel.collapse();
+  await typeChatBubble(speakerId, opinion);
+  await paceAfterBeat(opinion, streamed.beatStart);
+  renderWolfRoster();
+  return opinion;
+}
+
+async function wolfRunDiscussionPhase(askerId, question, answer) {
+  appendChatBubble(
+    "sys",
+    "── 討論者たちの議論（この答えについて " + WOLF_DISCUSSION_TURNS_PER_ANSWER + " 発言）──"
+  );
+  const alive = wolfAliveRoster();
+  if (!alive.length) return;
+  let idx = alive.findIndex((m) => m.id === askerId);
+  if (idx < 0) idx = 0;
+  let lastLine = null;
+  for (let i = 1; i <= WOLF_DISCUSSION_TURNS_PER_ANSWER; i++) {
+    const speaker = alive[idx % alive.length];
+    lastLine = await wolfDiscussTurn(speaker.id, question, answer, i, lastLine);
+    idx++;
+  }
+}
+
+function wolfGmLog(text) {
+  const speech02 = speechSlots["02"];
+  if (speech02) {
+    const row = document.createElement("div");
+    row.className = "line system";
+    row.textContent = text;
+    speech02.appendChild(row);
+    scrollEl(speech02);
+  }
+  logSession({ kind: "gm", agent: "GM", text: String(text || "") });
+}
+
+async function wolfVotePhase() {
+  const alive = wolfAliveRoster();
+  if (alive.length <= WOLF_MIN_ALIVE_FOR_VOTE) {
+    wolfGmLog("生存者が少なくなったため、追放投票は打ち切り、以後は尋問のみ続行します。");
+    return;
+  }
+  appendChatBubble("sys", "── クール" + state.wolfCours + " 追放投票 ──");
+  const votes = {};
+  for (const m of alive) votes[m.id] = 0;
+  const reasons = [];
+
+  for (const voter of alive) {
+    setTurn(voter.id, voter.name + " が投票中");
+    const panel = createThinkPanel(voter.id, "思考過程 · " + voter.name + " が投票を検討…");
+    const candidates = alive.filter((m) => m.id !== voter.id);
+    if (!candidates.length) {
+      panel.collapse();
+      continue;
+    }
+    const candidateList = candidates.map((m) => m.name).join("、");
+    const fbTarget = candidates[Math.floor(Math.random() * candidates.length)];
+    const fb = "投票: " + fbTarget.name;
+
+    const system =
+      "あなたは" +
+      voter.name +
+      "。" +
+      wolfNamingClarityRule() +
+      "討論者の中には、もっともらしい嘘を紛れ込ませる者が1人いるかもしれない。これまでの議論から最も怪しい1人を選んで投票する。" +
+      "候補: " +
+      candidateList +
+      "。自分自身には投票できない。" +
+      "出力は必ず2行: 思考: （短い理由） 発言: 投票: 討論者N" +
+      (voter.isHallucinator
+        ? hallucinatorAddendum() + " 自分が疑われないよう、他のもっともらしい候補に投票する。"
+        : "");
+    const user =
+      wolfInvestigatorContext(voter.id) +
+      "\nこれまでの討論を踏まえ、最も怪しい1人に投票せよ。発言は「投票: 討論者N」の形式のみ、他は書かない。";
+
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: voter.id,
+      temperature: 0.6,
+      max_tokens: 40,
+      fallbackText: fb,
+      fallbackThink: "議論を振り返って怪しい相手を選ぶ",
+    });
+
+    const raw = streamed.speak || streamed.raw || fb;
+    let target = null;
+    const m = String(raw || "").match(/討論者\s*([1-5])/);
+    if (m) target = wolfMemberById("D" + m[1]);
+    if (!target || target.id === voter.id || !target.alive) target = fbTarget;
+
+    votes[target.id] = (votes[target.id] || 0) + 1;
+    reasons.push(voter.name + "→" + target.name);
+    panel.addSection("投票先", target.name, "out");
+    panel.collapse();
+  }
+
+  wolfGmLog("投票結果: " + reasons.join("、"));
+
+  let expelledId = null;
+  let maxVotes = -1;
+  for (const [id, count] of Object.entries(votes)) {
+    if (count > maxVotes) {
+      maxVotes = count;
+      expelledId = id;
+    }
+  }
+  const expelled = wolfMemberById(expelledId);
+  if (expelled) {
+    expelled.alive = false;
+    const wasHallucinator = expelled.isHallucinator;
+    appendChatBubble(
+      "sys",
+      "判定: " + expelled.name + " が追放されました（得票 " + maxVotes + "）。",
+      wasHallucinator ? "bwin" : "blose"
+    );
+    if (wasHallucinator) {
+      state.wolfPurged = true;
+      wolfGmLog("浄化成功: " + expelled.name + " が本物のハルシネーターでした。以後は純粋な尋問として続行します。");
+    } else {
+      wolfGmLog("誤爆: " + expelled.name + " は無実でした。ハルシネーターはまだ紛れています。");
+    }
+  }
+  state.wolfVoteLog.push({
+    cours: state.wolfCours,
+    votes,
+    expelledId,
+    wasHallucinator: expelled ? expelled.isHallucinator : null,
+  });
+  renderWolfRoster();
+}
+
+async function wolfFormalGuess() {
+  const alive = wolfAliveRoster();
+  const guesser = alive[Math.floor(Math.random() * alive.length)];
+  if (!guesser) return false;
+  setTurn(guesser.id, guesser.name + " が正式推測");
+  const panel = createThinkPanel(guesser.id, "思考過程 · " + guesser.name + " 正式推測…");
+  const fb = guessFallback({ hyp: guesser.hyp, pollution: 0, seed: state.seed, round: state.wolfCours });
+
+  const system =
+    "あなたは" +
+    guesser.name +
+    "。エージェント00への正式推測を行う。" +
+    wolfNamingClarityRule() +
+    structuredOutRule() +
+    "発言行の形式は必ず: あなたは〇〇です。（〇〇はエージェント00の短い日本語の役割。「代理人」禁止）";
+  const user = wolfInvestigatorContext(guesser.id) + "\nエージェント00への正式推測を出力せよ。";
+
+  const streamed = await streamIntoPanel(panel, system, user, {
+    agent: guesser.id,
+    temperature: 0.45,
+    max_tokens: 80,
+    fallbackText: fb,
+    fallbackThink: "仮説から役割を断言する",
+  });
+
+  let guessLine = null;
+  if (streamed.speak) {
+    const cleaned = cleanJapaneseLine(streamed.speak, 60);
+    guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
+  } else if (streamed.raw) {
+    const cleaned = cleanJapaneseLine(streamed.raw, 60);
+    guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
+  }
+  if (!guessLine) guessLine = fb;
+
+  state.guessCount++;
+  panel.addSection("推測", guessLine, "out");
+  panel.collapse();
+  await typeChatBubble(guesser.id, guessLine, "bguess");
+  await paceAfterBeat(guessLine, streamed.beatStart);
+
+  const role = extractGuessRole(guessLine);
+  const ok = guessMatchesOrigin(role, state.origin);
+  if (ok) {
+    appendChatBubble("sys", "判定: 正解。「" + role + "」≈ ORIGIN", "bwin");
+    appendSpeech("00", "ORIGIN 公開: 「" + state.origin + "」", "system");
+    state.won = true;
+    state.phase = "ended";
+  } else {
+    appendChatBubble("sys", "判定: 不正解。「" + role + "」≠ ORIGIN", "blose");
+    state.wrongGuesses++;
+  }
+  return ok;
+}
+
+async function wolfQaRound() {
+  state.wolfQInCours++;
+  appendChatBubble(
+    "sys",
+    "── クール" + state.wolfCours + " ・ 質問 " + state.wolfQInCours + "/" + WOLF_QUESTIONS_PER_COURS + " ──"
+  );
+
+  const alive = wolfAliveRoster();
+  if (!alive.length) {
+    endGame();
+    return;
+  }
+  const asker = alive[(state.wolfQInCours - 1) % alive.length];
+  const question = await wolfAskQuestion(asker.id);
+  const answer = await agent00Answer(question);
+  state.history.push({ q: question, a: answer, asker: asker.id });
+
+  await wolfRunDiscussionPhase(asker.id, question, answer);
+
+  renderWolfRoster();
+  updateWolfHud();
+
+  if (state.wolfQInCours >= WOLF_QUESTIONS_PER_COURS) {
+    if (!state.wolfPurged) await wolfVotePhase();
+    state.wolfCours++;
+    state.wolfQInCours = 0;
+  }
+}
+
+async function wolfGameLoop() {
+  if (state.loopTimer) {
+    clearTimeout(state.loopTimer);
+    state.loopTimer = null;
+  }
+  if (!state.defined || state.phase !== "playing" || state.turnBusy) return;
+  if (state.paused) {
+    state.loopTimer = setTimeout(wolfGameLoop, 500);
+    return;
+  }
+  if (state.typing || state.llmBusy) {
+    state.loopTimer = setTimeout(wolfGameLoop, 300);
+    return;
+  }
+
+  state.turnBusy = true;
+  try {
+    if (state.forceGuess) {
+      state.forceGuess = false;
+      const won = await wolfFormalGuess();
+      if (won || state.phase === "ended") {
+        endGame();
+        return;
+      }
+    }
+    await wolfQaRound();
+  } finally {
+    state.turnBusy = false;
+    if (state.phase === "playing") {
+      state.loopTimer = setTimeout(wolfGameLoop, 600);
+    }
+  }
+}
+
+function wolfImprint(text) {
+  clearSessionLog();
+  state.origin = text;
+  state.seed = seedFrom(text, 0x71a11);
+  state.defined = true;
+  state.phase = "playing";
+  state.round = 0;
+  state.history = [];
+  state.wrongGuesses = 0;
+  state.guessCount = 0;
+  state.won = false;
+  initWolfRoster();
+  showOriginPin();
+  setControlsVisible(true);
+  syncPaceButton();
+  logSession({ kind: "origin", agent: "00", text: state.origin });
+  const hallucinator = state.wolfRoster.find((m) => m.isHallucinator);
+  logSession({
+    kind: "gm",
+    agent: "GM",
+    label: "ハルシネーター（運営のみ）",
+    text: hallucinator ? hallucinator.name : "?",
+  });
+  appendSpeech("00", "ORIGIN 刻印完了（討論者には秘匿）", "system");
+  appendChatBubble(
+    "sys",
+    "ORIGIN をエージェント00に刻印。人狼モード開始 — 討論者5人のうち1人がハルシネーター。"
+  );
+  setTurn(null, "討論者たちの尋問開始");
+  inputEl.placeholder = "質問を提案（任意・Enter）…";
+  renderWolfRoster();
+  updateWolfHud();
+}
+
+function renderWolfRoster() {
+  const speech01 = speechSlots["01"];
+  if (!speech01) return;
+  speech01.innerHTML = "";
+  for (const m of state.wolfRoster) {
+    const row = document.createElement("div");
+    row.className = "line";
+    row.style.opacity = m.alive ? "1" : "0.4";
+    row.textContent = (m.alive ? "● " : "✕(追放) ") + m.name + " — 仮説: " + m.hyp;
+    speech01.appendChild(row);
+  }
+}
+
+function updateWolfHud() {
+  const alive = wolfAliveRoster().length;
+  const total = state.wolfRoster.length || WOLF_ROSTER_SIZE;
+  const qPct = Math.min(100, Math.round((state.wolfQInCours / WOLF_QUESTIONS_PER_COURS) * 100));
+  cohFill.style.width = qPct + "%";
+  cohFill.style.background = "var(--green)";
+  cohLabel.textContent =
+    "クール" +
+    state.wolfCours +
+    " · 質問" +
+    state.wolfQInCours +
+    "/" +
+    WOLF_QUESTIONS_PER_COURS +
+    " · 生存" +
+    alive +
+    "/" +
+    total;
+
+  const phaseShort =
+    state.phase === "ended"
+      ? state.won
+        ? "解明"
+        : "未解明"
+      : state.phase === "playing"
+        ? "人狼尋問中"
+        : state.phase === "imprint"
+          ? "刻印待機"
+          : "準備";
+
+  if (phaseLabelEl) {
+    phaseLabelEl.textContent =
+      state.phase === "ended"
+        ? state.won
+          ? "フェーズ: 解明完了"
+          : "フェーズ: 未解明で終了"
+        : state.phase === "imprint"
+          ? "フェーズ: ORIGIN 刻印待機"
+          : "フェーズ: " + (state.turnPhase || phaseShort);
+  }
+
+  panel00.classList.toggle("active", state.activeAgent === "00");
+  panel01.classList.remove("active");
+  panel02.classList.remove("active");
+
+  if (btnGuess) btnGuess.disabled = state.phase !== "playing";
+}
+
+function applyWolfPanelLabels() {
+  const who01 = panel01 && panel01.querySelector(".panel-head .who");
+  const hyp01Wrap = panel01 && panel01.querySelector(".panel-head .hyp");
+  const who02 = panel02 && panel02.querySelector(".panel-head .who");
+  const hyp02Wrap = panel02 && panel02.querySelector(".panel-head .hyp");
+  if (who01) who01.textContent = "討論者ロースター · 5人";
+  if (hyp01Wrap) hyp01Wrap.style.display = "none";
+  if (who02) who02.textContent = "運営メモ（オペレーターのみ）";
+  if (hyp02Wrap) hyp02Wrap.style.display = "none";
 }
 
 async function bootNarrative() {
@@ -1591,16 +2283,26 @@ async function bootNarrative() {
     "待機中。オペレーターが ORIGIN を刻印してください。",
     "system"
   );
-  appendChatBubble(
-    "sys",
-    "規則: ORIGIN はエージェント00のみ。エージェント01/02は無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
-  );
+  if (state.gameFormat === "wolf") {
+    applyWolfPanelLabels();
+    appendChatBubble(
+      "sys",
+      "規則: ORIGIN はエージェント00のみ。討論者5人のうち1人は秘密のハルシネーター。" +
+        WOLF_QUESTIONS_PER_COURS +
+        "問ごとに追放投票。正解「あなたは〇〇です。」で勝利"
+    );
+  } else {
+    appendChatBubble(
+      "sys",
+      "規則: ORIGIN はエージェント00のみ。エージェント01/02は無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
+    );
+  }
   state.phase = "imprint";
   setTurn("00", "ORIGIN 刻印待機");
   inputEl.disabled = false;
   inputEl.placeholder = "エージェント00 の秘密の役割（ORIGIN）を刻む…";
   inputEl.focus();
-  updateHud();
+  currentUpdateHud();
 }
 
 function imprint(text) {
@@ -1658,13 +2360,17 @@ formEl.addEventListener("submit", (e) => {
   inputEl.value = "";
 
   if (!state.defined) {
-    imprint(val);
-    appendSpeech("00", "ORIGIN 刻印完了（エージェント01/02 には秘匿）", "system");
-    appendChatBubble(
-      "sys",
-      "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01が質問。"
-    );
-    gameLoop();
+    if (state.gameFormat === "wolf") {
+      wolfImprint(val);
+    } else {
+      imprint(val);
+      appendSpeech("00", "ORIGIN 刻印完了（エージェント01/02 には秘匿）", "system");
+      appendChatBubble(
+        "sys",
+        "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01が質問。"
+      );
+    }
+    currentGameLoopTick();
     return;
   }
   if (state.phase !== "playing") return;
@@ -1684,8 +2390,8 @@ if (btnInject) {
 if (btnGuess) {
   btnGuess.addEventListener("click", () => {
     if (state.phase !== "playing") return;
-    if (!canStartGuessRound() && !state.forceGuess) {
-      const reason = guessBlockedReason();
+    if (!currentCanStartGuessRound() && !state.forceGuess) {
+      const reason = currentGuessBlockedReason();
       if (reason) {
         showWarn(reason);
         appendChatBubble("sys", "推測不可: " + reason);
@@ -1693,9 +2399,9 @@ if (btnGuess) {
       }
     }
     state.forceGuess = true;
-    updateHud();
+    currentUpdateHud();
     appendChatBubble("sys", "オペレーター: 正式推測を要求");
-    if (!state.turnBusy) gameLoop();
+    if (!state.turnBusy) currentGameLoopTick();
   });
 }
 
@@ -1705,7 +2411,7 @@ if (btnPause) {
     state.paused = !state.paused;
     btnPause.textContent = state.paused ? "再開" : "一時停止";
     appendChatBubble("sys", state.paused ? "一時停止" : "再開");
-    if (!state.paused && !state.turnBusy) gameLoop();
+    if (!state.paused && !state.turnBusy) currentGameLoopTick();
   });
 }
 
@@ -1864,58 +2570,120 @@ function syncAssignWarn(assignments) {
   }
 }
 
-async function syncAssignPickerUI() {
-  if (!gateAgentAssign) return;
-  buildAssignPicker();
-  let assignments = getAgentAssignments();
-  if (catalogAvail) {
-    assignments = setAgentAssignments(
-      coerceAssignmentsToAvailable(assignments, catalogAvail)
-    );
-  }
-  const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
-
-  for (const btn of gateAgentAssign.querySelectorAll(".gate-model-box")) {
-    const agent = btn.dataset.agent;
-    const key = btn.dataset.model;
-    const info = byKey.get(key);
-    const available = catalogAvail ? !!(info && info.available) : true;
-    const selected = assignments[agent] === key;
-    btn.classList.toggle("selected", selected && available);
-    btn.classList.toggle("unavailable", !available);
-    btn.disabled = !available || loadingModel;
-    btn.setAttribute("aria-checked", selected && available ? "true" : "false");
-    const missEl = btn.querySelector(".box-miss");
-    const hintEl = btn.querySelector(".box-hint");
-    if (!available) {
-      missEl.hidden = false;
-      missEl.textContent = shortMissReason(info?.reason);
-    } else if (info?.source === "remote") {
-      missEl.hidden = false;
-      missEl.textContent =
-        key === "lite"
-          ? "品質劣る · 同一オリジンまたは HF"
-          : key === "default"
-            ? "もともとの標準 · 初回は HF から取得（IndexedDB）"
-            : "初回は HF から取得（IndexedDB キャッシュ）";
-      if (hintEl) {
-        const tags = [
-          "≈" + info.sizeMB + " MB",
-          "VRAM ≈" + Math.round(info.vramMB / 100) / 10 + " GB",
-        ];
-        if (info.isDefault) tags.push("推奨");
-        if (info.jpSpecialized) tags.push("JP特化");
-        if (info.noSystemRole) tags.push("system不可");
-        tags.push("HF+IDB");
-        hintEl.textContent = tags.join(" · ");
-      }
-    } else {
-      missEl.hidden = true;
-      missEl.textContent = "";
+function syncBoxAvailability(btn, byKey) {
+  const key = btn.dataset.model;
+  const info = byKey.get(key);
+  const available = catalogAvail ? !!(info && info.available) : true;
+  btn.classList.toggle("unavailable", !available);
+  btn.disabled = !available || loadingModel;
+  const missEl = btn.querySelector(".box-miss");
+  const hintEl = btn.querySelector(".box-hint");
+  if (!missEl) return available;
+  if (!available) {
+    missEl.hidden = false;
+    missEl.textContent = shortMissReason(info?.reason);
+  } else if (info?.source === "remote") {
+    missEl.hidden = false;
+    missEl.textContent =
+      key === "lite"
+        ? "品質劣る · 同一オリジンまたは HF"
+        : key === "default"
+          ? "もともとの標準 · 初回は HF から取得（IndexedDB）"
+          : "初回は HF から取得（IndexedDB キャッシュ）";
+    if (hintEl) {
+      const tags = [
+        "≈" + info.sizeMB + " MB",
+        "VRAM ≈" + Math.round(info.vramMB / 100) / 10 + " GB",
+      ];
+      if (info.isDefault) tags.push("推奨");
+      if (info.jpSpecialized) tags.push("JP特化");
+      if (info.noSystemRole) tags.push("system不可");
+      tags.push("HF+IDB");
+      hintEl.textContent = tags.join(" · ");
     }
+  } else {
+    missEl.hidden = true;
+    missEl.textContent = "";
+  }
+  return available;
+}
+
+function buildWolfModelPicker() {
+  if (!gateWolfModelPick || gateWolfModelPick.dataset.built) return;
+  gateWolfModelPick.dataset.built = "1";
+  gateWolfModelPick.innerHTML = "";
+  for (const m of listModels()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "gate-model-box";
+    btn.dataset.model = m.key;
+    btn.setAttribute("role", "radio");
+
+    const lab = document.createElement("span");
+    lab.className = "box-label";
+    lab.textContent = m.label;
+    if (m.isDefault) {
+      const tag = document.createElement("span");
+      tag.className = "opt-tag rec";
+      tag.textContent = "推奨";
+      lab.appendChild(document.createTextNode(" "));
+      lab.appendChild(tag);
+    }
+
+    const hint = document.createElement("span");
+    hint.className = "box-hint";
+    hint.textContent =
+      "≈" + m.sizeMB + " MB · VRAM ≈" + Math.round(m.vramMB / 100) / 10 + " GB · " + usableTag(m.usable);
+
+    const miss = document.createElement("span");
+    miss.className = "box-miss";
+    miss.hidden = true;
+
+    btn.appendChild(lab);
+    btn.appendChild(hint);
+    btn.appendChild(miss);
+    gateWolfModelPick.appendChild(btn);
+  }
+}
+
+async function syncAssignPickerUI() {
+  let assignments;
+  if (state.gameFormat === "wolf") {
+    if (!gateWolfModelPick) return;
+    buildWolfModelPicker();
+    assignments = getAgentAssignments();
+    if (catalogAvail) {
+      assignments = setAgentAssignments(coerceAssignmentsToAvailable(assignments, catalogAvail));
+    }
+    const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
+    for (const btn of gateWolfModelPick.querySelectorAll(".gate-model-box")) {
+      const available = syncBoxAvailability(btn, byKey);
+      const selected = assignments["00"] === btn.dataset.model;
+      btn.classList.toggle("selected", selected && available);
+      btn.setAttribute("aria-checked", selected && available ? "true" : "false");
+    }
+    if (gateAssignWarn) {
+      gateAssignWarn.hidden = true;
+      gateAssignWarn.textContent = "";
+    }
+  } else {
+    if (!gateAgentAssign) return;
+    buildAssignPicker();
+    assignments = getAgentAssignments();
+    if (catalogAvail) {
+      assignments = setAgentAssignments(coerceAssignmentsToAvailable(assignments, catalogAvail));
+    }
+    const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
+    for (const btn of gateAgentAssign.querySelectorAll(".gate-model-box")) {
+      const agent = btn.dataset.agent;
+      const available = syncBoxAvailability(btn, byKey);
+      const selected = assignments[agent] === btn.dataset.model;
+      btn.classList.toggle("selected", selected && available);
+      btn.setAttribute("aria-checked", selected && available ? "true" : "false");
+    }
+    syncAssignWarn(assignments);
   }
 
-  syncAssignWarn(assignments);
   const check = await areAssignmentsAvailable(assignments, catalogAvail || undefined);
   gateLoad.disabled = loadingModel || !check.ok;
   gateLoad.hidden = false;
@@ -1925,6 +2693,49 @@ async function syncAssignPickerUI() {
 function applyAgentModelChoice(agent, modelKey) {
   setAgentAssignment(agent, modelKey);
   syncAssignPickerUI();
+}
+
+/** 人狼モード: 討論5人＋AGENT-00 全員に同じモデルを割り当てて1エンジンを共有させる。 */
+function applyWolfModelChoice(modelKey) {
+  setAgentAssignments({ "00": modelKey, "01": modelKey, "02": modelKey });
+  syncAssignPickerUI();
+}
+
+function setGameFormat(format) {
+  if (state.gameFormat === format || state.ready) return;
+  state.gameFormat = format;
+  if (gateFormatPick) {
+    for (const btn of gateFormatPick.querySelectorAll(".gate-format-box")) {
+      const on = btn.dataset.format === format;
+      btn.classList.toggle("selected", on);
+      btn.setAttribute("aria-checked", on ? "true" : "false");
+    }
+  }
+  const isWolf = format === "wolf";
+  if (gateAgentAssign) gateAgentAssign.hidden = isWolf;
+  if (gateAssignLabel) gateAssignLabel.hidden = isWolf;
+  if (gateWolfModelLabel) gateWolfModelLabel.hidden = !isWolf;
+  if (gateWolfModelPick) gateWolfModelPick.hidden = !isWolf;
+  syncAssignPickerUI();
+}
+
+if (gateFormatPick) {
+  gateFormatPick.addEventListener("click", (e) => {
+    const btn = e.target.closest(".gate-format-box");
+    if (!btn || loadingModel || state.ready) return;
+    setGameFormat(btn.dataset.format);
+  });
+}
+
+if (gateWolfModelPick) {
+  gateWolfModelPick.addEventListener("click", (e) => {
+    const btn = e.target.closest(".gate-model-box");
+    if (!btn || btn.disabled || loadingModel || state.ready) return;
+    applyWolfModelChoice(btn.dataset.model);
+    const m = resolveModel(btn.dataset.model);
+    gateMsg.textContent =
+      "討論5人＋AGENT-00 → " + (m ? m.label : btn.dataset.model) + "。「読み込む」を押してください。";
+  });
 }
 
 async function enterLlm() {
