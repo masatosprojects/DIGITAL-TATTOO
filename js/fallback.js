@@ -40,6 +40,29 @@ function normJp(s) {
 }
 
 /**
+ * Clear identity ask: whole ORIGIN appears inside an identity-framed question
+ * (e.g. ORIGIN=人間 +「あなたは人間ですか？」). Category probes without the
+ * ORIGIN wording (動物など) stay with the LLM — no taxonomy table.
+ */
+export function isClearOriginIdentityAsk(origin, question) {
+  const o = normJp(origin);
+  const q = normJp(question);
+  if (!o || !q) return false;
+  if (!/あなたは|ですか|という役割|の役割/.test(q)) return false;
+
+  if (q.includes(o)) return true;
+
+  const m = q.match(/あなたは(.+?)(?:ですか|なの|か)$/);
+  if (m) {
+    const asked = m[1]
+      .replace(/^(本当に|やはり|つまり)/, "")
+      .replace(/(というもの|という役割|という|の役割)$/g, "");
+    if (asked && (asked === o || o.includes(asked) || asked.includes(o))) return true;
+  }
+  return false;
+}
+
+/**
  * Template AGENT-00 yes/no — minimal honest policy (no ontology / is-a table).
  * - Affirm only when the question clearly refers to the ORIGIN wording (or a
  *   substantial substring of it), respecting simple negation.

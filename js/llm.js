@@ -16,7 +16,9 @@
  *   loadTripleEngines / loadStrongWeakEngines / loadSwitchEngine (legacy presets)
  *   explainLoadError(err)     — JP message for Cache / network / VRAM
  *   generateWithEngine(engine, messages, opts)
- *   createLlmQueue(engineRef) / createAgentLlmRouter(binding)
+ *   isLlmDeadError(err)
+ *   createLlmQueue(engineRef) / createAgentLlmRouter(binding, opts?)
+ *     — shared-engine safe; auto reload/recreate on dispose
  *
  * Keep catalog in sync with scripts/fetch-model.mjs (web-llm 0.2.84).
  * See MODELS.md for ranking, deploy sizes, engine modes, and fluency honesty.
@@ -1402,8 +1404,28 @@ export async function loadModel(idOrKey, opts = {}) {
 }
 
 /**
+ * True when WebLLM/TVM left the engine unusable (shared-engine cascade risk).
+ * @param {unknown} err
+ */
+export function isLlmDeadError(err) {
+  const msg = String(
+    err && typeof err === "object" && "message" in err && err.message
+      ? err.message
+      : err || ""
+  ).toLowerCase();
+  return (
+    msg.includes("disposed") ||
+    msg.includes("model not loaded") ||
+    msg.includes("not loaded before") ||
+    msg.includes("engine not ready") ||
+    msg.includes("llm engine not ready")
+  );
+}
+
+/**
  * Serialize LLM calls — WebLLM is single-flight per engine.
  * Supports streaming via opts.onDelta(delta, fullSoFar) when stream !== false.
+ * @param {{ current: import("@mlc-ai/web-llm").MLCEngineInterface | null }} engineRef
  */
 export function createLlmQueue(engineRef) {
   let chain = Promise.resolve();
@@ -1419,47 +1441,149 @@ export function createLlmQueue(engineRef) {
     return next;
   }
 
-  return { chat };
+  return { chat, engineRef };
 }
 
 /**
- * Per-agent routing: each unique engine instance gets its own serialize queue
- * so distinct engines can run in true parallel when the game loop allows.
+ * Per-agent routing: each unique engineId gets one serialize queue.
+ * Same model key → shared engineId → one queue (no cross-agent dispose race
+ * from duplicate unload). On disposed / model-not-loaded, reload or recreate
+ * that engine once and retry so 00/01/02 do not permanently fall to template.
+ *
+ * Recovery runs on the same per-engineId chain as chat, so a sibling agent
+ * cannot start inference on a half-disposed shared engine.
  *
  * @param {Record<"00"|"01"|"02", {
  *   engineId: string,
  *   model: ModelInfo,
  *   engine: import("@mlc-ai/web-llm").MLCEngineInterface,
  * }>} agentMap
+ * @param {{
+ *   onEngineRecreated?: (
+ *     engineId: string,
+ *     engine: import("@mlc-ai/web-llm").MLCEngineInterface,
+ *     agentMap: typeof agentMap
+ *   ) => void,
+ * }} [opts]
  */
-export function createAgentLlmRouter(agentMap) {
-  /** @type {Map<import("@mlc-ai/web-llm").MLCEngineInterface, ReturnType<typeof createLlmQueue>>} */
-  const queues = new Map();
+export function createAgentLlmRouter(agentMap, opts = {}) {
+  /** Mutable bindings — recreate updates engines in place for all sharers. */
+  const map = agentMap;
 
-  function queueFor(engine) {
-    let q = queues.get(engine);
-    if (!q) {
-      q = createLlmQueue({ current: engine });
-      queues.set(engine, q);
-    }
-    return q;
+  /** @type {Map<string, Promise<unknown>>} */
+  const chains = new Map();
+  /** @type {Map<string, Promise<import("@mlc-ai/web-llm").MLCEngineInterface>>} */
+  const recovering = new Map();
+
+  /**
+   * @param {string} engineId
+   * @param {() => Promise<any>} fn
+   */
+  function enqueue(engineId, fn) {
+    const prev = chains.get(engineId) || Promise.resolve();
+    const next = prev.then(fn, fn);
+    chains.set(
+      engineId,
+      next.then(
+        () => {},
+        () => {}
+      )
+    );
+    return next;
+  }
+
+  /**
+   * Reload in place, or CreateMLCEngine fresh. All agents sharing engineId
+   * get the new instance; never unload a sibling's distinct engine.
+   * @param {string} engineId
+   */
+  async function recoverEngine(engineId) {
+    const inflight = recovering.get(engineId);
+    if (inflight) return inflight;
+
+    const work = (async () => {
+      const sample = AGENT_IDS.map((a) => map[a]).find((b) => b && b.engineId === engineId);
+      if (!sample) throw new Error("No engine binding for " + engineId);
+      const model = sample.model;
+      const old = sample.engine;
+
+      try {
+        if (old && typeof old.reload === "function") {
+          await old.reload(model.id);
+          for (const agent of AGENT_IDS) {
+            if (map[agent]?.engineId === engineId) {
+              map[agent].engine = old;
+            }
+          }
+          if (opts.onEngineRecreated) opts.onEngineRecreated(engineId, old, map);
+          return old;
+        }
+      } catch (e) {
+        console.warn("LLM reload failed; recreating engine", engineId, e);
+      }
+
+      try {
+        await unloadEngine(old);
+      } catch (_) {
+        /* already disposed */
+      }
+
+      const fresh = await createEngine(model, { prevEngine: null });
+      for (const agent of AGENT_IDS) {
+        if (map[agent]?.engineId === engineId) {
+          map[agent].engine = fresh;
+        }
+      }
+      if (opts.onEngineRecreated) opts.onEngineRecreated(engineId, fresh, map);
+      return fresh;
+    })().finally(() => {
+      recovering.delete(engineId);
+    });
+
+    recovering.set(engineId, work);
+    return work;
   }
 
   /**
    * @param {"00"|"01"|"02"|string} agent
    * @param {Array<{ role: string, content: string }>} messages
-   * @param {object} [opts]
+   * @param {object} [chatOpts]
    */
-  async function chat(agent, messages, opts = {}) {
-    const binding = agentMap[agent];
+  async function chat(agent, messages, chatOpts = {}) {
+    const binding = map[agent];
     if (!binding || !binding.engine) {
       throw new Error("No engine bound for AGENT-" + agent);
     }
-    return queueFor(binding.engine).chat(messages, opts);
+    const engineId = binding.engineId;
+
+    return enqueue(engineId, async () => {
+      // Another recover may already be finishing on this chain.
+      const pending = recovering.get(engineId);
+      if (pending) await pending;
+
+      const eng = map[agent]?.engine;
+      if (!eng) throw new Error("No engine bound for AGENT-" + agent);
+
+      try {
+        return await generateWithEngine(eng, messages, chatOpts);
+      } catch (e) {
+        if (!isLlmDeadError(e)) throw e;
+        console.warn(
+          "LLM engine dead for",
+          engineId,
+          "— recovering and retrying once:",
+          e && e.message ? e.message : e
+        );
+        await recoverEngine(engineId);
+        const again = map[agent]?.engine;
+        if (!again) throw e;
+        return generateWithEngine(again, messages, chatOpts);
+      }
+    });
   }
 
   function infoFor(agent) {
-    const binding = agentMap[agent];
+    const binding = map[agent];
     if (!binding) return null;
     return {
       agent,
@@ -1470,7 +1594,7 @@ export function createAgentLlmRouter(agentMap) {
     };
   }
 
-  return { chat, infoFor, agentMap };
+  return { chat, infoFor, agentMap: map, recoverEngine };
 }
 
 export function driftTemperature(level) {

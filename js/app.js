@@ -13,6 +13,7 @@ import {
   seedFrom,
   clip,
   answerYesNoFallback,
+  isClearOriginIdentityAsk,
   askQuestionFallback,
   debateFallback,
   updateHypFallback,
@@ -469,6 +470,9 @@ function isJapaneseChar(ch) {
     (cp >= 0x3400 && cp <= 0x4dbf) ||
     (cp >= 0x3000 && cp <= 0x303f) ||
     (cp >= 0xff61 && cp <= 0xff9f) ||
+    // ASCII / fullwidth digits — keep エージェント01 etc. (stripping → エージェントエージェント)
+    (cp >= 0x30 && cp <= 0x39) ||
+    (cp >= 0xff10 && cp <= 0xff19) ||
     cp === 0x30fc ||
     cp === 0x2014 ||
     cp === 0x2015 ||
@@ -599,7 +603,7 @@ async function typeChatBubble(agent, text, extraCls) {
   chatLog.appendChild(div);
   scrollEl(chatLog);
   await typeInto(body, text, getPace().typeMs);
-  logSession({ kind: "chat", agent, text: String(text || "") });
+  // Session log: appendSpeech already records the utterance — skip duplicate chat line.
   return div;
 }
 
@@ -878,6 +882,11 @@ function clampYesNo(raw) {
 }
 
 function forceYesNo(raw, origin, question) {
+  // Clear identity (ORIGIN literally in the question) → reliable path over LLM.
+  // Category asks without ORIGIN wording (動物 etc.) still use LLM / clamp.
+  if (isClearOriginIdentityAsk(origin, question)) {
+    return answerYesNoFallback(origin, question);
+  }
   const clamped = clampYesNo(raw);
   if (clamped) return clamped;
   // Template / garbled LLM only — identity match, never taxonomy dictionary.
@@ -890,7 +899,12 @@ function cleanJapaneseLine(raw, maxLen) {
   t = t.split(/\n+/).map((s) => s.trim()).filter(Boolean)[0] || t;
   t =
     sanitizeJapanese(t) ||
-    t.replace(/[^\u3040-\u30ff\u3400-\u9fff\u3000-\u303f\s、。！？「」・？?]/g, "").trim();
+    t
+      .replace(
+        /[^\u3040-\u30ff\u3400-\u9fff\u3000-\u303f\s、。！？「」・？?0-9０-９]/g,
+        ""
+      )
+      .trim();
   return clip(t, maxLen || 120);
 }
 
@@ -918,6 +932,48 @@ function isMetaFormatQuestion(q) {
     return true;
   }
   return false;
+}
+
+/**
+ * Reject history-echo / prompt-dump "questions" (0.5B often regurgitates Q&A).
+ * e.g. エージェントエージェント 「あなたは人間ですか？」 「いいえ？
+ */
+function isHistoryEchoQuestion(q) {
+  const raw = String(q || "").trim();
+  if (!raw) return true;
+  const t = raw.replace(/\s+/g, "");
+
+  // Doubled / stripped agent label garbage
+  if (/エージェントエージェント/.test(t)) return true;
+  if (/代理人/.test(t)) return true;
+
+  // Looks like a transcript line, not a fresh interrogative
+  if (/→|Q&A|履歴|直前の質問|エージェント00の答え/.test(t)) return true;
+  if (/\[\s*エージェント\d{0,2}/.test(raw)) return true;
+
+  // Quoted prior Q plus はい/いいえ (with or without closing brackets)
+  const quoteAsks = (raw.match(/「[^」]*[？?]/g) || []).length;
+  const hasAnswerToken = /「?(はい|いいえ)[」？?。．!！]*/.test(t);
+  if (quoteAsks >= 1 && hasAnswerToken) return true;
+  if ((raw.match(/「/g) || []).length >= 2 && hasAnswerToken) return true;
+
+  // Agent name + past Q&A mashed into one line
+  if (
+    /エージェント\d{0,2}/.test(t) &&
+    /ですか/.test(t) &&
+    /はい|いいえ/.test(t)
+  ) {
+    return true;
+  }
+
+  // Leading agent name then nested quotes (echo of speech log)
+  if (/^エージェント\d{0,2}「/.test(t) && /ですか/.test(t)) return true;
+
+  return false;
+}
+
+function isBadInvestigatorQuestion(q) {
+  return isMetaFormatQuestion(q) || isHistoryEchoQuestion(q);
 }
 
 function historyBlock(limit = 8) {
@@ -1032,8 +1088,12 @@ async function agentAskQuestion(asker) {
     }
   }
 
-  if (!question || isMetaFormatQuestion(question)) {
-    panel.addSection("質問補正", "メタ／形式指示を検知 → テンプレート質問へ", "warn");
+  if (!question || isBadInvestigatorQuestion(question)) {
+    panel.addSection(
+      "質問補正",
+      "メタ／履歴エコー／形式崩れを検知 → テンプレート質問へ",
+      "warn"
+    );
     question = fallbackQ;
   }
   panel.addSection("最終質問", question, "out");
@@ -1758,7 +1818,22 @@ async function enterLlm() {
   loadedEngines = Object.values(result.engines);
   engineRef.current = result.agentMap["00"].engine;
   agentEngineMap = result.agentMap;
-  llmRouter = createAgentLlmRouter(result.agentMap);
+  llmRouter = createAgentLlmRouter(result.agentMap, {
+    onEngineRecreated: (_engineId, _engine, map) => {
+      agentEngineMap = map;
+      const unique = [];
+      const seen = new Set();
+      for (const agent of AGENT_IDS) {
+        const eng = map[agent]?.engine;
+        if (eng && !seen.has(eng)) {
+          seen.add(eng);
+          unique.push(eng);
+        }
+      }
+      loadedEngines = unique;
+      engineRef.current = map["00"]?.engine || null;
+    },
+  });
   llmQueue = createLlmQueue(engineRef);
   state.engineMode = result.mode;
   state.agentModels = result.assignments;
