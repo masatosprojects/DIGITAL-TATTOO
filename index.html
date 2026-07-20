@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DIGITAL TATTOO — 伝言リレー</title>
+    <title>DIGITAL TATTOO — 幻覚の恐怖</title>
     <style>
         :root {
             --bg: #050805;
@@ -12,7 +12,7 @@
             --green: #39ff14;
             --amber: #c8b060;
             --warn: #c05050;
-            --handoff: #7ec87e;
+            --think: #6a8a6a;
             --scan: rgba(57, 255, 20, 0.03);
             --font: "Cascadia Code", "Consolas", "MS Gothic", "Yu Gothic", "Hiragino Sans", ui-monospace, monospace;
         }
@@ -154,12 +154,12 @@
         .line.system { color: var(--dim); }
         .line.ai { color: var(--fg); }
         .line.user { color: var(--amber); }
-        .line.handoff {
-            color: var(--handoff);
-            border-left: 2px solid rgba(126, 200, 126, 0.45);
+        .line.status {
+            color: var(--think);
+            border-left: 2px solid rgba(90, 122, 90, 0.35);
             padding-left: 0.55em;
-            margin: 0.85em 0 0.65em;
-            opacity: 0.95;
+            opacity: 0.9;
+            font-size: 0.92em;
         }
         .line.archive {
             color: var(--dim);
@@ -173,11 +173,67 @@
             animation: flicker 0.55s steps(2) infinite;
         }
 
-        .agent-tag {
-            color: var(--green);
-            opacity: 0.85;
-            margin-right: 0.35em;
+        /* ── Thinking transparency ── */
+        .think-wrap {
+            margin: 0.65em 0 0.35em;
         }
+        .think-wrap.think-done {
+            opacity: 0.82;
+        }
+        .think-panel {
+            border: 1px solid rgba(90, 122, 90, 0.35);
+            background: rgba(8, 14, 8, 0.75);
+            font-size: 0.72rem;
+            line-height: 1.5;
+        }
+        .think-summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 0.45em 0.65em;
+            color: var(--think);
+            letter-spacing: 0.06em;
+            user-select: none;
+        }
+        .think-summary::-webkit-details-marker { display: none; }
+        .think-summary::before {
+            content: "▸ ";
+            color: var(--dim);
+        }
+        .think-panel[open] > .think-summary::before {
+            content: "▾ ";
+        }
+        .think-panel[open] > .think-summary {
+            border-bottom: 1px solid rgba(90, 122, 90, 0.25);
+            color: var(--amber);
+        }
+        .think-body {
+            padding: 0.5em 0.65em 0.7em;
+            max-height: min(42vh, 360px);
+            overflow-y: auto;
+        }
+        .think-sec { margin: 0 0 0.65em; }
+        .think-lab {
+            color: var(--dim);
+            letter-spacing: 0.08em;
+            font-size: 0.65rem;
+            margin-bottom: 0.2em;
+        }
+        .think-pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #9ab89a;
+            font-family: inherit;
+            font-size: 0.7rem;
+        }
+        .think-prompt .think-pre { color: #7a9a7a; }
+        .think-raw .think-pre { color: var(--amber); opacity: 0.9; }
+        .think-out .think-pre { color: var(--green); opacity: 0.85; }
+        .think-origin .think-pre { color: var(--amber); }
+        .think-belief .think-pre { color: #c8a070; }
+        .think-warn .think-pre { color: var(--warn); }
+        .think-user .think-pre { color: var(--amber); }
+        .think-meta .think-pre { color: var(--dim); }
 
         .caret {
             display: inline-block;
@@ -399,7 +455,7 @@
 
     <div id="modelGate" role="status" aria-live="polite">
         <div class="gate-brand">DIGITAL TATTOO</div>
-        <div class="gate-sub">BATON RELAY · IN-BROWSER LLM</div>
+        <div class="gate-sub">HALLUCINATION · IN-BROWSER LLM</div>
         <div id="gateMsg">WebGPU を確認しています…</div>
         <div id="gateBar"><i id="gateFill"></i></div>
         <div id="gatePct">—</div>
@@ -414,9 +470,9 @@
 
     <div id="app">
         <div id="status">
-            <span class="brand">DIGITAL TATTOO // BATON RELAY</span>
+            <span class="brand">DIGITAL TATTOO // IMPRINT</span>
             <div id="coherenceBar" title="coherence"><i id="coherenceFill"></i></div>
-            <span id="coherenceLabel">世代 0 · COH 100%</span>
+            <span id="coherenceLabel">COH 100% · DRIFT 0</span>
             <span id="engineBadge">LLM …</span>
         </div>
 

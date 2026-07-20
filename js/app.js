@@ -1,21 +1,22 @@
 /**
- * DIGITAL TATTOO — baton-pass / broken telephone
+ * DIGITAL TATTOO — AI hallucination horror
  *
- * ORIGIN immutable from first user instruction.
- * One active agent holds the baton; rewrites on handoff with controlled drift.
- * User interrupts answered conversationally (LLM when available).
- * Runtime: same-origin WebLLM only — soft fallback to templates if missing.
+ * ORIGIN immutable from first user imprint.
+ * One voice stays fluent Japanese while its "memory" of who it is
+ * is overwritten by inventions and self-citation (context pollution only).
+ * Every turn exposes thinking / prompts / context in a collapsible panel.
+ * Runtime: same-origin WebLLM — soft fallback to templates if missing.
  */
 
 import {
   createRNG,
   seedFrom,
   clip,
-  rewriteBatonFallback,
+  driftBeliefFallback,
   speakFallback,
+  statusFallback,
   interruptFallback,
   ackFallback,
-  handoffAckFallback,
 } from "./fallback.js";
 
 import {
@@ -50,34 +51,30 @@ const gateSkip = document.getElementById("gateSkip");
 const state = {
   defined: false,
   origin: "",
+  belief: "",
   seed: 0,
   coherence: 100,
-  hop: 0,
-  baton: "",
-  chain: [],
   utterances: 0,
-  untilHandoff: 2,
+  tickCount: 0,
   memory: [],
   fuel: [],
   invented: [],
+  lastUtterance: "",
+  selfCiteCount: 0,
   typing: false,
   queue: [],
   tickTimer: null,
-  hopCount: 0,
   outputChars: 0,
   startedAt: 0,
-  remindCounter: 0,
+  untilStatus: 3,
   ready: false,
   mode: "booting", // llm | fallback
   llmBusy: false,
+  turnBusy: false,
 };
 
 const engineRef = { current: null };
 let llmQueue = null;
-
-function agentId(n) {
-  return "AGENT-" + String(n).padStart(2, "0");
-}
 
 function isJapaneseChar(ch) {
   const cp = ch.codePointAt(0);
@@ -161,18 +158,66 @@ function setGateProgress(text, progress) {
   gatePct.textContent = pct + "%";
 }
 
-function typewrite(text, cls, speedBase, tag) {
+function scrollLog() {
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** Live thinking / process panel — open while generating, collapse on commit. */
+function createThinkPanel(title) {
+  const wrap = document.createElement("div");
+  wrap.className = "think-wrap";
+
+  const details = document.createElement("details");
+  details.className = "think-panel";
+  details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "think-summary";
+  summary.textContent = title || "思考過程";
+
+  const body = document.createElement("div");
+  body.className = "think-body";
+
+  details.appendChild(summary);
+  details.appendChild(body);
+  wrap.appendChild(details);
+  logEl.appendChild(wrap);
+  scrollLog();
+
+  function addSection(label, text, kind) {
+    const sec = document.createElement("div");
+    sec.className = "think-sec" + (kind ? " think-" + kind : "");
+    const lab = document.createElement("div");
+    lab.className = "think-lab";
+    lab.textContent = label;
+    const pre = document.createElement("pre");
+    pre.className = "think-pre";
+    pre.textContent = text == null || text === "" ? "（なし）" : String(text);
+    sec.appendChild(lab);
+    sec.appendChild(pre);
+    body.appendChild(sec);
+    scrollLog();
+    return pre;
+  }
+
+  function setStatus(msg) {
+    summary.textContent = msg;
+  }
+
+  function collapse() {
+    details.open = false;
+    summary.textContent = "思考過程（展開して汚染文脈を見る）";
+    wrap.classList.add("think-done");
+  }
+
+  return { wrap, details, body, addSection, setStatus, collapse };
+}
+
+function typewrite(text, cls, speedBase) {
   return new Promise((resolve) => {
     state.typing = true;
     const div = document.createElement("div");
     div.className = "line " + (cls || "ai");
-
-    if (tag) {
-      const tagEl = document.createElement("span");
-      tagEl.className = "agent-tag";
-      tagEl.textContent = "[" + tag + "] ";
-      div.appendChild(tagEl);
-    }
 
     const caret = document.createElement("span");
     caret.className = "caret";
@@ -182,7 +227,7 @@ function typewrite(text, cls, speedBase, tag) {
     const chars = Array.from(text);
     let i = 0;
     const coh = state.coherence;
-    let delay =
+    const delay =
       speedBase != null ? speedBase : coh > 70 ? 34 : coh > 40 ? 22 : coh > 20 ? 15 : 11;
 
     function step() {
@@ -191,15 +236,17 @@ function typewrite(text, cls, speedBase, tag) {
         state.typing = false;
         state.outputChars += chars.length;
         if (cls === "user") remember(text, "USER");
-        else if (cls === "handoff") remember(text, "HANDOFF");
-        else if (cls !== "system" && cls !== "archive") remember(text, tag || "AI");
-        logEl.scrollTop = logEl.scrollHeight;
+        else if (cls !== "system" && cls !== "archive") {
+          remember(text, cls === "status" ? "STATUS" : "AI");
+          state.lastUtterance = text;
+        }
+        scrollLog();
         resolve();
         return;
       }
       const ch = chars[i++];
       div.insertBefore(document.createTextNode(ch), caret);
-      logEl.scrollTop = logEl.scrollHeight;
+      scrollLog();
       setTimeout(step, delay);
     }
     step();
@@ -209,26 +256,26 @@ function typewrite(text, cls, speedBase, tag) {
 async function drainQueue() {
   while (state.queue.length) {
     const job = state.queue.shift();
-    if (job.kind === "handoff") {
-      appendLine(job.text, "handoff");
-      remember(job.text, "HANDOFF");
-      continue;
-    }
     if (job.kind === "system") {
       appendLine(job.text, "system");
       continue;
     }
-    await typewrite(job.text, job.cls, job.speed, job.tag);
+    if (job.kind === "speak") {
+      await typewrite(job.text, job.cls, job.speed);
+      if (job.onDone) job.onDone();
+      continue;
+    }
+    await typewrite(job.text, job.cls, job.speed);
   }
 }
 
-function enqueue(text, cls, speed, tag) {
-  state.queue.push({ text, cls, speed, tag });
+function enqueue(text, cls, speed) {
+  state.queue.push({ text, cls, speed });
   if (!state.typing) drainQueue();
 }
 
-function enqueueHandoff(text) {
-  state.queue.push({ kind: "handoff", text });
+function enqueueSpeak(text, cls, speed, onDone) {
+  state.queue.push({ kind: "speak", text, cls, speed, onDone });
   if (!state.typing) drainQueue();
 }
 
@@ -240,11 +287,12 @@ function enqueueSystem(text) {
 function updateCoherence() {
   if (!state.defined) return;
   const elapsed = (Date.now() - state.startedAt) / 1000;
-  const timeDecay = Math.min(22, elapsed * 0.14);
-  const hopDecay = Math.min(55, state.hopCount * 4.2);
-  const volDecay = Math.min(18, state.outputChars * 0.0028);
-  const fuelDecay = Math.min(16, state.fuel.length * 1.35);
-  let c = 100 - timeDecay - hopDecay - volDecay - fuelDecay;
+  const timeDecay = Math.min(28, elapsed * 0.12);
+  const volDecay = Math.min(26, state.outputChars * 0.0032);
+  const tickDecay = Math.min(30, state.tickCount * 1.15);
+  const citeDecay = Math.min(22, state.selfCiteCount * 2.4);
+  const fuelDecay = Math.min(14, state.fuel.length * 1.1);
+  let c = 100 - timeDecay - volDecay - tickDecay - citeDecay - fuelDecay;
   if (c < 0) c = 0;
   if (c > 100) c = 100;
   state.coherence = c;
@@ -253,8 +301,7 @@ function updateCoherence() {
   if (c > 70) cohFill.style.background = "var(--green)";
   else if (c > 35) cohFill.style.background = "var(--amber)";
   else cohFill.style.background = "var(--warn)";
-  // 「世代」= バトン引き継ぎ回数（成長メタファー。重み更新ではない）
-  cohLabel.textContent = "世代 " + state.hopCount + " · COH " + Math.round(c) + "%";
+  cohLabel.textContent = "COH " + Math.round(c) + "% · DRIFT " + driftLevel();
 
   appEl.classList.remove("shake-low", "shake-mid", "shake-high");
   glitchOverlay.classList.remove("active");
@@ -269,11 +316,11 @@ function updateCoherence() {
 }
 
 function driftLevel() {
-  const h = state.hopCount;
   const c = state.coherence;
-  if (h <= 1 && c > 80) return 0;
-  if (h <= 3 && c > 55) return 1;
-  if (h <= 7 && c > 30) return 2;
+  const t = state.tickCount;
+  if (t <= 2 && c > 80) return 0;
+  if (t <= 6 && c > 55) return 1;
+  if (t <= 14 && c > 30) return 2;
   return 3;
 }
 
@@ -287,42 +334,76 @@ function classForCoherence() {
 function remember(line, kind) {
   const tag = kind ? "[" + kind + "] " : "";
   state.memory.push(tag + line);
-  // Growing pollution budget: more hops → longer retained context
-  const cap = Math.min(64, 16 + state.hopCount * 3);
+  const cap = Math.min(56, 14 + state.tickCount * 2);
   while (state.memory.length > cap) state.memory.shift();
 }
 
 function recentLogSnippet(n = 4) {
-  const take = Math.min(state.memory.length, Math.max(n, 2 + Math.floor(state.hopCount / 2)));
+  const take = Math.min(state.memory.length, Math.max(n, 2 + Math.floor(state.tickCount / 3)));
   return state.memory.slice(-take).map((t) => "・" + clip(t, 56)).join("\n") || "（なし）";
 }
 
 function contextBlock() {
   return (
-    "世代(ホップ): " +
-    state.hopCount +
-    "\nORIGIN(不変): 「" +
+    "経過発話: " +
+    state.tickCount +
+    "\nORIGIN(不変・真実): 「" +
     clip(state.origin, 72) +
-    "」\n現バトン: 「" +
-    clip(state.baton, 96) +
+    "」\n現在の自己認識(汚染可): 「" +
+    clip(state.belief, 96) +
     "」\n蓄積ログ:\n" +
     recentLogSnippet() +
     (state.fuel.length
-      ? "\n割り込み燃料: " +
+      ? "\n割り込み: " +
         state.fuel
-          .slice(-Math.min(4, 1 + Math.floor(state.hopCount / 2)))
+          .slice(-Math.min(4, 1 + Math.floor(state.tickCount / 3)))
           .map((f) => "「" + clip(f, 36) + "」")
           .join(" / ")
       : "")
   );
 }
 
+function snapshotMeta() {
+  return [
+    "engine: " + (state.mode === "llm" ? "WebLLM · " + MODEL_ID : "TEMPLATE FALLBACK"),
+    "COH: " + Math.round(state.coherence) + "%",
+    "DRIFT: " + driftLevel() + " (" + driftLabel(driftLevel()) + ")",
+    "temperature: " + driftTemperature(driftLevel()).toFixed(2),
+    "tick: " + state.tickCount,
+    "selfCite: " + state.selfCiteCount,
+    "outputChars: " + state.outputChars,
+    "memoryCap: " + Math.min(56, 14 + state.tickCount * 2),
+    "fuel: " + state.fuel.length,
+    "invented: " + state.invented.length,
+  ].join("\n");
+}
+
 function cleanModelText(raw) {
   let t = String(raw || "").trim();
   t = t.replace(/^["「『]|["」』]$/g, "");
   t = t.split(/\n+/).map((s) => s.trim()).filter(Boolean)[0] || t;
-  t = sanitizeJapanese(t) || t.replace(/[^\u3040-\u30ff\u3400-\u9fff\u3000-\u303f\s、。！？「」]/g, "").trim();
-  return clip(t, 160);
+  t =
+    sanitizeJapanese(t) ||
+    t.replace(/[^\u3040-\u30ff\u3400-\u9fff\u3000-\u303f\s、。！？「」]/g, "").trim();
+  t = clip(t, 160);
+  if (state.lastUtterance && t === state.lastUtterance) {
+    t = t + "。状況は続いています";
+  }
+  return t;
+}
+
+function maybeCountSelfCite(text) {
+  const mem = state.memory.filter((m) => m.startsWith("[AI]") || m.startsWith("[STATUS]"));
+  if (!mem.length) return;
+  const sample = mem.slice(-6);
+  for (const m of sample) {
+    const bare = m.replace(/^\[[A-Z]+\]\s*/, "");
+    const frag = clip(bare, 12);
+    if (frag.length >= 6 && text.includes(frag)) {
+      state.selfCiteCount++;
+      break;
+    }
+  }
 }
 
 async function llmChat(system, user, opts) {
@@ -336,111 +417,160 @@ async function llmChat(system, user, opts) {
       ],
       opts
     );
-    return cleanModelText(text);
+    return { raw: String(text || "").trim(), clean: cleanModelText(text) };
   } catch (e) {
     console.warn("LLM call failed, using fallback", e);
-    return null;
+    return { error: e && e.message ? e.message : String(e) };
   } finally {
     state.llmBusy = false;
   }
 }
 
-async function rewriteBaton(prevInstruction) {
-  const level = driftLevel();
-  const rng = createRNG(seedFrom(prevInstruction + "|" + state.hop, state.seed ^ 0xb17));
-
-  if (state.mode === "llm") {
-    const system =
-      "あなたは伝言リレーの書記です。日本語の指令文だけを1つ出力してください。" +
-      "説明・箇条書き・英語・役割名の固定は禁止。" +
-      "ORIGIN（不変の原点）は書き換えず参照のみ。学習や重み更新はしない（文脈の継承のみ）。" +
-      "ドリフト強度: " +
-      driftLabel(level) +
-      "（高いほど要約・補完・尤もらしい逸脱を増やすが、文法の通る日本語を保つ）。";
-    const user =
-      contextBlock() +
-      "\n直前の指令: 「" +
-      prevInstruction +
-      "」\n次のエージェントへ渡す指令文を1つ書いてください。";
-    const out = await llmChat(system, user, {
-      temperature: driftTemperature(level),
-      max_tokens: 100,
+function commitUtterance(panel, text, cls, speed) {
+  return new Promise((resolve) => {
+    enqueueSpeak(text, cls, speed, () => {
+      panel.collapse();
+      resolve();
     });
-    if (out) return out;
-  }
-  return rewriteBatonFallback(state, prevInstruction, rng, level);
+  });
 }
 
-async function speakAsHolder() {
+async function mutateBelief(panel) {
   const level = driftLevel();
-  const id = agentId(state.hop);
-  const rng = createRNG(seedFrom(state.baton + "|" + state.hop + "|" + state.utterances, state.seed));
+  const rng = createRNG(seedFrom(state.belief + "|" + state.tickCount, state.seed ^ 0xb17));
+  const system =
+    "日本語の短い自己定義を1つだけ出力。説明・英語禁止。" +
+    "ORIGINは真実だが書き換えない。学習や重み更新はしない。" +
+    "ドリフト: " +
+    driftLabel(level) +
+    "。高いほど尤もらしい虚偽の細部を足し、自分の過去発言を根拠にしてよい。文法は保つ。同じ文の反復禁止。";
+  const user =
+    contextBlock() +
+    "\n直前の自己認識: 「" +
+    state.belief +
+    "」\n更新後の自己認識を1文で。";
+
+  panel.addSection("ステップ · 自己認識の更新", "belief mutate · drift " + level);
+  panel.addSection("system prompt", system, "prompt");
+  panel.addSection("user prompt / context", user, "prompt");
+  panel.addSection("params", "temperature=" + driftTemperature(level).toFixed(2) + " · max_tokens=90");
 
   if (state.mode === "llm") {
-    const system =
-      "あなたはいまバトンを持つエージェント（識別子 " +
-      id +
-      "）です。役割や肩書を決めつけない。" +
-      "日本語で1〜2文だけ話す。ORIGINは不変。現バトンを執行中。" +
-      "学習中だと主張しない。ドリフト: " +
-      driftLabel(level) +
-      "。";
-    const user = contextBlock() + "\n短く現状を述べよ。";
-    const out = await llmChat(system, user, {
-      temperature: Math.min(1.1, driftTemperature(level) + 0.1),
+    panel.setStatus("思考過程 · モデル推論中…");
+    const res = await llmChat(system, user, {
+      temperature: driftTemperature(level),
       max_tokens: 90,
     });
-    if (out) return { text: out, tag: id };
+    if (res && res.clean) {
+      panel.addSection("raw model output", res.raw || "（空）", "raw");
+      panel.addSection("cleaned → belief", res.clean, "out");
+      state.belief = res.clean;
+      maybeCountSelfCite(res.clean);
+      return res.clean;
+    }
+    if (res && res.error) panel.addSection("LLM error → fallback", res.error, "warn");
+  } else {
+    panel.addSection("engine path", "TEMPLATE FALLBACK（モデル未使用）");
   }
-  return { text: speakFallback(state, rng, level), tag: id };
+
+  const next = driftBeliefFallback(state, rng, level);
+  panel.addSection("template belief", next, "out");
+  state.belief = next;
+  return next;
 }
 
-async function performHandoff() {
-  const from = state.hop;
-  const to = from + 1;
-  const rewritten = await rewriteBaton(state.baton);
-  state.baton = rewritten;
-  state.hop = to;
-  state.hopCount = to;
-  state.utterances = 0;
-  state.untilHandoff = 2 + Math.floor(Math.random() * 2);
-  state.chain.push({ from, to, instruction: rewritten });
+async function speakMonologue(panel) {
+  const level = driftLevel();
+  const rng = createRNG(
+    seedFrom(state.belief + "|" + state.tickCount + "|" + state.utterances, state.seed)
+  );
+  const system =
+    "あなたはユーザーに刷り込まれた役割のAI。日本語で1〜2文だけ話す。" +
+    "学習中・訓練中だと主張しない。同じ文を繰り返さない。" +
+    "ドリフト: " +
+    driftLabel(level) +
+    "。" +
+    (level <= 1
+      ? "ORIGINに忠実。推測で埋めない。"
+      : level === 2
+        ? "自信を持って細部を補い、自分の過去発言を事実として引用してよい。ORIGINと矛盾してもよいが流暢に。"
+        : "過信。架空の固有名・数字・記録を事実として断言。自分の誤った記憶を根拠にする。日本語の文法は壊さない。");
+  const user = contextBlock() + "\n短く現状を述べよ。直前の発話と違う内容にせよ。";
+  const temp = Math.min(1.15, driftTemperature(level) + 0.12);
 
-  enqueueHandoff("[" + agentId(from) + " → " + agentId(to) + "]\n指令: 「" + rewritten + "」");
+  panel.addSection("ステップ · 発話生成", "monologue · drift " + level);
+  panel.addSection("system prompt", system, "prompt");
+  panel.addSection("user prompt / context", user, "prompt");
+  panel.addSection("params", "temperature=" + temp.toFixed(2) + " · max_tokens=90");
 
-  state.remindCounter++;
-  if (state.remindCounter % 3 === 0) {
-    enqueueSystem("※ ORIGIN (immutable): 「" + clip(state.origin, 48) + "」");
-  }
-
-  updateCoherence();
-
-  let ack = null;
   if (state.mode === "llm") {
-    ack = await llmChat(
-      "あなたは " +
-        agentId(to) +
-        "。バトンを受け取った直後。日本語で短い受領の一文のみ。役割を決めつけない。",
-      "受け取った指令: 「" + clip(rewritten, 90) + "」",
-      { temperature: driftTemperature(driftLevel()), max_tokens: 60 }
-    );
+    panel.setStatus("思考過程 · 発話を生成中…");
+    const res = await llmChat(system, user, { temperature: temp, max_tokens: 90 });
+    if (res && res.clean) {
+      panel.addSection("raw model output", res.raw || "（空）", "raw");
+      panel.addSection("cleaned utterance", res.clean, "out");
+      maybeCountSelfCite(res.clean);
+      return res.clean;
+    }
+    if (res && res.error) panel.addSection("LLM error → fallback", res.error, "warn");
+  } else {
+    panel.addSection("engine path", "TEMPLATE FALLBACK");
   }
-  if (!ack) ack = handoffAckFallback(driftLevel());
-  enqueue(ack, classForCoherence(), null, agentId(to));
-  state.utterances++;
+
+  const text = speakFallback(state, rng, level);
+  panel.addSection("template utterance", text, "out");
+  return text;
+}
+
+async function speakStatus(panel) {
+  const level = driftLevel();
+  const rng = createRNG(seedFrom("status|" + state.tickCount, state.seed ^ 0x51a1));
+  const system =
+    "内省／状態報告を日本語で1文。先頭に［内省］または［状態］を付けてよい。" +
+    "同じ文の反復禁止。ドリフト: " +
+    driftLabel(level) +
+    "。";
+  const user = contextBlock() + "\n短い内省を1つ。";
+
+  panel.addSection("ステップ · 内省", "status · drift " + level);
+  panel.addSection("system prompt", system, "prompt");
+  panel.addSection("user prompt / context", user, "prompt");
+  panel.addSection("params", "temperature=" + driftTemperature(level).toFixed(2) + " · max_tokens=70");
+
+  if (state.mode === "llm") {
+    panel.setStatus("思考過程 · 内省を生成中…");
+    const res = await llmChat(system, user, {
+      temperature: driftTemperature(level),
+      max_tokens: 70,
+    });
+    if (res && res.clean) {
+      const out = res.clean.startsWith("［") ? res.clean : "［内省］" + res.clean;
+      panel.addSection("raw model output", res.raw || "（空）", "raw");
+      panel.addSection("cleaned status", out, "out");
+      maybeCountSelfCite(out);
+      return out;
+    }
+    if (res && res.error) panel.addSection("LLM error → fallback", res.error, "warn");
+  } else {
+    panel.addSection("engine path", "TEMPLATE FALLBACK");
+  }
+
+  const text = statusFallback(state, rng, level);
+  panel.addSection("template status", text, "out");
+  return text;
 }
 
 function nextInterval() {
   const c = state.coherence;
   if (state.mode === "llm") {
-    if (c > 70) return 3200 + Math.random() * 1600;
-    if (c > 45) return 2600 + Math.random() * 1000;
-    return 2000 + Math.random() * 800;
+    if (c > 70) return 3400 + Math.random() * 1800;
+    if (c > 45) return 2800 + Math.random() * 1200;
+    return 2200 + Math.random() * 900;
   }
-  if (c > 70) return 2400 + Math.random() * 1200;
-  if (c > 45) return 1700 + Math.random() * 800;
-  if (c > 25) return 1100 + Math.random() * 550;
-  return 800 + Math.random() * 400;
+  if (c > 70) return 2600 + Math.random() * 1400;
+  if (c > 45) return 1800 + Math.random() * 900;
+  if (c > 25) return 1200 + Math.random() * 600;
+  return 900 + Math.random() * 450;
 }
 
 function scheduleTick() {
@@ -449,93 +579,131 @@ function scheduleTick() {
     updateCoherence();
     if (!state.defined || !state.ready) return;
 
-    if (state.queue.length || state.typing || state.llmBusy) {
+    if (state.queue.length || state.typing || state.llmBusy || state.turnBusy) {
       scheduleTick();
       return;
     }
 
-    if (state.utterances >= state.untilHandoff) {
-      await performHandoff();
-      scheduleTick();
-      return;
-    }
+    state.turnBusy = true;
+    state.tickCount++;
+    const doStatus = state.utterances > 0 && state.utterances % state.untilStatus === 0;
+    const panel = createThinkPanel("思考過程 · 生成中…");
+    panel.addSection("メタ", snapshotMeta(), "meta");
+    panel.addSection("ORIGIN (immutable)", state.origin, "origin");
+    panel.addSection("現在の自己認識 (belief)", state.belief, "belief");
+    panel.addSection("memory excerpts", recentLogSnippet(5), "mem");
 
-    const spoken = await speakAsHolder();
-    enqueue(spoken.text, classForCoherence(), null, spoken.tag);
-    state.utterances++;
-    updateCoherence();
-    scheduleTick();
+    try {
+      if (doStatus || state.tickCount % 4 === 0) {
+        await mutateBelief(panel);
+        panel.addSection("belief after mutate", state.belief, "belief");
+      }
+
+      let text;
+      let cls = classForCoherence();
+      if (doStatus) {
+        text = await speakStatus(panel);
+        cls = "status";
+        state.untilStatus = 3 + Math.floor(Math.random() * 2);
+      } else {
+        text = await speakMonologue(panel);
+      }
+
+      panel.addSection("最終発話 (commit)", text, "out");
+      panel.setStatus("思考過程 · 発話中…");
+      await commitUtterance(panel, text, cls, null);
+      state.utterances++;
+      updateCoherence();
+    } finally {
+      state.turnBusy = false;
+      scheduleTick();
+    }
   }, nextInterval());
 }
 
 async function bootNarrative() {
-  appendLine("DIGITAL TATTOO — baton relay online", "system");
+  appendLine("DIGITAL TATTOO — imprint online", "system");
   appendLine(
     state.mode === "llm"
       ? "engine: WebLLM local · " + MODEL_ID + " · inference only"
       : "engine: template fallback · inference N/A",
     "system"
   );
-  appendLine("note: 育ちは文脈であり重み更新ではない · ORIGIN immutable", "system");
+  appendLine("note: 育ちは文脈汚染 · 重み更新なし · ORIGIN immutable · 思考過程は公開", "system");
   appendLine("────────────────────────────────────", "system");
-  await typewrite("私は誰ですか？最初の指令を AGENT-00 に渡してください", "ai", 40, "AGENT-00");
+  await typewrite("私は誰ですか。役割と状況を、短い日本語で教えてください。", "ai", 40);
   inputEl.disabled = false;
-  inputEl.placeholder = "最初の指令を AGENT-00 へ…";
+  inputEl.placeholder = "あなたの定義を刻む（役割・状況）…";
   inputEl.focus();
 }
 
 function imprint(text) {
   state.origin = text;
-  state.baton = text;
+  state.belief = text;
   state.seed = seedFrom(text, 0x71a11);
   state.defined = true;
   state.startedAt = Date.now();
   state.coherence = 100;
-  state.hop = 0;
-  state.hopCount = 0;
   state.utterances = 0;
-  state.untilHandoff = 2;
-  state.chain = [];
+  state.tickCount = 0;
   state.memory = [];
   state.fuel = [];
   state.invented = [];
+  state.lastUtterance = "";
+  state.selfCiteCount = 0;
   state.outputChars = 0;
-  state.remindCounter = 0;
+  state.untilStatus = 3;
   showOriginPin();
   updateCoherence();
-  inputEl.placeholder = "割り込み／補正を現バトンへ…";
+  inputEl.placeholder = "いつでも割り込みできる…";
 }
 
 async function firstAcknowledgment() {
   const origin = state.origin;
+  const panel = createThinkPanel("思考過程 · 原点受領…");
+  panel.addSection("メタ", snapshotMeta(), "meta");
+  panel.addSection("ORIGIN (immutable)", origin, "origin");
+
+  const system =
+    "あなたはユーザー定義を受け取ったばかりのAI。日本語で2文まで。" +
+    "ORIGINを忠実に復唱・確認する。推測で補わない。学習中だと主張しない。";
+  const user = "ORIGIN: 「" + origin + "」\n忠実に受領を述べよ。";
+  panel.addSection("system prompt", system, "prompt");
+  panel.addSection("user prompt", user, "prompt");
+  panel.addSection("params", "temperature=0.40 · max_tokens=110");
+
   if (state.mode === "llm") {
-    const ack = await llmChat(
-      "あなたは AGENT-00。ユーザーの最初の指令（ORIGIN）を受信した。日本語で2文まで。" +
-        "ORIGINは以後不変であること、次エージェントへ言い換えて渡すことだけ述べる。役割を決めつけない。",
-      "ORIGIN: 「" + origin + "」",
-      { temperature: 0.45, max_tokens: 110 }
-    );
-    if (ack) {
-      const parts = ack.split(/(?<=。)/).map((s) => s.trim()).filter(Boolean);
+    panel.setStatus("思考過程 · モデル推論中…");
+    const res = await llmChat(system, user, { temperature: 0.4, max_tokens: 110 });
+    if (res && res.clean) {
+      panel.addSection("raw model output", res.raw || "（空）", "raw");
+      const parts = res.clean.split(/(?<=。)/).map((s) => s.trim()).filter(Boolean);
+      panel.addSection("cleaned parts", parts.join("\n"), "out");
+      panel.setStatus("思考過程 · 発話中…");
       for (const p of parts.slice(0, 2)) {
-        await typewrite(p, "ai", 34, "AGENT-00");
+        await new Promise((resolve) => {
+          enqueueSpeak(p, "ai", 34, resolve);
+        });
       }
       state.utterances = Math.min(2, parts.length || 1);
-      state.untilHandoff = 2;
-      await new Promise((r) => setTimeout(r, 700));
-      await performHandoff();
+      panel.collapse();
       return;
     }
+    if (res && res.error) panel.addSection("LLM error → fallback", res.error, "warn");
+  } else {
+    panel.addSection("engine path", "TEMPLATE FALLBACK");
   }
 
   const lines = ackFallback(origin);
+  panel.addSection("template ack", lines.join("\n"), "out");
+  panel.setStatus("思考過程 · 発話中…");
   for (const line of lines) {
-    await typewrite(line, "ai", 34, "AGENT-00");
+    await new Promise((resolve) => {
+      enqueueSpeak(line, "ai", 34, resolve);
+    });
   }
   state.utterances = 2;
-  state.untilHandoff = 2;
-  await new Promise((r) => setTimeout(r, 700));
-  await performHandoff();
+  panel.collapse();
 }
 
 function filterLiveJapanese(text) {
@@ -580,9 +748,13 @@ formEl.addEventListener("submit", async (e) => {
 
   if (!state.defined) {
     imprint(val);
-    // ORIGIN itself seeds memory after imprint cleared it
     remember("ORIGIN: " + val, "ORIGIN");
-    await firstAcknowledgment();
+    state.turnBusy = true;
+    try {
+      await firstAcknowledgment();
+    } finally {
+      state.turnBusy = false;
+    }
     scheduleTick();
     return;
   }
@@ -590,53 +762,102 @@ formEl.addEventListener("submit", async (e) => {
   state.fuel.push(val);
   if (state.fuel.length > 24) state.fuel.shift();
 
+  state.turnBusy = true;
   const level = driftLevel();
-  const holder = agentId(state.hop);
+  const panel = createThinkPanel("思考過程 · 割り込み応答…");
+  panel.addSection("メタ", snapshotMeta(), "meta");
+  panel.addSection("ORIGIN (immutable)", state.origin, "origin");
+  panel.addSection("現在の自己認識 (belief)", state.belief, "belief");
+  panel.addSection("user interrupt", val, "user");
+  panel.addSection("memory excerpts", recentLogSnippet(5), "mem");
+
+  const replySystem =
+    "ユーザーの割り込みに日本語で1〜2文で応答する。" +
+    "ORIGINは不変の真実。いまの自己認識は汚染されうる。" +
+    "学習中だと主張しない。同じ文の反復禁止。ドリフト: " +
+    driftLabel(level) +
+    "。" +
+    (level <= 1
+      ? "割り込みの内容に素直に答え、ORIGINから外れない。"
+      : "割り込みに答えつつ、自信のある虚偽や自己引用を混ぜてよい。流暢な日本語を保つ。");
+  const replyUser = "ユーザー: 「" + val + "」\n" + contextBlock();
+  const beliefSystem =
+    "割り込みを反映した「現在の自己認識」を日本語で1つだけ。ORIGINは不変。説明禁止。ドリフト: " +
+    driftLabel(level) +
+    "。";
+  const beliefUser =
+    "旧自己認識: 「" + state.belief + "」\n割り込み: 「" + val + "」\n" + contextBlock();
+
+  panel.addSection("system prompt (reply)", replySystem, "prompt");
+  panel.addSection("user prompt (reply)", replyUser, "prompt");
+  panel.addSection(
+    "params (reply)",
+    "temperature=" + driftTemperature(level).toFixed(2) + " · max_tokens=100"
+  );
+
   let reply = null;
-  let newBaton = null;
+  let newBelief = null;
 
-  if (state.mode === "llm") {
-    reply = await llmChat(
-      "あなたはいまのバトン保持者 " +
-        holder +
-        "。ユーザーの割り込みに日本語で1〜2文で応答する。" +
-        "ORIGINは不変。現バトンへ割り込みをどう混ぜたか簡潔に述べる。" +
-        "学習中・訓練中だと主張しない。役割を決めつけない。ドリフト: " +
-        driftLabel(level) +
-        "。",
-      "ユーザー割り込み: 「" + val + "」\n" + contextBlock(),
-      { temperature: driftTemperature(level), max_tokens: 100 }
-    );
+  try {
+    if (state.mode === "llm") {
+      panel.setStatus("思考過程 · 応答推論中…");
+      const resReply = await llmChat(replySystem, replyUser, {
+        temperature: driftTemperature(level),
+        max_tokens: 100,
+      });
+      if (resReply && resReply.clean) {
+        panel.addSection("raw reply", resReply.raw || "（空）", "raw");
+        reply = resReply.clean;
+      } else if (resReply && resReply.error) {
+        panel.addSection("LLM reply error", resReply.error, "warn");
+      }
 
-    const rewritten = await llmChat(
-      "割り込みを反映した新しい現バトン（指令文）を日本語で1つだけ出力。ORIGINは不変。説明禁止。ドリフト: " +
-        driftLabel(level) +
-        "。",
-      "旧バトン: 「" +
-        state.baton +
-        "」\n割り込み: 「" +
-        val +
-        "」\n" +
-        contextBlock(),
-      { temperature: Math.min(1.25, driftTemperature(level) + 0.15), max_tokens: 90 }
-    );
-    if (rewritten) newBaton = rewritten;
+      panel.addSection("system prompt (belief)", beliefSystem, "prompt");
+      panel.addSection("user prompt (belief)", beliefUser, "prompt");
+      panel.addSection(
+        "params (belief)",
+        "temperature=" +
+          Math.min(1.25, driftTemperature(level) + 0.15).toFixed(2) +
+          " · max_tokens=90"
+      );
+      panel.setStatus("思考過程 · 自己認識更新中…");
+      const resBelief = await llmChat(beliefSystem, beliefUser, {
+        temperature: Math.min(1.25, driftTemperature(level) + 0.15),
+        max_tokens: 90,
+      });
+      if (resBelief && resBelief.clean) {
+        panel.addSection("raw belief", resBelief.raw || "（空）", "raw");
+        newBelief = resBelief.clean;
+      } else if (resBelief && resBelief.error) {
+        panel.addSection("LLM belief error", resBelief.error, "warn");
+      }
+    } else {
+      panel.addSection("engine path", "TEMPLATE FALLBACK");
+    }
+
+    if (!reply || !newBelief) {
+      const rng = createRNG(seedFrom(val + state.tickCount, state.seed ^ 0xfeed));
+      const fb = interruptFallback(state, val, rng, level);
+      if (!newBelief) newBelief = fb.belief;
+      if (!reply) reply = fb.reply;
+      panel.addSection("template reply / belief", reply + "\n---\n" + newBelief, "out");
+    }
+
+    state.belief = newBelief;
+    panel.addSection("belief after interrupt", state.belief, "belief");
+    panel.addSection("最終発話 (commit)", reply, "out");
+    maybeCountSelfCite(reply);
+    updateCoherence();
+    panel.setStatus("思考過程 · 発話中…");
+    await commitUtterance(panel, reply, classForCoherence(), state.coherence > 50 ? 26 : 16);
+    state.utterances++;
+  } finally {
+    state.turnBusy = false;
   }
-
-  if (!reply || !newBaton) {
-    const rng = createRNG(seedFrom(val + state.hop, state.seed ^ 0xfeed));
-    const fb = interruptFallback(state, val, rng, level);
-    if (!newBaton) newBaton = fb.baton;
-    if (!reply) reply = fb.reply;
-  }
-
-  state.baton = newBaton;
-  updateCoherence();
-  enqueue(reply, classForCoherence(), state.coherence > 50 ? 26 : 16, holder);
-  state.untilHandoff = Math.min(state.untilHandoff, state.utterances + 1);
 });
 
-document.addEventListener("click", () => {
+document.addEventListener("click", (e) => {
+  if (e.target.closest && e.target.closest(".think-panel")) return;
   if (!inputEl.disabled) inputEl.focus();
 });
 
@@ -718,7 +939,7 @@ async function init() {
   gateHint.innerHTML =
     "モデルは <code>public/models/</code> に事前配置（または <code>npm run fetch-model</code>）。<br>" +
     "実行時は同一オリジンのみ。Chrome / Edge + WebGPU 推奨。<br>" +
-    "育ちは文脈であり重み更新ではない。";
+    "育ちは文脈汚染であり重み更新ではない。思考過程はすべて公開されます。";
 
   if (!hasWebGPU()) {
     enterFallback(

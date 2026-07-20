@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "DIGITAL TATTOO — offline in-browser baton-pass art with WebLLM (inference only)",
+  "description": "DIGITAL TATTOO — offline in-browser AI hallucination horror with WebLLM (inference only)",
   "scripts": {
     "fetch-model": "node scripts/fetch-model.mjs",
     "verify-models": "node scripts/verify-models.mjs",

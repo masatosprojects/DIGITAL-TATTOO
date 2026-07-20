@@ -132,10 +132,10 @@ export function createLlmQueue(engineRef) {
 }
 
 export function driftTemperature(level) {
-  // 0..3 → controlled drift for baton rewrite / speech
+  // 0..3 → coherence collapse / confident hallucination
   return Math.min(1.35, 0.35 + level * 0.28);
 }
 
 export function driftLabel(level) {
-  return ["忠実", "軽微な要約", "自然な言い換え", "強いドリフト"][level] || "ドリフト";
+  return ["忠実", "軽微な補完", "自信ある逸脱", "過信ハルシネーション"][level] || "ドリフト";
 }
