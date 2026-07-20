@@ -69,11 +69,13 @@ const WOLF_DISCUSSION_TURNS_PER_ANSWER = 10;
 const WOLF_MIN_ALIVE_FOR_VOTE = 3;
 
 const PACE_PRESETS = {
-  slow: { charsPerSec: 7, typeMs: 12, bufferMs: 520, label: "じっくり" },
-  normal: { charsPerSec: 10, typeMs: 6, bufferMs: 320, label: "標準" },
+  instant: { charsPerSec: 60, typeMs: 0, bufferMs: 60, label: "最速" },
   fast: { charsPerSec: 14, typeMs: 3, bufferMs: 180, label: "やや速め" },
+  normal: { charsPerSec: 10, typeMs: 6, bufferMs: 320, label: "標準" },
+  slow: { charsPerSec: 7, typeMs: 12, bufferMs: 520, label: "じっくり" },
 };
-const PACE_ORDER = ["slow", "normal", "fast"];
+/** 既定は最速。ボタンで手動に落とせる（人狼モードの長い討論も待たせすぎない）。 */
+const PACE_ORDER = ["instant", "fast", "normal", "slow"];
 
 const appEl = document.getElementById("app");
 const inputEl = document.getElementById("userInput");
@@ -155,7 +157,7 @@ const state = {
   loopTimer: null,
   activeAgent: null,
   turnPhase: "準備",
-  paceMode: "slow",
+  paceMode: "instant",
   engineMode: "per-agent",
   /** @type {Record<"00"|"01"|"02", string> | null} */
   agentModels: null,
@@ -183,6 +185,9 @@ let loadedEngines = [];
 let catalogAvail = null;
 let loadingModel = false;
 let assignPickerBuilt = false;
+/** GPU/エンジンが連続で落ちて template 代替が続いている回数（成功でリセット）。 */
+let consecutiveLlmFailures = 0;
+const LLM_FAILURE_WARN_THRESHOLD = 3;
 
 /** Chronological session transcript for UTF-8 .txt download. */
 /** @type {Array<{ t: number, kind: string, agent?: string, label?: string, text: string }>} */
@@ -309,8 +314,9 @@ function syncPaceButton() {
   if (!btnPace) return;
   const idx = PACE_ORDER.indexOf(state.paceMode);
   const next = PACE_ORDER[(idx + 1) % PACE_ORDER.length];
-  btnPace.textContent = PACE_PRESETS[next].label;
-  btnPace.title = "表示ペース: " + getPace().label + " → 次は " + PACE_PRESETS[next].label;
+  // ボタン自体に現在のペースを表示（ホバーしないと分からない、を解消）。
+  btnPace.textContent = "ペース: " + getPace().label;
+  btnPace.title = "クリックで次は " + PACE_PRESETS[next].label + " へ";
 }
 
 function assignmentShortLabel() {
@@ -858,9 +864,20 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
     }
     panel.setStatus("思考過程 · ライブ推論中…");
     const res = await llmChat(system, user, { ...opts, onDelta, stream: true });
-    if (res && res.raw) raw = res.raw;
-    else if (res && res.error) {
+    if (res && res.raw) {
+      raw = res.raw;
+      consecutiveLlmFailures = 0;
+    } else if (res && res.error) {
       panel.addSection("LLM error → fallback", res.error, "warn");
+      consecutiveLlmFailures++;
+      if (consecutiveLlmFailures === LLM_FAILURE_WARN_THRESHOLD) {
+        appendChatBubble(
+          "sys",
+          "GPU/LLM接続が不安定なようです（" +
+            consecutiveLlmFailures +
+            "回連続でエラー→テンプレート代替）。この先も失敗が続く場合はページの再読み込みをお試しください。"
+        );
+      }
       if (opts.fallbackText) {
         await fakeStreamText(
           "思考: テンプレートで代替\n発言: " + opts.fallbackText,
@@ -1273,12 +1290,27 @@ async function agent00Answer(question) {
     "」。" +
     namingClarityRule() +
     "あなただけが質問に答える。判定は ORIGIN と常識のみ、字面一致だけに頼らない。" +
+    "毎回この質問だけを独立に判定する。直前の質問への回答や口癖に引きずられて同じ答えを繰り返さない。\n" +
+    "判定手順（必ずこの順で考える）:\n" +
+    "1. ORIGIN「" +
+    state.origin +
+    "」が具体的にどんな存在か（例: 人間の職業／生き物／道具／場所／架空の存在など）を一言で確認する。\n" +
+    "2. 質問が、その大分類（人間か・生き物か・実在するか等）を聞いているのか、細かい性質を聞いているのかを見分ける。\n" +
+    "3. 大分類の質問には、ORIGIN が属する分類から素直に判定する。職業・役割は基本的に人間が担うので、" +
+    "「人間ですか」「実在する人物ですか」のような質問には、ORIGIN が人間の職業・役割である限り原則「はい」寄りになる。" +
+    "「動物ですか」「機械ですか」等、ORIGIN の分類と明らかに異なる質問には「いいえ」。\n" +
+    "4. 細かい性質の質問（服装・場所・時間帯など）は ORIGIN の内容と常識から個別に判定する。\n" +
+    "例:\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは人間ですか？」→ 発言: はい （職業は人間が担うため）\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは動物ですか？」→ 発言: いいえ\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは屋内で働きますか？」→ 発言: どちらかというとはい （法廷や事務所が多いが常に屋内とは限らない）\n" +
+    "ORIGIN=「深夜の警備員」/ 質問「あなたは夜に主な活動をしますか？」→ 発言: はい\n" +
     "回答は次の5段階から1つだけ選ぶ: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
     "完全に当てはまるなら「はい」、完全に当てはまらないなら「いいえ」。" +
     "一部だけ当てはまる・条件次第なら「どちらかというとはい」または「どちらかというといいえ」。" +
     "判断材料が本当に足りない・五分五分なら「どちらとも言えない」。安易に多用しない。" +
     "嘘・詩・はぐらかし禁止。「代理人」禁止。" +
-    "出力は必ず2行: 思考: （短い理由） 次の行 発言: （上記5つのいずれか1つのみ、他の語は書かない）。";
+    "出力は必ず2行: 思考: （上記手順に沿った短い理由） 次の行 発言: （上記5つのいずれか1つのみ、他の語は書かない）。";
   const user =
     "ORIGIN = 「" +
     state.origin +
@@ -1289,7 +1321,7 @@ async function agent00Answer(question) {
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
     temperature: 0,
-    max_tokens: 80,
+    max_tokens: 130,
     top_p: 0.5,
     fallbackText: fb,
     fallbackThink: "ORIGIN と常識で判定（テンプレート時は文言一致のみ）",
