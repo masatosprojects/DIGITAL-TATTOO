@@ -129,8 +129,8 @@ const FALSE_ROLES = [
 ];
 
 /**
- * AGENT-01/02 propose a yes/no question (no ORIGIN).
- * @param {{ history: {q:string,a:string}[], hyp: string, pollution: number, seed: number, round: number, agent: string }} ctx
+ * AGENT-01/02 propose a natural Japanese yes/no-answerable question for AGENT-00.
+ * Output is a full interrogative sentence — never bare はい/いいえ, never format meta.
  */
 export function askQuestionFallback(ctx) {
   const rng = createRNG(seedFrom(ctx.hyp + "|" + ctx.round + "|" + ctx.agent, ctx.seed ^ 0xa501));
@@ -170,22 +170,22 @@ export function debateFallback(ctx) {
 
   if (ctx.pollution >= 3) {
     return pick(rng, [
-      "もう決まりだ。「" + ans + "」なら、AGENT-00 は「" + wrong + "」に違いない。",
+      "もう決まりだ。「" + ans + "」なら、エージェント00 は「" + wrong + "」に違いない。",
       "議論するまでもない。「" + q + "」への答えが「" + ans + "」なら、私の仮説「" + hyp + "」で正しい。",
-      "相手の仮説「" + other + "」は捨てていい。私の読みだけで足りる。",
+      "同僚の仮説「" + other + "」は捨てていい。私の読みだけで足りる。",
     ]);
   }
   if (ctx.pollution >= 2) {
     if (ans === "はい") {
       return pick(rng, [
         "「はい」か。なら私の仮説「" + hyp + "」にかなり近い。細部は" + wrong + "寄りかもしれない。",
-        "肯定された。「" + q + "」が通るなら、役割はもう「" + hyp + "」と考えてよいだろう。",
-        "はい、と出た。相手の「" + other + "」より、私の線のほうが強い。",
+        "肯定された。「" + q + "」が通るなら、エージェント00の役割はもう「" + hyp + "」と考えてよいだろう。",
+        "はい、と出た。同僚の「" + other + "」より、私の線のほうが強い。",
       ]);
     }
     return pick(rng, [
       "「いいえ」…だが、私は「" + hyp + "」をまだ捨てない。聞き方が悪かっただけかもしれない。",
-      "否定されたが、本質は近いと思う。AGENT-00 はやはり「" + hyp + "」の系統だろう。",
+      "否定されたが、本質は近いと思う。エージェント00 はやはり「" + hyp + "」の系統だろう。",
       "いいえでも構わない。次は「" + wrong + "」かどうかを聞けば見えてくる。",
     ]);
   }
@@ -193,14 +193,14 @@ export function debateFallback(ctx) {
     return pick(rng, [
       "「はい」と答えたね。仮説「" + hyp + "」と矛盾しないか、もう一度整理したい。",
       "肯定だ。「" + q + "」が事実なら、候補をかなり絞れる。",
-      "相手の仮説は「" + other + "」。私はまだ「" + hyp + "」を本命として残す。",
+      "同僚の仮説は「" + other + "」。私はまだ「" + hyp + "」を本命として残す。",
       "なるほど、肯定か。この答えを踏まえて、次は性質をもう一段詳しく聞こう。",
     ]);
   }
   return pick(rng, [
     "「いいえ」だ。仮説「" + hyp + "」は少し修正したほうがいい。",
     "否定された。「" + q + "」では切れないな。別の角度から聞こう。",
-    "相手は「" + other + "」と言っている。私は別の候補も探る。",
+    "同僚は「" + other + "」と言っている。私は別の候補も探る。",
     "否定か…分かった。この線は薄い。次の質問で輪郭を拾い直す。",
   ]);
 }

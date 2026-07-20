@@ -1,11 +1,10 @@
 # Deploy DIGITAL TATTOO to GitHub Pages.
-# Practical pack: lite (0.5B) only — max shard ≈65 MB, fits Pages soft ~1 GB
-# and avoids Cache.add failures from 1.5B shards ≈111 MB.
-# 1.5B / 3B: selectable when files exist (Netlify / 公開準備.bat full pack).
-# Override to fetch more: repo var FETCH_MODELS=pages|default|all
-#   or workflow_dispatch "model_pack" input.
+# CI ships lite (0.5B) same-origin (fits ~1 GB soft cap).
+# Runtime: 1.5B / 3B stay selectable via Hugging Face + IndexedDB
+# (cacheBackend indexeddb — no Cache.add). Override pack:
+#   repo var FETCH_MODELS=pages|default|all  or workflow_dispatch model_pack.
 #
-# Full 0.5+1.5+3B: 公開準備.bat / npm run prepare-publish:all (Netlify / self-host).
+# Full 0.5+1.5+3B same-origin: 公開準備.bat / Netlify / self-host.
 #
 # One-time setup (repo Settings):
 #   1. Settings → Pages → Build and deployment → Source: GitHub Actions

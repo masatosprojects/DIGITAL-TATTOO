@@ -15,7 +15,7 @@ echo URL を開くだけで作品を体験できます。
 echo.
 echo 同梱モデル: 軽量 0.5B + 標準 1.5B + 高精度 3B（合計 ≈ 2.8 GB）
 echo GitHub Pages には大きすぎる場合あり → Netlify / 自前ホスト推奨。
-echo Pages 向けは CI が 0.5B+1.5B のみ取得します。
+echo Pages 向けは CI が 0.5B のみ取得します（1.5B はシャード≈111 MB で Cache 失敗しやすい）。
 echo.
 
 where node >nul 2>&1
@@ -101,7 +101,7 @@ echo      （Netlify / Cloudflare Pages / 自前 nginx など）
 echo.
 echo   ★ 容量の注意:
 echo      ・フル同梱 ≈ 2.8 GB → GitHub Pages 非推奨（Netlify 等へ）
-echo      ・Pages は Actions が 0.5B+1.5B のみ自動取得
+echo      ・Pages は Actions が 0.5B のみ自動取得（1.5B/3B は Netlify 等）
 echo      ・ゲートで未配置モデルはグレーアウト（実行時検出）
 echo      ・models 無し・一部欠けのまま公開すると該当 LLM は 404
 echo.

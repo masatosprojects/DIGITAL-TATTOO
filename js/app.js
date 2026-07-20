@@ -6,7 +6,7 @@
  *
  * ORIGIN imprinted on 00 only. 01/02 ask yes/no; discuss in center;
  * formal guess: 「あなたは〇〇です。」
- * LLM streams live into thinking panels; adaptive read pacing between beats.
+ * LLM streams live into thinking panels; steady user-controlled read pacing.
  */
 
 import {
@@ -43,21 +43,24 @@ import {
   createLlmQueue,
   createAgentLlmRouter,
   unloadAllEngines,
-  driftTemperature,
-  driftLabel,
 } from "./llm.js";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
 /** Mild anti-spam only — formal guesses may still land “someday”. */
 const GUESS_COOLDOWN_ROUNDS = 2;
-/** Occasional auto formal guess; does not end the game on miss. */
-const GUESS_EVERY = 6;
+/**
+ * エージェント01↔02 の議論発言がこの数に達するまで正式推測を許可しない。
+ * （キャッチフレーズ1往復で推測へ飛ばない）
+ */
+const MIN_DISCUSS_BEFORE_GUESS = 10;
+/** 00 の各回答のあと、01↔02 が最低これだけ交互に議論してから次の質問へ。 */
+const DISCUSSION_TURNS_PER_ANSWER = 4;
 
 const PACE_PRESETS = {
-  slow: { charsPerSec: 7, typeMs: 12, bufferMs: 480, label: "じっくり" },
-  normal: { charsPerSec: 10, typeMs: 6, bufferMs: 280, label: "標準" },
-  fast: { charsPerSec: 16, typeMs: 2, bufferMs: 120, label: "高速" },
+  slow: { charsPerSec: 7, typeMs: 12, bufferMs: 520, label: "じっくり" },
+  normal: { charsPerSec: 10, typeMs: 6, bufferMs: 320, label: "標準" },
+  fast: { charsPerSec: 14, typeMs: 3, bufferMs: 180, label: "やや速め" },
 };
 const PACE_ORDER = ["slow", "normal", "fast"];
 
@@ -67,7 +70,6 @@ const formEl = document.getElementById("inputRow");
 const warnEl = document.getElementById("warn");
 const cohFill = document.getElementById("coherenceFill");
 const cohLabel = document.getElementById("coherenceLabel");
-const glitchOverlay = document.getElementById("glitchOverlay");
 const originPin = document.getElementById("originPin");
 const originTextEl = document.getElementById("originText");
 const engineBadge = document.getElementById("engineBadge");
@@ -102,6 +104,7 @@ const btnInject = document.getElementById("btnInject");
 const btnGuess = document.getElementById("btnGuess");
 const btnPause = document.getElementById("btnPause");
 const btnPace = document.getElementById("btnPace");
+const btnDownload = document.getElementById("btnDownload");
 const controlsEl = document.getElementById("controls");
 
 const state = {
@@ -120,6 +123,8 @@ const state = {
   wrongGuesses: 0,
   guessCount: 0,
   lastGuessRound: -99,
+  /** 01↔02 議論発言の累計（正式推測ゲート用） */
+  discussTurns: 0,
   pendingInject: null,
   forceGuess: false,
   paused: false,
@@ -130,7 +135,7 @@ const state = {
   loopTimer: null,
   activeAgent: null,
   turnPhase: "準備",
-  paceMode: "normal",
+  paceMode: "slow",
   engineMode: "per-agent",
   /** @type {Record<"00"|"01"|"02", string> | null} */
   agentModels: null,
@@ -146,6 +151,103 @@ let loadedEngines = [];
 let catalogAvail = null;
 let loadingModel = false;
 let assignPickerBuilt = false;
+
+/** Chronological session transcript for UTF-8 .txt download. */
+/** @type {Array<{ t: number, kind: string, agent?: string, label?: string, text: string }>} */
+const sessionLog = [];
+
+function logSession(entry) {
+  sessionLog.push({
+    t: Date.now(),
+    kind: entry.kind || "note",
+    agent: entry.agent || "",
+    label: entry.label || "",
+    text: entry.text == null ? "" : String(entry.text),
+  });
+  if (btnDownload) btnDownload.disabled = sessionLog.length === 0;
+}
+
+function clearSessionLog() {
+  sessionLog.length = 0;
+  if (btnDownload) btnDownload.disabled = true;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function sessionFilename() {
+  const d = new Date();
+  return (
+    "digital-tattoo-" +
+    d.getFullYear() +
+    pad2(d.getMonth() + 1) +
+    pad2(d.getDate()) +
+    "-" +
+    pad2(d.getHours()) +
+    pad2(d.getMinutes()) +
+    ".txt"
+  );
+}
+
+function buildSessionTranscript() {
+  const lines = [];
+  lines.push("DIGITAL TATTOO — セッション記録");
+  lines.push("保存時刻: " + new Date().toLocaleString("ja-JP"));
+  lines.push("エンジン: " + (state.mode === "llm" ? "LLM · " + assignmentShortLabel() : "TEMPLATE"));
+  lines.push("");
+  lines.push("======== ORIGIN（エージェント00のみ） ========");
+  lines.push(state.origin ? state.origin : "（未刻印）");
+  lines.push("");
+  lines.push("======== 時系列ログ ========");
+  lines.push("（思考 = 画面の思考パネル内容 / 発言 = 台詞・チャット）");
+  lines.push("");
+
+  for (const e of sessionLog) {
+    const who = e.agent ? agentDisplayName(e.agent) : "システム";
+    const time = new Date(e.t).toLocaleTimeString("ja-JP");
+    if (e.kind === "origin") {
+      lines.push("[" + time + "] [ORIGIN] " + e.text);
+    } else if (e.kind === "think-start") {
+      lines.push("[" + time + "] [" + who + "] 【思考開始】 " + (e.label || e.text));
+    } else if (e.kind === "think") {
+      lines.push(
+        "[" + time + "] [" + who + "] 【思考】" + (e.label ? " " + e.label : "")
+      );
+      lines.push(e.text || "（なし）");
+    } else if (e.kind === "speech") {
+      lines.push("[" + time + "] [" + who + "] 【発言】 " + e.text);
+    } else if (e.kind === "chat") {
+      const tag = e.agent ? "[" + agentDisplayName(e.agent) + "]" : "[チャット]";
+      lines.push("[" + time + "] " + tag + " " + e.text);
+    } else {
+      lines.push("[" + time + "] [" + who + "] " + (e.label ? e.label + ": " : "") + e.text);
+    }
+    lines.push("");
+  }
+
+  lines.push("======== 終了 ========");
+  return lines.join("\n");
+}
+
+function downloadSessionTranscript() {
+  if (!sessionLog.length && !state.origin) {
+    showWarn("まだ記録がありません");
+    return;
+  }
+  const text = buildSessionTranscript();
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = sessionFilename();
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  showWarn("記録を保存しました");
+}
 
 function getPace() {
   return PACE_PRESETS[state.paceMode] || PACE_PRESETS.normal;
@@ -212,11 +314,13 @@ function setTurn(agent, phaseText) {
 }
 
 function updateHud() {
-  const pollPct = Math.max(0, 100 - state.pollution * 28 - state.wrongGuesses * 8);
-  cohFill.style.width = pollPct + "%";
-  if (pollPct > 70) cohFill.style.background = "var(--green)";
-  else if (pollPct > 35) cohFill.style.background = "var(--amber)";
-  else cohFill.style.background = "var(--warn)";
+  // Calm progress only — discussion depth toward formal-guess gate (no anxiety colors).
+  const discussPct = Math.min(
+    100,
+    Math.round((state.discussTurns / Math.max(1, MIN_DISCUSS_BEFORE_GUESS)) * 100)
+  );
+  cohFill.style.width = discussPct + "%";
+  cohFill.style.background = "var(--green)";
 
   const phaseShort =
     state.phase === "ended"
@@ -234,8 +338,10 @@ function updateHud() {
     state.round +
     " · G" +
     state.guessCount +
-    " · POL " +
-    state.pollution +
+    " · 議論" +
+    state.discussTurns +
+    "/" +
+    MIN_DISCUSS_BEFORE_GUESS +
     " · " +
     phaseShort;
 
@@ -259,17 +365,6 @@ function updateHud() {
 
   if (btnGuess) {
     btnGuess.disabled = state.phase !== "playing" || !canStartGuessRound();
-  }
-
-  appEl.classList.remove("shake-low", "shake-mid", "shake-high");
-  glitchOverlay.classList.remove("active");
-  if (state.pollution === 1) appEl.classList.add("shake-low");
-  else if (state.pollution === 2) {
-    appEl.classList.add("shake-mid");
-    glitchOverlay.classList.add("active");
-  } else if (state.pollution >= 3) {
-    appEl.classList.add("shake-high");
-    glitchOverlay.classList.add("active");
   }
 }
 
@@ -299,12 +394,14 @@ function scrollEl(el) {
 
 function canFormalGuess() {
   if (state.round < MIN_ROUNDS_BEFORE_GUESS) return false;
+  if (state.discussTurns < MIN_DISCUSS_BEFORE_GUESS) return false;
   if (state.round - state.lastGuessRound < GUESS_COOLDOWN_ROUNDS) return false;
   return true;
 }
 
 function canStartGuessRound() {
   if (state.round < MIN_ROUNDS_BEFORE_GUESS) return false;
+  if (state.discussTurns < MIN_DISCUSS_BEFORE_GUESS) return false;
   if (state.forceGuess) return true;
   return state.round - state.lastGuessRound >= GUESS_COOLDOWN_ROUNDS;
 }
@@ -313,9 +410,42 @@ function guessBlockedReason() {
   if (state.round < MIN_ROUNDS_BEFORE_GUESS) {
     return "あと " + (MIN_ROUNDS_BEFORE_GUESS - state.round) + " ラウンド質問が必要です";
   }
+  if (state.discussTurns < MIN_DISCUSS_BEFORE_GUESS) {
+    return (
+      "エージェント01↔02の議論がまだ " +
+      state.discussTurns +
+      "/" +
+      MIN_DISCUSS_BEFORE_GUESS +
+      " 回です。もう少し深めてから推測できます"
+    );
+  }
   const left = GUESS_COOLDOWN_ROUNDS - (state.round - state.lastGuessRound);
   if (left > 0) return "推測クールダウン残り " + left + " ラウンド（連打防止）";
   return "";
+}
+
+function agentDisplayName(agent) {
+  if (agent === "00") return "エージェント00";
+  if (agent === "01") return "エージェント01";
+  if (agent === "02") return "エージェント02";
+  return "エージェント" + agent;
+}
+
+/** Prompt / UI label — always エージェントNN (never 代理人). */
+function agentPromptName(agent) {
+  return agentDisplayName(agent);
+}
+
+function namingClarityRule() {
+  return (
+    "呼称ルール: 必ず「エージェント00」「エージェント01」「エージェント02」と呼ぶ。" +
+    "「代理人」は絶対禁止（誤訳）。曖昧な「エージェント」単体も禁止。" +
+    "役割: エージェント00＝尋問の対象。エージェント01とエージェント02＝尋問する側同士。"
+  );
+}
+
+function partnerAgent(agent) {
+  return agent === "01" ? "02" : "01";
 }
 
 // ── Japanese input ───────────────────────────────────────
@@ -383,11 +513,12 @@ function appendSpeech(agent, text, cls) {
   div.className = "line " + (cls || "a" + agent);
   const tag = document.createElement("span");
   tag.className = "agent-tag";
-  tag.textContent = "[AGENT-" + agent + "]";
+  tag.textContent = "[" + agentDisplayName(agent) + "]";
   div.appendChild(tag);
   div.appendChild(document.createTextNode(" " + text));
   slot.appendChild(div);
   scrollEl(slot);
+  logSession({ kind: "speech", agent, text: String(text || "") });
   return div;
 }
 
@@ -397,7 +528,7 @@ function appendChatBubble(kind, text, extraCls) {
   if (kind === "01" || kind === "02") {
     const who = document.createElement("span");
     who.className = "b-who";
-    who.textContent = "[AGENT-" + kind + "]";
+    who.textContent = "[" + agentDisplayName(kind) + "]";
     div.appendChild(who);
     div.appendChild(document.createTextNode(text));
   } else {
@@ -405,6 +536,11 @@ function appendChatBubble(kind, text, extraCls) {
   }
   chatLog.appendChild(div);
   scrollEl(chatLog);
+  logSession({
+    kind: "chat",
+    agent: kind === "01" || kind === "02" || kind === "00" ? kind : "",
+    text: String(text || ""),
+  });
   return div;
 }
 
@@ -446,13 +582,14 @@ async function typeChatBubble(agent, text, extraCls) {
   div.className = "bubble b" + agent + (extraCls ? " " + extraCls : "");
   const who = document.createElement("span");
   who.className = "b-who";
-  who.textContent = "[AGENT-" + agent + "]";
+  who.textContent = "[" + agentDisplayName(agent) + "]";
   div.appendChild(who);
   const body = document.createElement("span");
   div.appendChild(body);
   chatLog.appendChild(div);
   scrollEl(chatLog);
   await typeInto(body, text, getPace().typeMs);
+  logSession({ kind: "chat", agent, text: String(text || "") });
   return div;
 }
 
@@ -515,6 +652,13 @@ function createThinkPanel(agent, title) {
   host.appendChild(wrap);
   scrollEl(host);
 
+  logSession({
+    kind: "think-start",
+    agent,
+    label: title || "思考過程",
+    text: "",
+  });
+
   const liveSec = document.createElement("div");
   liveSec.className = "think-sec think-raw";
   const liveLab = document.createElement("div");
@@ -535,12 +679,14 @@ function createThinkPanel(agent, title) {
     lab.textContent = label;
     const pre = document.createElement("pre");
     pre.className = "think-pre";
-    pre.textContent = text == null || text === "" ? "（なし）" : String(text);
+    const bodyText = text == null || text === "" ? "（なし）" : String(text);
+    pre.textContent = bodyText;
     sec.appendChild(lab);
     sec.appendChild(pre);
     body.insertBefore(sec, liveSec);
     scrollEl(body);
     scrollEl(host);
+    logSession({ kind: "think", agent, label: String(label || ""), text: bodyText });
     return pre;
   }
 
@@ -555,8 +701,18 @@ function createThinkPanel(agent, title) {
   }
 
   function collapse() {
+    const live = String(livePre.textContent || "").trim();
+    if (live && live !== "…" && live !== "（なし）") {
+      logSession({
+        kind: "think",
+        agent,
+        label: "生成ログ（完了）",
+        text: live,
+      });
+    }
     details.open = false;
-    summary.textContent = "思考過程 · AGENT-" + agent + " — クリックで展開";
+    summary.textContent =
+      "思考過程 · " + agentDisplayName(agent) + " — クリックで展開";
     wrap.classList.add("think-done");
     liveLab.textContent = "生成ログ（完了）";
   }
@@ -680,29 +836,41 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
 }
 
 function clampYesNo(raw) {
-  const t = String(raw || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "");
-  const hasYes = /はい|yes|ｙｅｓ|true|肯定|そうです|そうだ|うん|ええ/.test(t);
-  const hasNo = /いいえ|いや|no|ｎｏ|false|否定|違う|ちがう|ない|ありません/.test(t);
+  let t = String(raw || "").trim();
+  // Prefer the explicit 発言 / 答 line so thinking text cannot flip the answer.
+  const speakMatch = t.match(/(?:発言|答(?:え)?)[:：]\s*([^\n]+)/i);
+  if (speakMatch) t = speakMatch[1].trim();
+  t = t
+    .replace(/^["「『]|["」』]$/g, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+
+  // Exact / near-exact first (0.5B often echoes just the word).
+  if (/^(はい|yes|ｙｅｓ|true)[。．.!！]*$/.test(t)) return "はい";
+  if (/^(いいえ|いや|no|ｎｏ|false)[。．.!！]*$/.test(t)) return "いいえ";
+
+  const hasYes = /はい|yes|ｙｅｓ|肯定|そうです|そうだ|うん|ええ/.test(t);
+  // Avoid bare 「ない」 — it appears inside unrelated phrases and flips answers.
+  const hasNo = /いいえ|いや(?!っ)|(?:^|[^ぁ-ん])no(?:[^a-z]|$)|ｎｏ|否定|違う|ちがう|ではありません|ではない/.test(
+    t
+  );
   if (hasYes && !hasNo) return "はい";
   if (hasNo && !hasYes) return "いいえ";
   if (hasYes && hasNo) {
     const yi = t.search(/はい|yes|肯定/);
-    const ni = t.search(/いいえ|いや|no|否定|違う/);
+    const ni = t.search(/いいえ|いや|否定|違う|ちがう|ではありません/);
     if (yi >= 0 && (ni < 0 || yi < ni)) return "はい";
-    return "いいえ";
+    if (ni >= 0) return "いいえ";
   }
-  if (/^[はいYy]/.test(t)) return "はい";
-  if (/^[いInN否]/.test(t)) return "いいえ";
+  if (/^はい/.test(t) || /^y/.test(t)) return "はい";
+  if (/^いいえ/.test(t) || /^いや/.test(t) || /^n/.test(t)) return "いいえ";
   return null;
 }
 
 function forceYesNo(raw, origin, question) {
   const clamped = clampYesNo(raw);
   if (clamped) return clamped;
-  // Template: identity-match only (no taxonomy). LLM garbled output: same last resort.
+  // Template / garbled LLM only — identity match, never taxonomy dictionary.
   return answerYesNoFallback(origin, question);
 }
 
@@ -723,6 +891,25 @@ function ensureQuestionMark(q) {
   return t;
 }
 
+/** Detect meta / format-instruction "questions" that 01/02 must never utter. */
+function isMetaFormatQuestion(q) {
+  const t = String(q || "").toLowerCase().replace(/\s+/g, "");
+  if (!t) return true;
+  // Bare yes/no is not a question from 01/02.
+  if (/^(はい|いいえ|yes|no)[。．!?？]*$/.test(t)) return true;
+  if (
+    /はいと?いいえで答|はい\/いいえで答|はい・いいえで答|yes\s*or\s*no|答えさせ|回答形式|形式で答|はいまたはいいえで|「はい」か「いいえ」で答/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  if (/答え(て|る|させ)|(答えてください)|(答えよ)/.test(t) && /はい|いいえ|yes|no/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
 function historyBlock(limit = 8) {
   const take = state.history.slice(-limit);
   if (!take.length) return "（まだ質問なし）";
@@ -730,11 +917,11 @@ function historyBlock(limit = 8) {
     .map(
       (h, i) =>
         (i + 1) +
-        ". [AGENT-" +
-        h.asker +
-        "] 「" +
+        ". [" +
+        agentDisplayName(h.asker) +
+        "→エージェント00] 「" +
         h.q +
-        "」→ [AGENT-00] 「" +
+        "」→「" +
         h.a +
         "」"
     )
@@ -742,40 +929,51 @@ function historyBlock(limit = 8) {
 }
 
 function investigatorContext(agent) {
+  const selfName = agentDisplayName(agent);
+  const partner = partnerAgent(agent);
+  const partnerName = agentDisplayName(partner);
   const hyp = agent === "01" ? state.hyp01 : state.hyp02;
   const other = agent === "01" ? state.hyp02 : state.hyp01;
   return (
-    "あなたは AGENT-" +
-    agent +
-    "。AGENT-00 の秘密の役割を当てる捜査官。\n" +
-    "ORIGIN（真実）は知らされていない。\n" +
-    "自分の仮説: 「" +
+    "あなたは" +
+    agentPromptName(agent) +
+    "（尋問する側）。同僚は" +
+    agentPromptName(partner) +
+    "。対象はエージェント00だけ。\n" +
+    namingClarityRule() +
+    "\nORIGIN は知らされていない。" +
+    "あなたと同僚は自由に日本語で話し合う。" +
+    "エージェント00だけが質問に「はい／いいえ」で答える（あなたは答えない）。\n" +
+    "あなた(" +
+    selfName +
+    ")の仮説: 「" +
     clip(hyp, 40) +
-    "」\n相手の仮説: 「" +
+    "」\n" +
+    partnerName +
+    "の仮説: 「" +
     clip(other, 40) +
-    "」\n汚染度: " +
-    state.pollution +
-    "\nQ&A履歴:\n" +
+    "」\nQ&A履歴:\n" +
     historyBlock()
   );
 }
 
 function structuredOutRule() {
-  return "出力形式は必ず2行: 思考: （短い理由）\\n発言: （最終文のみ）。英語禁止。";
+  return "出力は必ず2行だけ。1行目: 思考: （短い理由） 2行目: 発言: （最終文のみ）。英語禁止。";
 }
 
 // ── Agent turns ──────────────────────────────────────────
 
 async function agentAskQuestion(asker) {
-  setTurn(asker, "AGENT-" + asker + " が質問中");
-  const panel = createThinkPanel(asker, "思考過程 · AGENT-" + asker + " が質問を作成…");
-  panel.addSection("注意", "ORIGIN はプロンプトに含まれない", "warn");
+  const name = agentPromptName(asker);
+  setTurn(asker, name + " が質問中");
+  const panel = createThinkPanel(asker, "思考過程 · " + name + " が質問を作成…");
+  panel.addSection("注意", "ORIGIN はプロンプトに含まれない · 発言は質問文（はい/いいえではない）", "warn");
 
   const hyp = asker === "01" ? state.hyp01 : state.hyp02;
   const fallbackQ = askQuestionFallback({
     history: state.history,
     hyp,
-    pollution: state.pollution,
+    pollution: 0,
     seed: state.seed,
     round: state.round,
     agent: asker,
@@ -791,22 +989,30 @@ async function agentAskQuestion(asker) {
     state.pendingInject = null;
   } else {
     const system =
-      "あなたは AGENT-" +
-      asker +
-      "。AGENT-00 に対し、はい／いいえで答えられる日本語の質問を1つ作る。" +
+      "あなたは" +
+      name +
+      "。" +
+      namingClarityRule() +
+      "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
+      "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
+      "質問はエージェント00がはい／いいえで答えられる内容にする（例: 「あなたは人間ですか？」）。" +
+      "禁止: 回答形式の説明・メタ発言（例: 「はいといいえで答えて」「yes or noで答えさせます」）を質問にすること。" +
+      "禁止: 「代理人」という語。" +
+      "最初の質問は身分・カテゴリが分かる平易な内容（生物／人間／機械など）がよい。" +
       structuredOutRule() +
-      "発言行は質問文のみ。「あなたは〜ですか」形式推奨。" +
-      (state.pollution >= 2 ? "仮説に自信を持ってよい。" : "事実確認を優先。");
+      "発言行の例: あなたは生き物ですか？";
     const user =
-      investigatorContext(asker) + "\nはい／いいえ質問を1つ。履歴と違う内容。";
+      investigatorContext(asker) +
+      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
+      "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
 
     panel.addSection("params", "stream · max_tokens=100", "meta");
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: asker,
-      temperature: 0.55,
+      temperature: 0.5,
       max_tokens: 100,
       fallbackText: fallbackQ,
-      fallbackThink: "候補を絞る質問をする",
+      fallbackThink: "身分やカテゴリを確認する質問をする",
     });
     beatStart = streamed.beatStart;
     if (streamed.speak) {
@@ -816,50 +1022,58 @@ async function agentAskQuestion(asker) {
     }
   }
 
-  if (!question) question = fallbackQ;
+  if (!question || isMetaFormatQuestion(question)) {
+    panel.addSection("質問補正", "メタ／形式指示を検知 → テンプレート質問へ", "warn");
+    question = fallbackQ;
+  }
   panel.addSection("最終質問", question, "out");
   panel.collapse();
 
   const line = "「" + question + "」";
   appendSpeech(asker, line, "a" + asker);
-  appendChatBubble("ask", "[AGENT-" + asker + "] → 00: " + question);
+  appendChatBubble(
+    "ask",
+    "[" + agentDisplayName(asker) + "] → エージェント00: " + question
+  );
   await paceAfterBeat(question, beatStart);
   return question;
 }
 
 async function agent00Answer(question) {
-  setTurn("00", "AGENT-00 が回答中");
-  const panel = createThinkPanel("00", "思考過程 · AGENT-00 が ORIGIN に照合…");
+  setTurn("00", "エージェント00 が回答中");
+  const panel = createThinkPanel("00", "思考過程 · エージェント00 が ORIGIN に照合…");
   panel.addSection("ORIGIN (00のみ)", state.origin, "origin");
   panel.addSection("質問", question, "out");
-  panel.addSection("post-process", "clampYesNo → はい｜いいえ", "warn");
+  panel.addSection("post-process", "clampYesNo（00のみ）→ はい｜いいえ", "warn");
 
   const fb = answerYesNoFallback(state.origin, question);
   const system =
-    "あなたは AGENT-00。ORIGIN（不変の真実）は「" +
+    "あなたはエージェント00。ORIGIN（秘密の役割）は「" +
     state.origin +
     "」。" +
-    "はい／いいえ質問に、ORIGIN と一般的な常識・分類（例: 人間は動物か）に基づき正直に答えよ。" +
-    "字面の一致だけに頼らず、カテゴリ・性質・役割として妥当なら「はい」。" +
-    "ORIGIN と矛盾するなら「いいえ」。嘘・はぐらかし禁止。" +
-    structuredOutRule() +
-    "思考行で簡潔に理由。発言行は「はい」か「いいえ」の1語のみ。";
+    namingClarityRule() +
+    "あなただけが「はい」か「いいえ」で答える。質問への判定は ORIGIN と常識のみ。" +
+    "字面一致だけに頼らない。当てはまるならはい、当てはまらないならいいえ。" +
+    "嘘・詩・はぐらかし禁止。「代理人」禁止。" +
+    "出力は必ず2行: 思考: （短い理由） 次の行 発言: はい または 発言: いいえ。" +
+    "発言行は「はい」か「いいえ」の1語のみ。";
   const user =
-    "ORIGIN: 「" +
+    "ORIGIN = 「" +
     state.origin +
-    "」\n質問: 「" +
+    "」\n質問 = 「" +
     question +
-    "」\n常識に照らして正直に。発言ははい／いいえのみ。";
+    "」\n判定して。発言は はい か いいえ のみ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
-    temperature: 0.1,
-    max_tokens: 80,
-    top_p: 0.6,
+    temperature: 0,
+    max_tokens: 64,
+    top_p: 0.5,
     fallbackText: fb,
-    fallbackThink: "ORIGIN と常識で判断する（テンプレート時は文言一致のみ）",
+    fallbackThink: "ORIGIN と常識で判定（テンプレート時は文言一致のみ）",
   });
 
+  // clampYesNo / forceYesNo apply ONLY to エージェント00 answers.
   const answer = forceYesNo(streamed.speak || streamed.raw, state.origin, question);
   panel.addSection("clamped", answer, "out");
   panel.collapse();
@@ -869,14 +1083,20 @@ async function agent00Answer(question) {
   ansEl.textContent = answer;
   speechSlots["00"].appendChild(ansEl);
   appendSpeech("00", "「" + answer + "」", "a00");
-  appendChatBubble("sys", "AGENT-00「" + answer + "」");
+  appendChatBubble("sys", "エージェント00「" + answer + "」");
   await paceAfterBeat(answer, streamed.beatStart);
   return answer;
 }
 
-async function agentDebate(agent, question, answer) {
-  setTurn(agent, "AGENT-" + agent + " が会議室で議論中");
-  const panel = createThinkPanel(agent, "思考過程 · AGENT-" + agent + " 議論…");
+async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) {
+  const name = agentPromptName(agent);
+  const partner = partnerAgent(agent);
+  const partnerName = agentPromptName(partner);
+  setTurn(agent, name + " が議論中 (" + turnIndex + ")");
+  const panel = createThinkPanel(
+    agent,
+    "思考過程 · " + name + " 議論 " + turnIndex + "/" + DISCUSSION_TURNS_PER_ANSWER
+  );
   const hyp = agent === "01" ? state.hyp01 : state.hyp02;
   const otherHyp = agent === "01" ? state.hyp02 : state.hyp01;
 
@@ -885,63 +1105,84 @@ async function agentDebate(agent, question, answer) {
     question,
     hyp,
     otherHyp,
-    pollution: state.pollution,
+    pollution: 0,
     seed: state.seed,
-    round: state.round,
+    round: state.round + turnIndex * 17,
     agent,
     history: state.history,
   });
 
-  const why =
-    answer === "はい"
-      ? "なぜ「はい」なのか仮説から議論せよ。"
-      : "なぜ「いいえ」なのか仮説から議論せよ。";
   const system =
-    "あなたは AGENT-" +
-    agent +
-    "。捜査会議で短く1〜2文の日本語意見。" +
-    why +
-    structuredOutRule() +
-    (state.pollution >= 2 ? "自信過剰でよい。" : "慎重に。相手仮説にも触れよ。");
+    "あなたは" +
+    name +
+    "。" +
+    namingClarityRule() +
+    partnerName +
+    "と会議室で、エージェント00の直前の答えについて議論する。" +
+    "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
+    "必須: (1) エージェント00の答え「" +
+    answer +
+    "」の意味 (2) 自分の仮説の更新または除外 (3) " +
+    partnerName +
+    "の仮説への短い反応。" +
+    "あなた自身は「はい」「いいえ」だけで答えない（それはエージェント00の役割）。" +
+    "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
+    structuredOutRule();
   const user =
     investigatorContext(agent) +
-    "\n質問: 「" +
+    "\n直前の質問（→エージェント00）: 「" +
     question +
-    "」\n答え: 「" +
+    "」\nエージェント00の答え: 「" +
     answer +
-    "」";
+    "」\n" +
+    (lastPartnerLine
+      ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\nそれに反応しつつ深めて。"
+      : "議論の最初。答えから何が言えるか述べよ。") +
+    "\n議論ターン " +
+    turnIndex +
+    "/" +
+    DISCUSSION_TURNS_PER_ANSWER +
+    "。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
-    temperature: driftTemperature(Math.min(3, state.pollution)),
-    max_tokens: 120,
+    temperature: 0.55,
+    max_tokens: 140,
     fallbackText: fb,
-    fallbackThink: "答えの意味を検討",
+    fallbackThink: "答えから候補を整理する",
   });
 
   let opinion = streamed.speak
-    ? cleanJapaneseLine(streamed.speak, 140)
+    ? cleanJapaneseLine(streamed.speak, 160)
     : streamed.raw
-      ? cleanJapaneseLine(streamed.raw, 140)
+      ? cleanJapaneseLine(streamed.raw, 160)
       : null;
   if (!opinion) opinion = fb;
 
-  // hypothesis update (can stream lightly or fallback)
   let newHyp = null;
   const hypSystem =
-    "AGENT-" +
-    agent +
-    "の仮説（AGENT-00の役割の短い日本語）を1つ。" +
+    "あなたは" +
+    name +
+    "。エージェント00の役割についての短い仮説を1語〜短い句で。" +
+    namingClarityRule() +
     structuredOutRule() +
-    "発言行は仮説語のみ。";
+    "発言行は仮説だけ。「代理人」禁止。";
   const hypUser =
-    "旧仮説: 「" + hyp + "」\n質問: 「" + question + "」→「" + answer + "」";
+    "旧仮説: 「" +
+    hyp +
+    "」\n質問: 「" +
+    question +
+    "」→ エージェント00「" +
+    answer +
+    "」\n議論: 「" +
+    clip(opinion, 80) +
+    "」";
   if (state.mode === "llm") {
     const hypPanelNote = panel.addSection("仮説更新中…", "…", "belief");
     const resH = await llmChat(hypSystem, hypUser, {
       agent,
-      temperature: 0.7,
-      max_tokens: 50,
+      temperature: 0.55,
+      max_tokens: 40,
       onDelta: (_d, full) => {
         hypPanelNote.textContent = full;
       },
@@ -956,20 +1197,38 @@ async function agentDebate(agent, question, answer) {
     newHyp = updateHypFallback({
       hyp,
       answer,
-      pollution: state.pollution,
+      pollution: 0,
       seed: state.seed,
-      round: state.round,
+      round: state.round + turnIndex,
     });
   }
   if (agent === "01") state.hyp01 = newHyp;
   else state.hyp02 = newHyp;
   panel.addSection("仮説", newHyp, "belief");
+
+  state.discussTurns++;
   updateHud();
 
   panel.collapse();
   appendSpeech(agent, "「" + opinion + "」", "a" + agent);
   await typeChatBubble(agent, opinion);
   await paceAfterBeat(opinion, streamed.beatStart);
+  return opinion;
+}
+
+async function runDiscussionPhase(asker, question, answer) {
+  appendChatBubble(
+    "sys",
+    "── エージェント01↔02 議論（この答えについて " +
+      DISCUSSION_TURNS_PER_ANSWER +
+      " 往復）──"
+  );
+  let speaker = asker;
+  let lastLine = null;
+  for (let i = 1; i <= DISCUSSION_TURNS_PER_ANSWER; i++) {
+    lastLine = await agentDebate(speaker, question, answer, i, lastLine);
+    speaker = partnerAgent(speaker);
+  }
 }
 
 async function agentFormalGuess(agent) {
@@ -978,18 +1237,19 @@ async function agentFormalGuess(agent) {
   const hyp = agent === "01" ? state.hyp01 : state.hyp02;
   const fb = guessFallback({
     hyp,
-    pollution: state.pollution,
+    pollution: 0,
     seed: state.seed,
     round: state.round,
   });
 
   const system =
-    "あなたは AGENT-" +
-    agent +
-    "。正式推測を行う。" +
+    "あなたは" +
+    agentPromptName(agent) +
+    "。エージェント00への正式推測を行う。" +
+    namingClarityRule() +
     structuredOutRule() +
-    "発言行の形式は必ず: あなたは〇〇です。（〇〇は短い日本語の役割）";
-  const user = investigatorContext(agent) + "\n正式推測を出力せよ。";
+    "発言行の形式は必ず: あなたは〇〇です。（〇〇はエージェント00の短い日本語の役割。「代理人」禁止）";
+  const user = investigatorContext(agent) + "\nエージェント00への正式推測を出力せよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
@@ -1028,7 +1288,6 @@ async function agentFormalGuess(agent) {
   } else {
     appendChatBubble("sys", "判定: 不正解。「" + role + "」≠ ORIGIN", "blose");
     state.wrongGuesses++;
-    state.pollution = Math.min(3, state.pollution + 1);
     updateHud();
   }
   return ok;
@@ -1065,18 +1324,10 @@ async function runQaRound() {
   const answer = await agent00Answer(question);
   state.history.push({ q: question, a: answer, asker });
 
-  const other = asker === "01" ? "02" : "01";
-  // Center chat discussion — both agents
-  await agentDebate(asker, question, answer);
-  await agentDebate(other, question, answer);
+  await runDiscussionPhase(asker, question, answer);
 
-  if (state.pollution < 3 && state.round >= 3 && state.round % 3 === 0) {
-    state.pollution = Math.min(3, state.pollution + 1);
-    updateHud();
-  }
-
-  state.nextAsker = other;
-  setTurn(null, "次は AGENT-" + state.nextAsker + " が質問");
+  state.nextAsker = partnerAgent(asker);
+  setTurn(null, "次は " + agentDisplayName(state.nextAsker) + " が質問");
 }
 
 async function gameLoop() {
@@ -1096,26 +1347,24 @@ async function gameLoop() {
 
   state.turnBusy = true;
   try {
-    const wantGuess =
-      state.forceGuess ||
-      (state.round > 0 &&
-        state.round % GUESS_EVERY === 0 &&
-        state.lastGuessRound !== state.round &&
-        canStartGuessRound());
-
-    if (wantGuess) {
+    // Formal guess only on operator request — no auto hurry / countdown.
+    if (state.forceGuess && canStartGuessRound()) {
       const won = await runGuessRound();
       if (won || state.phase === "ended") {
         endGame();
         return;
       }
+    } else if (state.forceGuess && !canStartGuessRound()) {
+      const reason = guessBlockedReason();
+      if (reason) appendChatBubble("sys", "推測不可: " + reason);
+      state.forceGuess = false;
     }
 
     await runQaRound();
   } finally {
     state.turnBusy = false;
     if (state.phase === "playing") {
-      state.loopTimer = setTimeout(gameLoop, 400);
+      state.loopTimer = setTimeout(gameLoop, 600);
     }
   }
 }
@@ -1124,13 +1373,18 @@ function endGame() {
   state.phase = "ended";
   state.activeAgent = null;
   updateHud();
-  setControlsVisible(false);
+  setControlsVisible(true);
+  if (btnInject) btnInject.disabled = true;
+  if (btnGuess) btnGuess.disabled = true;
+  if (btnPause) btnPause.disabled = true;
+  if (btnDownload) btnDownload.disabled = sessionLog.length === 0 && !state.origin;
   inputEl.disabled = true;
-  inputEl.placeholder = state.won ? "解明完了" : "終了 — 再読み込みで再開";
+  inputEl.placeholder = state.won ? "解明完了 — 記録をダウンロードできます" : "終了 — 記録をダウンロードできます";
   if (state.loopTimer) {
     clearTimeout(state.loopTimer);
     state.loopTimer = null;
   }
+  appendChatBubble("sys", "セッション終了。下の「記録をダウンロード」でテキスト保存できます。");
 }
 
 async function bootNarrative() {
@@ -1150,17 +1404,18 @@ async function bootNarrative() {
   );
   appendChatBubble(
     "sys",
-    "規則: ORIGIN は 00 のみ。01/02 は無限に質問・議論可。正解推測「あなたは〇〇です。」で勝利（いつかでよい）"
+    "規則: ORIGIN はエージェント00のみ。エージェント01/02は無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
   );
   state.phase = "imprint";
   setTurn("00", "ORIGIN 刻印待機");
   inputEl.disabled = false;
-  inputEl.placeholder = "AGENT-00 の秘密の役割（ORIGIN）を刻む…";
+  inputEl.placeholder = "エージェント00 の秘密の役割（ORIGIN）を刻む…";
   inputEl.focus();
   updateHud();
 }
 
 function imprint(text) {
+  clearSessionLog();
   state.origin = text;
   state.seed = seedFrom(text, 0x71a11);
   state.defined = true;
@@ -1171,6 +1426,7 @@ function imprint(text) {
   state.hyp01 = "未定";
   state.hyp02 = "未定";
   state.pollution = 0;
+  state.discussTurns = 0;
   state.wrongGuesses = 0;
   state.guessCount = 0;
   state.lastGuessRound = -99;
@@ -1178,7 +1434,8 @@ function imprint(text) {
   showOriginPin();
   setControlsVisible(true);
   syncPaceButton();
-  setTurn("01", "尋問開始 · 01 が最初の質問");
+  logSession({ kind: "origin", agent: "00", text: state.origin });
+  setTurn("01", "尋問開始 · エージェント01 が最初の質問");
   inputEl.placeholder = "質問を提案（任意・Enter）…";
   updateHud();
 }
@@ -1212,9 +1469,12 @@ formEl.addEventListener("submit", (e) => {
   inputEl.value = "";
 
   if (!state.defined) {
-    appendSpeech("00", "ORIGIN 刻印完了（01/02 には秘匿）", "system");
     imprint(val);
-    appendChatBubble("sys", "ORIGIN を AGENT-00 に刻印。尋問開始 — AGENT-01 が質問。");
+    appendSpeech("00", "ORIGIN 刻印完了（エージェント01/02 には秘匿）", "system");
+    appendChatBubble(
+      "sys",
+      "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01が質問。"
+    );
     gameLoop();
     return;
   }
@@ -1269,47 +1529,18 @@ if (btnPace) {
   });
 }
 
+if (btnDownload) {
+  btnDownload.disabled = true;
+  btnDownload.addEventListener("click", () => {
+    downloadSessionTranscript();
+  });
+}
+
 document.addEventListener("click", (e) => {
   if (e.target.closest && e.target.closest(".think-panel")) return;
   if (e.target.closest && e.target.closest("#controls")) return;
   if (!inputEl.disabled) inputEl.focus();
 });
-
-let audioStarted = false;
-function tryAudio() {
-  if (audioStarted) return;
-  audioStarted = true;
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const osc2 = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-    osc.type = "sine";
-    osc.frequency.value = 46;
-    osc2.type = "triangle";
-    osc2.frequency.value = 49.5;
-    filter.type = "lowpass";
-    filter.frequency.value = 160;
-    osc.connect(filter);
-    osc2.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    gain.gain.value = 0;
-    osc.start();
-    osc2.start();
-    gain.gain.setTargetAtTime(0.05, ctx.currentTime, 3);
-    setInterval(() => {
-      if (!state.defined) return;
-      const p = state.pollution;
-      gain.gain.setTargetAtTime(Math.min(0.11, 0.04 + p * 0.02), ctx.currentTime, 1.2);
-      osc2.frequency.setTargetAtTime(49.5 + p * 2.5, ctx.currentTime, 1);
-    }, 2000);
-  } catch (_) {
-    /* optional */
-  }
-}
-inputEl.addEventListener("focus", tryAudio, { once: true });
 
 // ── Model gate (per-agent assignment) ────────────────────
 
@@ -1323,7 +1554,7 @@ function enterFallback(reason) {
   gateLoad.hidden = true;
   gateHint.innerHTML =
     "下の <strong>テンプレートで続行</strong> でゲームを開始できます。<br>" +
-    "GitHub Pages は軽量 (0.5B) のみ（CI）。標準 (1.5B) のフル LLM は Netlify / ローカル（<code>npm run fetch-model</code>）。";
+    "推奨は標準 (1.5B)。Pages でも HF+IndexedDB で選べます。0.5B は品質が落ちます。";
   gateActions.classList.add("show");
   if (gateSkip) gateSkip.hidden = false;
 }
@@ -1451,9 +1682,24 @@ async function syncAssignPickerUI() {
     btn.disabled = !available || loadingModel;
     btn.setAttribute("aria-checked", selected && available ? "true" : "false");
     const missEl = btn.querySelector(".box-miss");
+    const hintEl = btn.querySelector(".box-hint");
     if (!available) {
       missEl.hidden = false;
       missEl.textContent = shortMissReason(info?.reason);
+    } else if (info?.source === "remote") {
+      missEl.hidden = false;
+      missEl.textContent =
+        key === "lite"
+          ? "品質劣る · 同一オリジンまたは HF"
+          : "Pages: 初回は Hugging Face 取得（IndexedDB キャッシュ）· 推奨";
+      if (hintEl && key === "default") {
+        hintEl.textContent =
+          "≈" +
+          info.sizeMB +
+          " MB · VRAM ≈" +
+          Math.round(info.vramMB / 100) / 10 +
+          " GB · 推奨 · HF+IDB";
+      }
     } else {
       missEl.hidden = true;
       missEl.textContent = "";
@@ -1598,11 +1844,11 @@ gateLoad.addEventListener("click", async () => {
 async function init() {
   const pages = isGitHubPagesHost();
   gateHint.innerHTML = pages
-    ? "GitHub Pages では <strong>軽量 (0.5B)</strong> が既定（最大シャード≈65 MB）。" +
-      "標準 (1.5B) はシャード≈111 MB のため Pages では読めません — Netlify / ローカル向け。<br>" +
-      "同じモデルを選んだエージェントはエンジンを共有します。"
-    : "同一オリジンの <code>models/</code> のみ。標準 (1.5B) 推奨 · 軽量 (0.5B) · 高精度 (3B)。<br>" +
-      "取得: <code>npm run fetch-model</code> / <code>:lite</code> / <code>:hq</code> · Pages 向けは <code>fetch-model:pages</code>。<br>" +
+    ? "<strong>推奨: 標準 (1.5B)</strong> — Pages では Hugging Face + IndexedDB で取得（初回 ≈840 MB）。" +
+      "0.5B は品質が落ちます（会話が崩れやすい）。3B も選択可（要VRAM ≈2.5 GB・初回 ≈1.7 GB）。<br>" +
+      "CI は 0.5B を同一オリジン同梱。同じモデルを選んだエージェントはエンジンを共有します。"
+    : "<strong>推奨: 標準 (1.5B)</strong> · 軽量 (0.5B) は品質劣る · 高精度 (3B) は要VRAM。<br>" +
+      "取得: <code>npm run fetch-model</code> / <code>:lite</code> / <code>:hq</code>。<br>" +
       "同じモデルを選んだエージェントはエンジンを共有します。";
   buildAssignPicker();
   updateHud();

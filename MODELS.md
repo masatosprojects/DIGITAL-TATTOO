@@ -1,7 +1,7 @@
 # モデルカタログ（オフライン WebLLM）
 
 WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。  
-ランタイムは同一オリジン `models/<id>/resolve/main/` のみ — **プレイ中の外部ネットはゼロ**。
+ランタイムは **同一オリジン優先**。GitHub Pages で未同梱の 1.5B/3B は **Hugging Face + IndexedDB**（`cacheBackend: "indexeddb"`）で取得可。
 
 ## ランキング（知能・日本語品質）
 
@@ -15,9 +15,9 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 
 | key | 判定 | 理由 |
 |-----|------|------|
-| `default` (1.5B) | **yes** | Netlify / ローカル向け。最大シャード ≈**111 MB**（`params_shard_0.bin`）のため **GitHub Pages では Cache.add が失敗しやすい**。 |
-| `lite` (0.5B) | **yes** | **Pages CI 既定**。最大シャード ≈65 MB。弱GPUでも動きやすいが日本語は崩れやすい。 |
-| `hq` (3B) | **maybe** | 品質は最良候補だが ≈2.5 GB VRAM・≈1.7 GB 配信。統合GPUや Pages では現実的でないことが多い。 |
+| `default` (1.5B) | **yes** | **推奨**。Pages では同一オリジン未同梱時 **HF+IndexedDB** で取得。Netlify/ローカルは `fetch-model` で同梱可。 |
+| `lite` (0.5B) | **yes** | **品質劣る**。Pages CI 同梱用。弱GPU向けフォールバック。 |
+| `hq` (3B) | **maybe** | 最良候補だが ≈2.5 GB VRAM。Pages では HF 取得可・統合GPUでは厳しい。 |
 | 7B 級 | **no** | WebLLM にビルドはあるが ≈5 GB VRAM・数 GB 配信 → 本作品のブラウザ前提から除外。 |
 
 ### 日本語流暢さの限界（期待値を下げる）
@@ -26,7 +26,7 @@ WebLLM **0.2.84** 互換の MLC ビルド（`mlc-ai/*-q4f16_1-MLC`）。
 - **1.5B**: 尋問ゲーム用途では「十分に読める日本語」。長文の論理一貫性や固有表現はまだ弱い。
 - **3B**: 1.5B より明らかに自然で指示追従も良いが、クラウド級の流暢さではない。ブラウザ小型量子化の上限に近い。
 
-**既定の使い分け:** Netlify / ローカルは 1.5B（実用日本語）。GitHub Pages は 0.5B（シャードが 100 MB 未満・サイト≈1 GB 以内）。0.5B は軽量フォールバックでもある。
+**既定の使い分け:** **標準 1.5B を推奨**（実用日本語）。GitHub Pages でも **Hugging Face + IndexedDB** で 1.5B / 3B を選択可（初回ダウンロードあり。CI は容量のため 0.5B のみ同一オリジン同梱）。0.5B は品質が落ちるフォールバック。
 
 ### ライセンス
 
@@ -118,10 +118,11 @@ await router.chat("01", messages, { onDelta, stream: true });
 ## Fetch（公開準備）
 
 ```bash
-npm run fetch-model          # default 1.5B（必須・Pages）
-npm run fetch-model:lite     # 0.5B（strong-weak 用）
+npm run fetch-model:pages    # 0.5B のみ（GitHub Pages CI 既定）
+npm run fetch-model          # default 1.5B（Netlify / ローカル）
+npm run fetch-model:lite     # 0.5B（明示）
 npm run fetch-model:hq       # 3B
-npm run fetch-model:all      # 全部 ≈2.8 GB
+npm run fetch-model:all      # 全部 ≈2.8 GB（公開準備.bat）
 npm run verify-models        # default 必須・他はあれば検証
 ```
 

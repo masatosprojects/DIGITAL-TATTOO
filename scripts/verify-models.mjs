@@ -166,11 +166,11 @@ function checkModel(model, { required }) {
     );
   }
 
-  // Pages CI: fail if any required/shipped model has a shard ≥100 MB
+  # Pages CI: large shards OK with IndexedDB; warn only (do not fail).
   if (requireLite && maxShardBytes >= PAGES_MAX_SHARD_BYTES) {
-    fail(
-      `${model.id}: ${maxShardName} is ${(maxShardBytes / (1024 * 1024)).toFixed(1)} MB ` +
-        `(≥100 MB). GitHub Pages / Cache.add cannot reliably host this — use lite (0.5B) for Pages.`
+    console.log(
+      `  note: ${model.id} ${maxShardName} is ${(maxShardBytes / (1024 * 1024)).toFixed(1)} MB ` +
+        `(≥100 MB). Fine with IndexedDB; avoid Cache API. Runtime may also use HF remote on Pages.`
     );
   }
 

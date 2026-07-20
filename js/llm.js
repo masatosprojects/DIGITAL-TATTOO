@@ -1,11 +1,11 @@
 /**
- * Same-origin WebLLM loader. No CDN / no remote model URLs at runtime.
+ * WebLLM loader — same-origin preferred; GitHub Pages may fall back to Hugging Face.
  * Weights are inference-only — no training / no parameter updates.
  *
  * Public API (game / gate should use these):
  *   listModels()              — catalog sorted by intelligence rank
  *   resolveModel(idOrKey)     — look up by key or full model_id
- *   getDefaultModelKey()      — smartest *usable* here (1.5B local; 0.5B on GitHub Pages)
+ *   getDefaultModelKey()      — recommended usable model (1.5B; Pages may load via HF)
  *   isGitHubPagesHost() / preferPagesSafeModel()
  *   getSelectedModelKey() / setSelectedModelKey(key)
  *   getAgentAssignments() / setAgentAssignments(map) / setAgentAssignment(agent, key)
@@ -14,7 +14,7 @@
  *   loadModel(idOrKey, opts)  — unload previous, load selected, persist preference
  *   createEngine(modelKey, opts)
  *   loadTripleEngines / loadStrongWeakEngines / loadSwitchEngine (legacy presets)
- *   explainLoadError(err)     — JP message for Cache.add / Pages limits
+ *   explainLoadError(err)     — JP message for Cache / network / VRAM
  *   generateWithEngine(engine, messages, opts)
  *   createLlmQueue(engineRef) / createAgentLlmRouter(binding)
  *
@@ -22,9 +22,10 @@
  * See MODELS.md for ranking, deploy sizes, engine modes, and fluency honesty.
  *
  * GitHub Pages notes:
- *   Soft site cap ≈1 GB. 1.5B q4f16 has params_shard_0.bin ≈111 MB (over common
- *   100 MB/file comfort) and ~840 MB total — Cache.add often fails on Pages.
- *   CI therefore publishes lite (0.5B, max shard ≈65 MB). Use Netlify/local for 1.5B.
+ *   Soft site cap ≈1 GB → CI ships lite (0.5B) same-origin by default.
+ *   1.5B / 3B are selectable via Hugging Face + IndexedDB cache (no Cache.add).
+ *   Large same-origin shards are OK when shipped (IndexedDB); optional CI packs
+ *   can include 1.5B. Full 0.5+1.5+3B pack still exceeds Pages comfort → Netlify.
  */
 
 import { CreateMLCEngine } from "@mlc-ai/web-llm";
@@ -95,6 +96,7 @@ export const MODEL_HF_COMPAT_PREFIX = "resolve/main/";
 
 /**
  * @typedef {"yes" | "maybe" | "no"} UsableFlag
+ * @typedef {"local" | "remote"} ModelSource
  *
  * @typedef {{
  *   key: string,
@@ -102,6 +104,7 @@ export const MODEL_HF_COMPAT_PREFIX = "resolve/main/";
  *   label: string,
  *   shortLabel: string,
  *   id: string,
+ *   hfRepo: string,
  *   wasm: string,
  *   sizeMB: number,
  *   vramMB: number,
@@ -116,9 +119,10 @@ export const MODEL_HF_COMPAT_PREFIX = "resolve/main/";
 
 /**
  * Ranked by intelligence / JP quality (1 = smartest).
- * Local/Netlify default = 1.5B. GitHub Pages CI ships 0.5B (shard-safe).
+ * Local/Netlify default = 1.5B. GitHub Pages CI ships 0.5B same-origin;
+ * 1.5B / 3B stay selectable on Pages via Hugging Face + IndexedDB.
  *   hq (3B)   — smarter but heavy / maybe; Qwen Research license
- *   default (1.5B) — recommended on Netlify / local
+ *   default (1.5B) — recommended practical JP
  *   lite (0.5B) — Pages CI / weak-GPU fallback
  */
 /** @type {ModelInfo[]} */
@@ -129,6 +133,7 @@ export const MODEL_CATALOG = [
     label: "高精度 (3B・要VRAM)",
     shortLabel: "高精度",
     id: "Qwen2.5-3B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-3B-Instruct-q4f16_1-MLC",
     wasm: "Qwen2.5-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
     sizeMB: 1670,
     vramMB: 2505,
@@ -136,7 +141,7 @@ export const MODEL_CATALOG = [
     usable: "maybe",
     jpQuality: 1,
     license: "Qwen Research",
-    hint: "最も賢い候補。≈1.7 GB · VRAM ≈2.5 GB。統合GPUでは厳しい。Pages不可。",
+    hint: "最も賢い候補。≈1.7 GB · VRAM ≈2.5 GB。統合GPUでは厳しい。Pages では初回 HF 取得。",
   },
   {
     key: "default",
@@ -144,6 +149,7 @@ export const MODEL_CATALOG = [
     label: "標準 (1.5B) · 推奨",
     shortLabel: "標準",
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     wasm: "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
     sizeMB: 840,
     vramMB: 1630,
@@ -152,14 +158,15 @@ export const MODEL_CATALOG = [
     jpQuality: 2,
     license: "Apache-2.0",
     isDefault: true,
-    hint: "実用日本語の最推奨。≈840 MB · 最大シャード≈111 MB。Netlify / ローカル向け（Pages非推奨）。",
+    hint: "実用日本語の最推奨。≈840 MB · VRAM ≈1.6 GB。Pages では同一オリジンまたは HF+IndexedDB。",
   },
   {
     key: "lite",
     rank: 3,
-    label: "軽量 (0.5B)",
+    label: "軽量 (0.5B・品質劣る)",
     shortLabel: "軽量",
     id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
     wasm: "Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
     sizeMB: 280,
     vramMB: 945,
@@ -167,7 +174,7 @@ export const MODEL_CATALOG = [
     usable: "yes",
     jpQuality: 3,
     license: "Apache-2.0",
-    hint: "GitHub Pages 向け既定。≈280 MB · 最大シャード≈65 MB。短文は可・流暢さは限定的。",
+    hint: "品質は劣る（会話が崩れやすい）。≈280 MB。弱GPU向けフォールバック。推奨は標準 1.5B。",
   },
 ];
 
@@ -177,11 +184,18 @@ export const MODELS = Object.fromEntries(MODEL_CATALOG.map((m) => [m.key, m]));
 /** Smartest *usable* on Netlify / local (not the largest/maybe). */
 export const DEFAULT_MODEL_KEY = "default";
 
-/** Pages CI publishes this — all shards stay under ~100 MB. */
+/** Pages CI publishes this same-origin by default (fits ≈1 GB soft cap). */
 export const PAGES_MODEL_KEY = "lite";
 
-/** Soft per-file comfort used by GitHub Pages / static hosts (bytes). */
+/**
+ * @deprecated Large shards are fine with IndexedDB; kept for docs / optional logging.
+ * Formerly blocked ≥100 MB shards on github.io because of Cache.add failures.
+ */
 export const PAGES_MAX_SHARD_BYTES = 100 * 1024 * 1024;
+
+/** WASM libs CDN (web-llm 0.2.84) — used when weights load from Hugging Face. */
+export const MODEL_LIB_CDN_BASE =
+  "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/";
 
 /** @deprecated old dual-catalog alias — was 1.5B “plus”; now equals default */
 MODELS.plus = MODELS.default;
@@ -212,25 +226,25 @@ export function isGitHubPagesHost() {
 }
 
 /**
- * Prefer 0.5B on Pages when present; else smartest usable.
+ * Prefer 1.5B whenever available (including Pages remote/HF).
+ * Fall back to lite only if 1.5B cannot load.
  * @param {Array<ModelInfo & { available?: boolean }> | null | undefined} [avail]
  */
 export function preferPagesSafeModel(avail) {
-  if (!isGitHubPagesHost()) {
-    return DEFAULT_MODEL_KEY;
-  }
   if (Array.isArray(avail) && avail.length) {
+    const def = avail.find((m) => m.key === DEFAULT_MODEL_KEY && m.available !== false);
+    if (def) return DEFAULT_MODEL_KEY;
     const lite = avail.find((m) => m.key === PAGES_MODEL_KEY && m.available !== false);
     if (lite) return PAGES_MODEL_KEY;
     const any = avail.find((m) => m.available !== false);
-    return any ? any.key : PAGES_MODEL_KEY;
+    return any ? any.key : DEFAULT_MODEL_KEY;
   }
-  return PAGES_MODEL_KEY;
+  return DEFAULT_MODEL_KEY;
 }
 
-/** Host-aware default: lite on GitHub Pages, 1.5B elsewhere. */
+/** Recommended default: always 1.5B (Pages loads via HF+IndexedDB when not shipped). */
 export function getDefaultModelKey() {
-  return isGitHubPagesHost() ? PAGES_MODEL_KEY : DEFAULT_MODEL_KEY;
+  return DEFAULT_MODEL_KEY;
 }
 
 /**
@@ -285,14 +299,6 @@ export function getSelectedModelKey() {
     const v = localStorage.getItem(STORAGE_KEY);
     const resolved = resolveModel(v);
     if (resolved) {
-      // Stale "default" prefs on Pages → prefer lite when that is the host default
-      if (
-        isGitHubPagesHost() &&
-        resolved.key === DEFAULT_MODEL_KEY &&
-        !localStorage.getItem(AGENT_ASSIGN_KEY)
-      ) {
-        return getDefaultModelKey();
-      }
       return resolved.key;
     }
   } catch (_) {
@@ -418,10 +424,10 @@ export function setAgentAssignment(agent, modelKey) {
  */
 export function coerceAssignmentsToAvailable(assignments, avail) {
   const byKey = new Map((avail || []).map((m) => [m.key, m]));
-  const pagesPref = preferPagesSafeModel(avail);
+  // Prefer 1.5B (incl. Pages HF remote), then lite, then any available.
   const preferred =
-    (byKey.get(pagesPref)?.available && pagesPref) ||
     (byKey.get(DEFAULT_MODEL_KEY)?.available && DEFAULT_MODEL_KEY) ||
+    (byKey.get(preferPagesSafeModel(avail))?.available && preferPagesSafeModel(avail)) ||
     (byKey.get(PAGES_MODEL_KEY)?.available && PAGES_MODEL_KEY) ||
     (avail || []).find((m) => m.available)?.key ||
     null;
@@ -571,25 +577,44 @@ export function modelWeightsBase(model = getActiveModel()) {
   return modelsBase() + m.id + "/" + MODEL_HF_COMPAT_PREFIX;
 }
 
+/** Hugging Face repo root (WebLLM appends resolve/main/ when missing). */
+export function remoteWeightsBase(model = getActiveModel()) {
+  const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
+  return "https://huggingface.co/" + m.hfRepo + "/";
+}
+
+export function remoteWasmUrl(model = getActiveModel()) {
+  const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
+  return MODEL_LIB_CDN_BASE + m.wasm;
+}
+
 /**
  * WebLLM 0.2.84 cache backends: "cache" | "indexeddb" | "cross-origin" | "opfs".
- * Cache API's Cache.add() often throws "network error" on large Pages shards;
- * IndexedDB stores blobs without Cache.add and is more reliable here.
+ * IndexedDB avoids Cache.add() failures on large Pages shards (≥100 MB).
  */
 export function preferredCacheBackend() {
   return "indexeddb";
 }
 
-export function localAppConfig(model = getActiveModel()) {
+/** Pages may load missing weights from Hugging Face; other hosts stay same-origin. */
+export function pagesAllowsRemoteModels() {
+  return isGitHubPagesHost();
+}
+
+/**
+ * @param {ModelInfo | string} [model]
+ * @param {ModelSource} [source]
+ */
+export function buildAppConfig(model = getActiveModel(), source = "local") {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
-  const base = modelsBase();
+  const useRemote = source === "remote";
   return {
     cacheBackend: preferredCacheBackend(),
     model_list: [
       {
-        model: modelWeightsBase(m),
+        model: useRemote ? remoteWeightsBase(m) : modelWeightsBase(m),
         model_id: m.id,
-        model_lib: base + "libs/" + m.wasm,
+        model_lib: useRemote ? remoteWasmUrl(m) : modelsBase() + "libs/" + m.wasm,
         low_resource_required: m.usable === "yes",
         vram_required_MB: m.vramMB,
         required_features: ["shader-f16"],
@@ -599,6 +624,11 @@ export function localAppConfig(model = getActiveModel()) {
       },
     ],
   };
+}
+
+/** @deprecated prefer buildAppConfig(model, "local") */
+export function localAppConfig(model = getActiveModel()) {
+  return buildAppConfig(model, "local");
 }
 
 export function hasWebGPU() {
@@ -612,8 +642,10 @@ function missingReason(model, configUrl) {
   if (model.key === "hq") {
     return (
       "このホストに 3B ファイルがありません（≈1.7 GB）。" +
-      "配置されれば選択可。公開者: `npm run fetch-model:hq` または `公開準備.bat`（全モデル同梱）。" +
-      "GitHub Pages は容量のため 3B を載せません。" +
+      "配置: `npm run fetch-model:hq` / `公開準備.bat`。" +
+      (pagesAllowsRemoteModels()
+        ? "GitHub Pages では Hugging Face 経由でも選択できます（初回 ≈1.7 GB・要VRAM）。"
+        : "Pages 以外では同一オリジン配置が必要です。") +
       pathHint
     );
   }
@@ -627,9 +659,10 @@ function missingReason(model, configUrl) {
   }
   if (model.key === "default") {
     return (
-      "このホストに 1.5B ファイルがありません（≈840 MB · 最大シャード≈111 MB）。" +
-      "GitHub Pages では 1.5B を載せません（サイト≈1 GB 制限・大シャードで Cache 失敗）。" +
-      "フル LLM は Netlify / ローカルで `npm run fetch-model`。Pages では軽量 (0.5B) かテンプレートを使ってください。" +
+      "このホストに 1.5B ファイルがありません（≈840 MB）。" +
+      (pagesAllowsRemoteModels()
+        ? "GitHub Pages では Hugging Face + IndexedDB で選択できます（初回ダウンロードあり）。"
+        : "Netlify / ローカルでは `npm run fetch-model` で同一オリジン配置してください。") +
       pathHint
     );
   }
@@ -638,53 +671,6 @@ function missingReason(model, configUrl) {
     "「テンプレートで続行」を使うか、公開者がモデルを配置してください。" +
     pathHint
   );
-}
-
-/**
- * On GitHub Pages, reject models whose ndarray-cache lists a shard ≥100 MB.
- * (1.5B params_shard_0.bin ≈111 MB → Cache.add network error in practice.)
- * @param {ModelInfo} model
- * @returns {Promise<{ ok: boolean, reason?: string, maxShardMB?: number }>}
- */
-async function probeShardBudget(model) {
-  if (!isGitHubPagesHost()) return { ok: true };
-  const cacheUrl = modelWeightsBase(model) + "ndarray-cache.json";
-  try {
-    const res = await fetch(cacheUrl, { method: "GET", cache: "no-cache" });
-    if (!res.ok) return { ok: true }; // config probe already covers missing files
-    const ct = (res.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("text/html")) return { ok: true };
-    const json = await res.json();
-    let maxBytes = 0;
-    let maxPath = "";
-    for (const rec of json.records || []) {
-      const n = typeof rec.nbytes === "number" ? rec.nbytes : 0;
-      if (n > maxBytes) {
-        maxBytes = n;
-        maxPath = rec.dataPath || "";
-      }
-    }
-    if (maxBytes >= PAGES_MAX_SHARD_BYTES) {
-      const mb = Math.round((maxBytes / (1024 * 1024)) * 10) / 10;
-      return {
-        ok: false,
-        maxShardMB: mb,
-        reason:
-          model.shortLabel +
-          " は最大シャードが約 " +
-          mb +
-          " MB（" +
-          (maxPath || "params_shard_*.bin") +
-          "）で、GitHub Pages の目安 100 MB/ファイルを超えます。" +
-          "ブラウザの Cache.add が network error になります。" +
-          "Pages では軽量 (0.5B) を選ぶか「テンプレートで続行」。" +
-          "標準 (1.5B) は Netlify / ローカル（`npm run fetch-model`）向けです。",
-      };
-    }
-    return { ok: true, maxShardMB: Math.round((maxBytes / (1024 * 1024)) * 10) / 10 };
-  } catch (_) {
-    return { ok: true };
-  }
 }
 
 /**
@@ -705,9 +691,8 @@ export function explainLoadError(err) {
     if (isGitHubPagesHost()) {
       return (
         "モデル読み込みに失敗しました（Cache / ネットワーク）。" +
-        "GitHub Pages では大きなシャード（1.5B の params_shard_0 ≈111 MB）やサイト≈1 GB 制限で失敗しやすいです。" +
-        "軽量 (0.5B) が選べる場合はそれを使ってください。標準 (1.5B) のフル LLM は Netlify / ローカルが必要です。" +
-        "「テンプレートで続行」でも遊べます。"
+        "IndexedDB キャッシュを使っています。通信・容量・VRAM を確認し、" +
+        "軽量 (0.5B) や別モデルを試すか「テンプレートで続行」を使ってください。"
       );
     }
     return (
@@ -755,7 +740,14 @@ async function probeWasm(wasmUrl) {
 
 /**
  * @param {ModelInfo | string} modelOrKey
- * @returns {Promise<{ ok: boolean, model: ModelInfo, reason?: string, configUrl?: string, wasmUrl?: string }>}
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   model: ModelInfo,
+ *   source?: ModelSource,
+ *   reason?: string,
+ *   configUrl?: string,
+ *   wasmUrl?: string,
+ * }>}
  */
 export async function probeModel(modelOrKey) {
   const model =
@@ -774,7 +766,31 @@ export async function probeModel(modelOrKey) {
       fetch(configUrl, { method: "GET", cache: "no-cache" }),
       probeWasm(wasmUrl),
     ]);
-    if (!c.ok || !w.ok) {
+    if (c.ok && w.ok) {
+      const ct = (c.headers.get("content-type") || "").toLowerCase();
+      const body = await c.text();
+      if (!ct.includes("text/html") && body.includes("model_type")) {
+        // IndexedDB handles large shards — no ≥100 MB reject on Pages.
+        return {
+          ok: true,
+          model,
+          source: "local",
+          configUrl,
+          wasmUrl,
+        };
+      }
+      if (!pagesAllowsRemoteModels()) {
+        return {
+          ok: false,
+          model,
+          reason:
+            "モデル設定が JSON ではありません（404 の HTML フォールバックの可能性）。" +
+            "「テンプレートで続行」で遊べます。配置: models/…/resolve/main/",
+          configUrl,
+          wasmUrl,
+        };
+      }
+    } else if (!pagesAllowsRemoteModels()) {
       return {
         ok: false,
         model,
@@ -783,31 +799,46 @@ export async function probeModel(modelOrKey) {
         wasmUrl,
       };
     }
-    const ct = (c.headers.get("content-type") || "").toLowerCase();
-    const body = await c.text();
-    if (ct.includes("text/html") || !body.includes("model_type")) {
+
+    // Pages: missing / incomplete same-origin → Hugging Face + IndexedDB
+    if (pagesAllowsRemoteModels()) {
       return {
-        ok: false,
+        ok: true,
         model,
+        source: "remote",
+        configUrl: remoteWeightsBase(model) + MODEL_HF_COMPAT_PREFIX + "mlc-chat-config.json",
+        wasmUrl: remoteWasmUrl(model),
         reason:
-          "モデル設定が JSON ではありません（404 の HTML フォールバックの可能性）。" +
-          "「テンプレートで続行」で遊べます。配置: models/…/resolve/main/",
-        configUrl,
-        wasmUrl,
+          model.shortLabel +
+          " は同一オリジンに無いため Hugging Face から取得します（初回 ≈" +
+          model.sizeMB +
+          " MB · IndexedDB にキャッシュ · VRAM 目安 ≈" +
+          Math.round(model.vramMB / 100) / 10 +
+          " GB）。",
       };
     }
-    const budget = await probeShardBudget(model);
-    if (!budget.ok) {
-      return {
-        ok: false,
-        model,
-        reason: budget.reason,
-        configUrl,
-        wasmUrl,
-      };
-    }
-    return { ok: true, model, configUrl, wasmUrl };
+
+    return {
+      ok: false,
+      model,
+      reason: missingReason(model, configUrl),
+      configUrl,
+      wasmUrl,
+    };
   } catch (e) {
+    if (pagesAllowsRemoteModels()) {
+      return {
+        ok: true,
+        model,
+        source: "remote",
+        configUrl: remoteWeightsBase(model) + MODEL_HF_COMPAT_PREFIX + "mlc-chat-config.json",
+        wasmUrl: remoteWasmUrl(model),
+        reason:
+          "ローカル確認に失敗したため Hugging Face 経由で試せます（" +
+          (e && e.message ? e.message : String(e)) +
+          "）。",
+      };
+    }
     return {
       ok: false,
       model,
@@ -836,7 +867,9 @@ export async function listModelAvailability() {
   return probes.map((p) => ({
     ...p.model,
     available: p.ok,
-    reason: p.ok ? undefined : p.reason,
+    source: p.source || (p.ok ? "local" : undefined),
+    // Keep remote caveat visible in the gate (not a hard disable).
+    reason: p.ok ? (p.source === "remote" ? p.reason : undefined) : p.reason,
   }));
 }
 
@@ -882,31 +915,53 @@ export async function unloadEngine(engine) {
  * @param {import("@mlc-ai/web-llm").MLCEngineInterface | null} [prevEngine]
  * @returns {Promise<import("@mlc-ai/web-llm").MLCEngineInterface>}
  */
-export async function createLocalEngine(onProgress, model = getActiveModel(), prevEngine = null) {
+export async function createLocalEngine(
+  onProgress,
+  model = getActiveModel(),
+  prevEngine = null,
+  source = "local"
+) {
   const m = typeof model === "string" ? resolveModel(model) : model;
   if (!m) throw new Error("Unknown model: " + String(model));
   await unloadEngine(prevEngine);
+  const src = source === "remote" ? "remote" : "local";
   return CreateMLCEngine(m.id, {
-    appConfig: localAppConfig(m),
+    appConfig: buildAppConfig(m, src),
     initProgressCallback: (report) => {
       const progress = typeof report.progress === "number" ? report.progress : 0;
-      const text = report.text || "モデルを読み込み中…";
+      let text = report.text || "モデルを読み込み中…";
+      if (src === "remote" && text && !/HF|Hugging|取得/.test(text)) {
+        text = "HF取得 · " + text;
+      }
       if (onProgress) onProgress({ text, progress });
     },
   });
 }
 
 /**
- * Preferred create API: `createEngine(modelKey, { onProgress, prevEngine })`.
+ * Preferred create API: `createEngine(modelKey, { onProgress, prevEngine, source })`.
  *
  * @param {string | ModelInfo} modelKey
  * @param {{
  *   onProgress?: (p: { text: string, progress: number, engineIndex?: number, engineTotal?: number }) => void,
  *   prevEngine?: import("@mlc-ai/web-llm").MLCEngineInterface | null,
+ *   source?: ModelSource,
  * }} [opts]
  */
 export async function createEngine(modelKey, opts = {}) {
-  return createLocalEngine(opts.onProgress, modelKey, opts.prevEngine || null);
+  const m = typeof modelKey === "string" ? resolveModel(modelKey) : modelKey;
+  let source = opts.source;
+  if (!source && m) {
+    const probe = await probeModel(m);
+    if (!probe.ok) {
+      const err = new Error(probe.reason || "Model not available");
+      err.code = "MODEL_UNAVAILABLE";
+      err.model = m;
+      throw err;
+    }
+    source = probe.source || "local";
+  }
+  return createLocalEngine(opts.onProgress, modelKey, opts.prevEngine || null, source || "local");
 }
 
 /**
@@ -1330,9 +1385,19 @@ export async function loadModel(idOrKey, opts = {}) {
       err.model = model;
       throw err;
     }
+    const engine = await createLocalEngine(
+      opts.onProgress,
+      model,
+      opts.prevEngine || null,
+      probe.source || "local"
+    );
+    return { engine, model };
   }
 
-  const engine = await createLocalEngine(opts.onProgress, model, opts.prevEngine || null);
+  const engine = await createEngine(model, {
+    onProgress: opts.onProgress,
+    prevEngine: opts.prevEngine || null,
+  });
   return { engine, model };
 }
 

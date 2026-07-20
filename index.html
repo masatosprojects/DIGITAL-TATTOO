@@ -64,26 +64,6 @@
             background-repeat: no-repeat;
         }
 
-        #glitchOverlay {
-            position: fixed;
-            inset: 0;
-            z-index: 20;
-            pointer-events: none;
-            opacity: 0;
-            mix-blend-mode: screen;
-            background:
-                linear-gradient(90deg, transparent 40%, rgba(57, 255, 20, 0.04) 50%, transparent 60%),
-                repeating-linear-gradient(
-                    0deg,
-                    transparent 0,
-                    transparent 3px,
-                    rgba(200, 50, 50, 0.03) 3px,
-                    rgba(200, 50, 50, 0.03) 4px
-                );
-            transition: opacity 0.5s;
-        }
-        #glitchOverlay.active { opacity: 1; }
-
         /* ── App shell ── */
         #app {
             position: relative;
@@ -485,9 +465,30 @@
             background: var(--green);
             vertical-align: text-bottom;
             margin-left: 1px;
-            animation: blink 1s step-end infinite;
+            /* Static caret — no blink/flicker (user: no vibration/anxiety FX) */
+            opacity: 0.85;
         }
-        @keyframes blink { 50% { opacity: 0; } }
+
+        /* Hard kill: never shake/jitter the shell (legacy classes must stay inert). */
+        #app,
+        #app.shake-low,
+        #app.shake-mid,
+        #app.shake-high,
+        body,
+        .agent-panel {
+            animation: none !important;
+            transform: none !important;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *,
+            *::before,
+            *::after {
+                animation: none !important;
+                transition: none !important;
+                scroll-behavior: auto !important;
+            }
+        }
 
         #controls {
             display: none;
@@ -561,28 +562,6 @@
         }
         #userInput::placeholder { color: var(--dim); opacity: 0.7; }
         #userInput:disabled { opacity: 0.45; cursor: wait; }
-
-        #app.shake-low { animation: shake1 0.5s ease-in-out infinite; }
-        #app.shake-mid { animation: shake2 0.28s ease-in-out infinite; }
-        #app.shake-high { animation: shake3 0.14s linear infinite; }
-        @keyframes shake1 {
-            0%, 100% { transform: translate(0); }
-            25% { transform: translate(-0.5px, 0.5px); }
-            75% { transform: translate(0.5px, -0.5px); }
-        }
-        @keyframes shake2 {
-            0%, 100% { transform: translate(0); }
-            20% { transform: translate(-1.5px, 1px); }
-            40% { transform: translate(1px, -1px); }
-            60% { transform: translate(-1px, -0.5px); }
-            80% { transform: translate(1.5px, 0.5px); }
-        }
-        @keyframes shake3 {
-            0%, 100% { transform: translate(0) skewX(0deg); }
-            25% { transform: translate(-3px, 1px) skewX(-0.3deg); }
-            50% { transform: translate(2px, -2px) skewX(0.4deg); }
-            75% { transform: translate(-1px, 2px) skewX(-0.2deg); }
-        }
 
         /* Model gate */
         #modelGate {
@@ -849,7 +828,6 @@
 </head>
 <body>
     <div id="atmosphere" aria-hidden="true"></div>
-    <div id="glitchOverlay" aria-hidden="true"></div>
 
     <div id="modelGate" role="status" aria-live="polite">
         <div class="gate-brand">DIGITAL TATTOO</div>
@@ -872,8 +850,8 @@
     <div id="app">
         <div id="status">
             <span class="brand">DIGITAL TATTOO // 00·01·02</span>
-            <div id="coherenceBar" title="pollution"><i id="coherenceFill"></i></div>
-            <span id="coherenceLabel">R0 · POL 0 · 準備</span>
+            <div id="coherenceBar" title="議論の進み"><i id="coherenceFill"></i></div>
+            <span id="coherenceLabel">R0 · 議論0 · 準備</span>
             <span id="engineBadge">LLM …</span>
             <span id="phaseLabel">準備中</span>
             <div id="helpStrip">
@@ -893,8 +871,8 @@
         <div id="board">
             <section id="panel00" class="agent-panel a00" aria-label="AGENT-00">
                 <div class="panel-head">
-                    <span class="who">AGENT-00</span>
-                    <span class="role">秘密の役割 · 答えははい／いいえのみ</span>
+                    <span class="who">エージェント00 · 対象</span>
+                    <span class="role">対象 · 秘密の役割 · はい／いいえのみ</span>
                 </div>
                 <div class="panel-body">
                     <div class="think-slot" id="think00"></div>
@@ -905,7 +883,7 @@
             <div id="midRow">
                 <section id="panel01" class="agent-panel a01" aria-label="AGENT-01">
                     <div class="panel-head">
-                        <span class="who">AGENT-01</span>
+                        <span class="who">エージェント01 · 尋問</span>
                         <span class="hyp">仮説: <span id="hyp01">未定</span></span>
                     </div>
                     <div class="panel-body">
@@ -924,7 +902,7 @@
 
                 <section id="panel02" class="agent-panel a02" aria-label="AGENT-02">
                     <div class="panel-head">
-                        <span class="who">AGENT-02</span>
+                        <span class="who">エージェント02 · 尋問</span>
                         <span class="hyp">仮説: <span id="hyp02">未定</span></span>
                     </div>
                     <div class="panel-body">
@@ -940,6 +918,7 @@
             <button type="button" id="btnGuess">正式推測を要求</button>
             <button type="button" id="btnPause">一時停止</button>
             <button type="button" id="btnPace" title="表示ペース切替">じっくり</button>
+            <button type="button" id="btnDownload" title="思考・発言・ORIGINをテキスト保存" disabled>記録をダウンロード</button>
         </div>
 
         <div id="warn">日本語のみ入力できます</div>
