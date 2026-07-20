@@ -46,11 +46,12 @@ import {
   driftLabel,
 } from "./llm.js";
 
-const MAX_ROUNDS = 12;
-const MIN_ROUNDS_BEFORE_GUESS = 2;
-const GUESS_COOLDOWN_ROUNDS = 3;
-const MAX_GUESSES = 6;
-const GUESS_EVERY = 4;
+/** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
+const MIN_ROUNDS_BEFORE_GUESS = 1;
+/** Mild anti-spam only — formal guesses may still land “someday”. */
+const GUESS_COOLDOWN_ROUNDS = 2;
+/** Occasional auto formal guess; does not end the game on miss. */
+const GUESS_EVERY = 6;
 
 const PACE_PRESETS = {
   slow: { charsPerSec: 7, typeMs: 12, bufferMs: 480, label: "じっくり" },
@@ -210,12 +211,8 @@ function updateHud() {
   cohLabel.textContent =
     "R" +
     state.round +
-    "/" +
-    MAX_ROUNDS +
     " · G" +
     state.guessCount +
-    "/" +
-    MAX_GUESSES +
     " · POL " +
     state.pollution +
     " · " +
@@ -280,26 +277,23 @@ function scrollEl(el) {
 }
 
 function canFormalGuess() {
-  if (state.guessCount >= MAX_GUESSES) return false;
   if (state.round < MIN_ROUNDS_BEFORE_GUESS) return false;
   if (state.round - state.lastGuessRound < GUESS_COOLDOWN_ROUNDS) return false;
   return true;
 }
 
 function canStartGuessRound() {
-  if (state.guessCount >= MAX_GUESSES) return false;
   if (state.round < MIN_ROUNDS_BEFORE_GUESS) return false;
   if (state.forceGuess) return true;
   return state.round - state.lastGuessRound >= GUESS_COOLDOWN_ROUNDS;
 }
 
 function guessBlockedReason() {
-  if (state.guessCount >= MAX_GUESSES) return "推測上限に達しています";
   if (state.round < MIN_ROUNDS_BEFORE_GUESS) {
     return "あと " + (MIN_ROUNDS_BEFORE_GUESS - state.round) + " ラウンド質問が必要です";
   }
   const left = GUESS_COOLDOWN_ROUNDS - (state.round - state.lastGuessRound);
-  if (left > 0) return "推測クールダウン残り " + left + " ラウンド";
+  if (left > 0) return "推測クールダウン残り " + left + " ラウンド（連打防止）";
   return "";
 }
 
@@ -948,11 +942,6 @@ async function agentDebate(agent, question, answer) {
 }
 
 async function agentFormalGuess(agent) {
-  if (state.guessCount >= MAX_GUESSES) {
-    appendChatBubble("sys", "推測スキップ: 推測上限に達しています");
-    return false;
-  }
-
   setTurn(agent, "AGENT-" + agent + " が正式推測");
   const panel = createThinkPanel(agent, "思考過程 · AGENT-" + agent + " 正式推測…");
   const hyp = agent === "01" ? state.hyp01 : state.hyp02;
@@ -1091,21 +1080,6 @@ async function gameLoop() {
       }
     }
 
-    if (state.round >= MAX_ROUNDS) {
-      appendChatBubble("sys", "最大ラウンド。最終推測へ。");
-      state.forceGuess = true;
-      const won = await runGuessRound();
-      if (!won) {
-        appendChatBubble(
-          "sys",
-          "未解明。ORIGIN は「" + state.origin + "」だった。",
-          "blose"
-        );
-      }
-      endGame();
-      return;
-    }
-
     await runQaRound();
   } finally {
     state.turnBusy = false;
@@ -1153,7 +1127,7 @@ async function bootNarrative() {
   );
   appendChatBubble(
     "sys",
-    "規則: ORIGIN は 00 のみ。01/02 は質問と議論。推測は「あなたは〇〇です。」"
+    "規則: ORIGIN は 00 のみ。01/02 は無限に質問・議論可。正解推測「あなたは〇〇です。」で勝利（いつかでよい）"
   );
   state.phase = "imprint";
   setTurn("00", "ORIGIN 刻印待機");
@@ -1238,14 +1212,13 @@ if (btnInject) {
 if (btnGuess) {
   btnGuess.addEventListener("click", () => {
     if (state.phase !== "playing") return;
-    if (state.guessCount >= MAX_GUESSES) {
-      showWarn("推測上限に達しています");
-      return;
-    }
-    if (state.round < MIN_ROUNDS_BEFORE_GUESS) {
-      showWarn(guessBlockedReason());
-      appendChatBubble("sys", "推測不可: " + guessBlockedReason());
-      return;
+    if (!canStartGuessRound() && !state.forceGuess) {
+      const reason = guessBlockedReason();
+      if (reason) {
+        showWarn(reason);
+        appendChatBubble("sys", "推測不可: " + reason);
+        return;
+      }
     }
     state.forceGuess = true;
     updateHud();
