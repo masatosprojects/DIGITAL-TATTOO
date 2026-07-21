@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "shared-memory-1";
+const CLIENT_BUILD = "ask-retry-inf-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -2240,9 +2240,21 @@ function extractAskTo00(streamed) {
   return null;
 }
 
-const ASK_RETRY_MAX = 3;
+/**
+ * Ask drafts: meta / non-question / duplicate rejects retry indefinitely.
+ * Never end the session solely for unusable ask drafts (user: 無制限).
+ * Real LLM/engine failures still stop via endConversationAiStopped.
+ */
+const ASK_RETRY_DELAY_MS = 500;
 /** Debate / hyp: one retry after a useless first draft (2 attempts total). */
 const DEBATE_RETRY_MAX = 1;
+
+function askRejectShortLabel(reason) {
+  if (reason === "既出質問の重複") return "重複拒否";
+  if (reason === "メタ/非質問") return "メタ拒否";
+  if (!reason) return "却下";
+  return String(reason);
+}
 
 // ── Agent turns ──────────────────────────────────────────
 
@@ -2302,18 +2314,24 @@ async function agentAskQuestion(asker) {
       investigatorContext(asker) +
       "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問（？必須）。共用記憶の再質問は絶対禁止。例: あなたは〇〇ですか？ メタ・準備・台本・エージェント名のみ禁止。";
 
-    panel.addSection("params", "stream · max_tokens=500 · メタ拒否・再試行あり", "meta");
+    panel.addSection(
+      "params",
+      "stream · max_tokens=500 · メタ拒否・再試行無制限",
+      "meta"
+    );
     let lastRejectReason = "";
     let lastRejectText = "";
-    for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
+    let attempt = 0;
+    while (true) {
+      if (state.phase === "ended" || state.phase === "reload-model") {
+        panel.collapse();
+        return null;
+      }
       let user = attempt === 0 ? askUserBase : askUserStrict;
       if (attempt > 0) {
-        const why = lastRejectReason || "メタ/非質問";
-        panel.addSection(
-          "再試行",
-          why + "のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")",
-          "warn"
-        );
+        const why = askRejectShortLabel(lastRejectReason || "メタ/非質問");
+        panel.addSection("再試行", "再試行 " + attempt + " · " + why, "warn");
+        await sleep(ASK_RETRY_DELAY_MS);
         if (lastRejectText) user += questionRetryNudge(lastRejectText);
         if (lastRejectReason === "既出質問の重複") {
           user +=
@@ -2359,15 +2377,7 @@ async function agentAskQuestion(asker) {
       } else {
         break;
       }
-    }
-    if (!question) {
-      panel.collapse();
-      endConversationAiStopped(
-        lastRejectReason === "既出質問の重複"
-          ? "AIが既出と異なる質問を出せなかった（重複の繰り返し）"
-          : "AIが使える質問を出せなかった（メタ・非質問の繰り返し）"
-      );
-      return null;
+      attempt += 1;
     }
   }
 
@@ -2922,20 +2932,22 @@ async function wolfAskQuestion(askerId) {
     wolfInvestigatorContext(askerId) +
     "\n短い1文だけ。エージェント00に聞く具体的な新しい質問（？必須）。既出再質問禁止。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
 
-  panel.addSection("params", "メタ拒否・再試行あり", "meta");
+  panel.addSection("params", "メタ拒否・再試行無制限", "meta");
   let question = null;
   let beatStart = performance.now();
   let lastRejectReason = "";
   let lastRejectText = "";
-  for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
+  let attempt = 0;
+  while (true) {
+    if (state.phase === "ended" || state.phase === "reload-model") {
+      panel.collapse();
+      return null;
+    }
     let user = attempt === 0 ? askUserBase : askUserStrict;
     if (attempt > 0) {
-      const why = lastRejectReason || "メタ/非質問";
-      panel.addSection(
-        "再試行",
-        why + "のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")",
-        "warn"
-      );
+      const why = askRejectShortLabel(lastRejectReason || "メタ/非質問");
+      panel.addSection("再試行", "再試行 " + attempt + " · " + why, "warn");
+      await sleep(ASK_RETRY_DELAY_MS);
       if (lastRejectText) user += questionRetryNudge(lastRejectText);
       if (lastRejectReason === "既出質問の重複") {
         user +=
@@ -2952,6 +2964,7 @@ async function wolfAskQuestion(askerId) {
     beatStart = streamed.beatStart;
     if (streamed.error && !streamed.raw) {
       panel.collapse();
+      if (streamed.gpuReload || state.phase === "reload-model") return null;
       endConversationAiStopped(streamed.error);
       return null;
     }
@@ -2980,15 +2993,7 @@ async function wolfAskQuestion(askerId) {
     } else {
       break;
     }
-  }
-  if (!question) {
-    panel.collapse();
-    endConversationAiStopped(
-      lastRejectReason === "既出質問の重複"
-        ? "AIが既出と異なる質問を出せなかった（重複の繰り返し）"
-        : "AIが使える質問を出せなかった（メタ・非質問の繰り返し）"
-    );
-    return null;
+    attempt += 1;
   }
 
   panel.addSection("最終質問", question, "out");
