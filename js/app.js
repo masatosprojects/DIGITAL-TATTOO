@@ -1792,9 +1792,6 @@ function witnessRuleBook(origin) {
   );
 }
 
-/** Reason string badQuestionReason() returns for isDirectOriginAsk() rejects. */
-const DIRECT_ORIGIN_ASK_REASON = "ORIGIN／正体を直接尋ねている（禁止・間接的に絞れ）";
-
 /**
  * Last-resort local pool if a weak model keeps defaulting to a direct
  * identity ask no matter how it's re-prompted. Small and generic on
@@ -1866,10 +1863,26 @@ function normalizeQuestionKey(q) {
     .replace(/\s+/g, "")
     .replace(/[「」『』（）()【】［］\[\]"'“”‘’]/g, "")
     .replace(/[？?。．.!！、,，･・]/g, "");
+  // Strip a leaked list-number prefix ("1." / "3." etc.) — the model often
+  // re-numbers the same question differently across attempts, which must
+  // still key as the same question rather than being treated as new.
+  s = s.replace(/^[0-9０-９]{1,2}/, "");
   // Strip polite / yes-no endings including ますか (1432 polite-ending near-dup).
   s = s.replace(/(でしょうか|ですか|のですか|ますか|ませんか)$/u, "");
   s = s.replace(/か$/u, "");
   return s;
+}
+
+/** Jaccard-style character-set overlap, for catching near-duplicate questions
+ * that differ by a stray script/variant character (e.g. 職務 vs 職务 — a
+ * weak model substituting a Simplified-Chinese form of the same kanji). */
+function charOverlapRatio(a, b) {
+  const sa = new Set(Array.from(a));
+  const sb = new Set(Array.from(b));
+  if (!sa.size || !sb.size) return 0;
+  let common = 0;
+  for (const ch of sa) if (sb.has(ch)) common++;
+  return common / Math.max(sa.size, sb.size);
 }
 
 /**
@@ -1912,6 +1925,10 @@ function isRepeatHistoryQuestion(q) {
     if (key.length >= 5 && hk.length >= 5 && (hk.includes(key) || key.includes(hk))) {
       return true;
     }
+    // Near-dup via character overlap (script/variant-kanji slips, e.g. 職務/職务).
+    if (key.length >= 5 && hk.length >= 5 && charOverlapRatio(key, hk) >= 0.75) {
+      return true;
+    }
     return false;
   });
   if (stemHit) return true;
@@ -1921,6 +1938,10 @@ function isRepeatHistoryQuestion(q) {
     if (hk === key) return true;
     // Near-dup: same stem / one contains the other (punct / quote / か variant).
     if (key.length >= 5 && hk.length >= 5 && (hk.includes(key) || key.includes(hk))) {
+      return true;
+    }
+    // Near-dup via character overlap (script/variant-kanji slips, e.g. 職務/職务).
+    if (key.length >= 5 && hk.length >= 5 && charOverlapRatio(key, hk) >= 0.75) {
       return true;
     }
     return false;
@@ -2058,34 +2079,6 @@ function isBadInvestigatorQuestion(q) {
     isFragmentGarbageQuestion(q) ||
     isDirectOriginAsk(q)
   );
-}
-
-/**
- * Specific JP reason for think-panel labels — never a vague bundle that
- * mismatches the rejected text (0953 user complaint).
- */
-function badQuestionReason(q) {
-  const raw = String(q || "").trim();
-  if (!raw) return "空出力";
-  const t = raw.toLowerCase().replace(/\s+/g, "");
-  if (new RegExp("^(" + ANSWER_TOKEN_ALT + "|yes|no)[。．!?？]*$", "i").test(t)) {
-    return "答え語のみ（質問ではない）";
-  }
-  if (new RegExp("^エージェント\\d{0,2}(" + ANSWER_TOKEN_ALT + "|yes|no)", "i").test(t)) {
-    return "話者タグ＋答え語のみ（質問ではない）";
-  }
-  if (isAgentNameOnlyOrAboutAgentsQuestion(q)) {
-    return "エージェント名のみ／同僚への問い（ORIGIN属性ではない）";
-  }
-  if (isDirectOriginAsk(q)) return DIRECT_ORIGIN_ASK_REASON;
-  if (isMetaFormatQuestion(q)) return "メタ／回答形式の指示を質問にしている";
-  if (isHistoryEchoQuestion(q)) return "履歴エコー（過去の質問や答え語の混入）";
-  if (isInstructionEchoText(q)) return "指示文のオウム返し";
-  if (isFormatLeakText(q)) return "形式ラベル漏れ（思考: 等）";
-  if (isPlaceholderEchoQuestion(q)) return "プレースホルダ／未定のエコー";
-  if (isRepeatHistoryQuestion(q)) return "直近履歴と同じ質問の繰り返し";
-  if (isFragmentGarbageQuestion(q)) return "断片・仮説接頭辞など形式崩れ";
-  return "質問として不適";
 }
 
 /**
@@ -2416,7 +2409,7 @@ async function agentAskQuestion(asker) {
 
     panel.addSection(
       "params",
-      "stream · max_tokens=500 · メタ拒否・再試行無制限",
+      "stream · max_tokens=500 · 重複／初問定番のみ再試行（内容判定による拒否は撤廃）",
       "meta"
     );
     let lastRejectReason = "";
@@ -2424,20 +2417,10 @@ async function agentAskQuestion(asker) {
     let prevRejectText = null;
     let identicalRejectStreak = 0;
     let attempt = 0;
-    let directAskStreak = 0;
     while (true) {
       if (state.phase === "ended" || state.phase === "reload-model") {
         panel.collapse();
         return null;
-      }
-      if (directAskStreak >= 3) {
-        question = pickDirectAskEscapeQuestion();
-        panel.addSection(
-          "代替質問",
-          "ORIGIN直接質問を" + directAskStreak + "回連続で試みたため、安全な間接質問に切替: 「" + question + "」",
-          "warn"
-        );
-        break;
       }
       if (identicalRejectStreak >= 3) {
         question = pickDirectAskEscapeQuestion();
@@ -2450,7 +2433,7 @@ async function agentAskQuestion(asker) {
       }
       let user = attempt === 0 ? askUserBase : askUserStrict;
       if (attempt > 0) {
-        const why = askRejectShortLabel(lastRejectReason || "メタ/非質問");
+        const why = askRejectShortLabel(lastRejectReason || "既出質問の重複");
         panel.addSection("再試行", "再試行 " + attempt + " · " + why, "warn");
         await sleep(ASK_RETRY_DELAY_MS);
         if (lastRejectText) user += questionRetryNudge(lastRejectText);
@@ -2463,11 +2446,6 @@ async function agentAskQuestion(asker) {
         if (lastRejectReason === "初問定番バイアス") {
           user +=
             "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
-        }
-        if (lastRejectReason === DIRECT_ORIGIN_ASK_REASON) {
-          user +=
-            "\n「正体は／役割は／誰か」を直接尋ねるのは禁止。エージェント00は答えない。" +
-            "代わりに属性・行動・場所・道具・関係する人など、具体的な間接質問を1つ発明せよ。";
         }
       }
       const streamed = await streamIntoPanel(panel, system, user, {
@@ -2484,40 +2462,22 @@ async function agentAskQuestion(asker) {
       }
       question = extractAskTo00(streamed);
       if (!question) {
-        const draft = firstDraftSpeech(streamed);
-        const cand = draft ? ensureQuestionMark(draft) : "";
-        if (
-          cand &&
-          !isBadInvestigatorQuestion(cand) &&
-          !isUselessMetaOrEcho(cand, "ask") &&
-          !isFirstAskNightActivityCliché(cand)
-        ) {
-          question = cand;
-        }
+        // No content-quality reject/retry anymore — best-effort salvage of
+        // whatever the model produced, used as-is even if rough.
+        const draft =
+          firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "";
+        question = draft ? ensureQuestionMark(cleanJapaneseLine(draft, 120)) : "（質問なし）";
       }
-      if (question && isRepeatHistoryQuestion(question)) {
+      if (isRepeatHistoryQuestion(question)) {
         lastRejectReason = "既出質問の重複";
         lastRejectText = question;
-        directAskStreak = 0;
         panel.addSection("却下", "重複: " + clip(question, 80), "warn");
         question = null;
-      } else if (question && isFirstAskNightActivityCliché(question)) {
+      } else if (isFirstAskNightActivityCliché(question)) {
         lastRejectReason = "初問定番バイアス";
         lastRejectText = question;
-        directAskStreak = 0;
         panel.addSection("却下", "初問定番バイアス: " + clip(question, 80), "warn");
         question = null;
-      } else if (question && isBadInvestigatorQuestion(question)) {
-        lastRejectReason = badQuestionReason(question);
-        lastRejectText = question;
-        directAskStreak = lastRejectReason === DIRECT_ORIGIN_ASK_REASON ? directAskStreak + 1 : 0;
-        panel.addSection("却下", lastRejectReason + ": " + clip(question, 80), "warn");
-        question = null;
-      } else if (!question) {
-        lastRejectReason = "メタ/非質問";
-        lastRejectText = firstDraftSpeech(streamed) || streamed.raw || "";
-        directAskStreak = 0;
-        panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
       } else {
         break;
       }
@@ -3086,7 +3046,7 @@ async function wolfAskQuestion(askerId) {
       : "") +
     "\n短い1文だけ。エージェント00に聞く具体的な新しい質問をちょうど1つ（？推奨）。既出再質問禁止。メタ・準備・台本禁止。具体例文は出すな。";
 
-  panel.addSection("params", "メタ拒否・再試行無制限", "meta");
+  panel.addSection("params", "重複／初問定番のみ再試行（内容判定による拒否は撤廃）", "meta");
   let question = null;
   let beatStart = performance.now();
   let lastRejectReason = "";
@@ -3094,20 +3054,10 @@ async function wolfAskQuestion(askerId) {
   let prevRejectText = null;
   let identicalRejectStreak = 0;
   let attempt = 0;
-  let directAskStreak = 0;
   while (true) {
     if (state.phase === "ended" || state.phase === "reload-model") {
       panel.collapse();
       return null;
-    }
-    if (directAskStreak >= 3) {
-      question = pickDirectAskEscapeQuestion();
-      panel.addSection(
-        "代替質問",
-        "ORIGIN直接質問を" + directAskStreak + "回連続で試みたため、安全な間接質問に切替: 「" + question + "」",
-        "warn"
-      );
-      break;
     }
     if (identicalRejectStreak >= 3) {
       question = pickDirectAskEscapeQuestion();
@@ -3120,7 +3070,7 @@ async function wolfAskQuestion(askerId) {
     }
     let user = attempt === 0 ? askUserBase : askUserStrict;
     if (attempt > 0) {
-      const why = askRejectShortLabel(lastRejectReason || "メタ/非質問");
+      const why = askRejectShortLabel(lastRejectReason || "既出質問の重複");
       panel.addSection("再試行", "再試行 " + attempt + " · " + why, "warn");
       await sleep(ASK_RETRY_DELAY_MS);
       if (lastRejectText) user += questionRetryNudge(lastRejectText);
@@ -3133,11 +3083,6 @@ async function wolfAskQuestion(askerId) {
       if (lastRejectReason === "初問定番バイアス") {
         user +=
           "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
-      }
-      if (lastRejectReason === DIRECT_ORIGIN_ASK_REASON) {
-        user +=
-          "\n「正体は／役割は／誰か」を直接尋ねるのは禁止。エージェント00は答えない。" +
-          "代わりに属性・行動・場所・道具・関係する人など、具体的な間接質問を1つ発明せよ。";
       }
     }
     const streamed = await streamIntoPanel(panel, system, user, {
@@ -3154,40 +3099,22 @@ async function wolfAskQuestion(askerId) {
     }
     question = extractAskTo00(streamed);
     if (!question) {
-      const draft = firstDraftSpeech(streamed);
-      const cand = draft ? ensureQuestionMark(draft) : "";
-      if (
-        cand &&
-        !isBadInvestigatorQuestion(cand) &&
-        !isUselessMetaOrEcho(cand, "ask") &&
-        !isFirstAskNightActivityCliché(cand)
-      ) {
-        question = cand;
-      }
+      // No content-quality reject/retry anymore — best-effort salvage of
+      // whatever the model produced, used as-is even if rough.
+      const draft =
+        firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "";
+      question = draft ? ensureQuestionMark(cleanJapaneseLine(draft, 120)) : "（質問なし）";
     }
-    if (question && isRepeatHistoryQuestion(question)) {
+    if (isRepeatHistoryQuestion(question)) {
       lastRejectReason = "既出質問の重複";
       lastRejectText = question;
-      directAskStreak = 0;
       panel.addSection("却下", "重複: " + clip(question, 80), "warn");
       question = null;
-    } else if (question && isFirstAskNightActivityCliché(question)) {
+    } else if (isFirstAskNightActivityCliché(question)) {
       lastRejectReason = "初問定番バイアス";
       lastRejectText = question;
-      directAskStreak = 0;
       panel.addSection("却下", "初問定番バイアス: " + clip(question, 80), "warn");
       question = null;
-    } else if (question && isBadInvestigatorQuestion(question)) {
-      lastRejectReason = badQuestionReason(question);
-      lastRejectText = question;
-      directAskStreak = lastRejectReason === DIRECT_ORIGIN_ASK_REASON ? directAskStreak + 1 : 0;
-      panel.addSection("却下", lastRejectReason + ": " + clip(question, 80), "warn");
-      question = null;
-    } else if (!question) {
-      lastRejectReason = "メタ/非質問";
-      lastRejectText = firstDraftSpeech(streamed) || streamed.raw || "";
-      directAskStreak = 0;
-      panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
     } else {
       break;
     }
