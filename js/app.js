@@ -125,6 +125,7 @@ const btnInject = document.getElementById("btnInject");
 const btnGuess = document.getElementById("btnGuess");
 const btnPause = document.getElementById("btnPause");
 const btnPace = document.getElementById("btnPace");
+const btnReloadModel = document.getElementById("btnReloadModel");
 const btnDownload = document.getElementById("btnDownload");
 const controlsEl = document.getElementById("controls");
 const downloadRowEl = document.getElementById("downloadRow");
@@ -631,9 +632,124 @@ function initSharedHypothesisForSession() {
   state.hyp02 = "";
 }
 
-/** AI generation stopped — end the session; never continue with stock lines. */
+/** True when WebGPU adapter/device was yanked (TDR / DXGI_ERROR_DEVICE_REMOVED). */
+function isGpuLostError(err) {
+  const msg = String(
+    err && typeof err === "object" && "message" in err ? err.message : err || ""
+  ).toLowerCase();
+  return (
+    msg.includes("dxgi_error") ||
+    msg.includes("device_removed") ||
+    msg.includes("requestdevice") ||
+    msg.includes("gpuadapter") ||
+    msg.includes("lost access to the gpu") ||
+    (msg.includes("device") && msg.includes("removed"))
+  );
+}
+
+/**
+ * Open the model gate again so the operator can pick/load a model after GPU death.
+ * Keeps ORIGIN + history; does not force a full session wipe.
+ */
+async function offerModelReload(reason) {
+  if (state.phase === "reload-model") return;
+  const detail = reason ? String(reason).slice(0, 160) : "";
+  appendChatBubble(
+    "sys",
+    "GPU/エンジンが切断されました。モデル選択画面を開きます — 別モデルや同じモデルを「読み込む」で尋問を続行できます。" +
+      (detail ? "（" + detail + "）" : "")
+  );
+  logSession({
+    kind: "sys",
+    label: "GPU切断→再読込待ち",
+    text: detail || "gpu lost",
+  });
+
+  if (state.loopTimer) {
+    clearTimeout(state.loopTimer);
+    state.loopTimer = null;
+  }
+  state.turnBusy = false;
+  state.llmBusy = false;
+  state.paused = true;
+  state.phase = "reload-model";
+  state.mode = "booting";
+  setBadge("offline");
+  consecutiveLlmFailures = 0;
+
+  try {
+    if (loadedEngines.length) {
+      await unloadAllEngines(loadedEngines);
+    }
+  } catch (_) {
+    /* already dead */
+  }
+  loadedEngines = [];
+  engineRef.current = null;
+  llmRouter = null;
+  llmQueue = null;
+  agentEngineMap = null;
+
+  state.ready = false;
+  if (modelGate) modelGate.classList.remove("hidden");
+  gateMsg.textContent =
+    "GPU切断のためモデルを再読み込みしてください。エージェント別のボックスを選んで「読み込む」。ORIGIN と履歴は保持されます。";
+  gateFill.style.width = "0%";
+  gatePct.textContent = "—";
+  gateLoad.disabled = false;
+  gateLoad.hidden = false;
+  gateLoad.textContent = "読み込む";
+  gateHint.innerHTML =
+    "VRAMが足りない場合は <strong>軽量 0.5B</strong> や <strong>標準 1.5B</strong> に切り替えてください。<br>" +
+    "読み込み成功後、同じ尋問セッションを続行します。";
+  gateActions.classList.add("show");
+  if (gateSkip) gateSkip.hidden = true;
+  await syncAssignPickerUI();
+  setControlsVisible(true);
+  if (btnReloadModel) btnReloadModel.disabled = false;
+  if (btnInject) btnInject.disabled = true;
+  if (btnGuess) btnGuess.disabled = true;
+  if (btnPause) btnPause.disabled = true;
+  inputEl.disabled = true;
+  inputEl.placeholder = "モデル再読み込み待ち…";
+  currentUpdateHud();
+}
+
+function resumeAfterModelReload() {
+  hideGate();
+  state.ready = true;
+  state.mode = "llm";
+  setBadge("llm");
+  consecutiveLlmFailures = 0;
+  state.paused = false;
+  if (state.defined && state.origin) {
+    state.phase = "playing";
+    appendChatBubble(
+      "sys",
+      "モデル再読み込み完了（" + assignmentShortLabel() + "）。尋問を続行します。"
+    );
+    setControlsVisible(true);
+    if (btnInject) btnInject.disabled = false;
+    if (btnPause) {
+      btnPause.disabled = false;
+      btnPause.textContent = "一時停止";
+    }
+    inputEl.disabled = false;
+    inputEl.placeholder = "質問を提案（任意・Enter）…";
+    updateHud();
+    currentGameLoopTick();
+  } else {
+    bootNarrative();
+  }
+}
+
+/** AI generation stopped — GPU loss → reload gate; other failures → end session. */
 function endConversationAiStopped(reason) {
-  if (state.phase === "ended") return;
+  if (state.phase === "ended" || state.phase === "reload-model") return;
+  if (isGpuLostError(reason)) {
+    void offerModelReload(reason);
+    return;
+  }
   const detail = reason ? "（" + String(reason).slice(0, 120) + "）" : "";
   appendChatBubble(
     "sys",
@@ -646,6 +762,10 @@ function endConversationAiStopped(reason) {
   });
   state.won = false;
   endGame();
+  appendChatBubble(
+    "sys",
+    "モデルを変えてやり直す場合は「モデルを再読み込み」を押してください。"
+  );
 }
 
 // ── Japanese input ───────────────────────────────────────
@@ -837,13 +957,8 @@ function formatLlmErrorForPanel(err) {
   if (lower.includes("model not loaded") || lower.includes("not loaded before")) {
     return "モデル未ロード — 再読み込みを試みたが失敗。会話を終了します。";
   }
-  if (
-    lower.includes("device") ||
-    lower.includes("gpuadapter") ||
-    lower.includes("dxgi_error") ||
-    lower.includes("requestdevice")
-  ) {
-    return "GPU切断 — 再読み込み失敗。ページ再読込が必要な場合があります。";
+  if (lower.includes("device") || lower.includes("gpuadapter") || lower.includes("dxgi_error") || lower.includes("requestdevice")) {
+    return "GPU切断 — モデル選択画面で再読み込みできます（軽いモデル推奨）。";
   }
   if (lower.includes("engine not ready") || lower.includes("no engine bound")) {
     return "エンジン未準備 — 会話を終了します。";
@@ -1065,21 +1180,33 @@ async function healDeadEngines(panel, cause) {
     if (b && b.engineId) ids.add(b.engineId);
   }
   if (!ids.size) return false;
+  const gpu = isGpuLostError(cause);
   if (panel) {
     panel.addSection(
       "エンジン復旧",
-      "GPU/エンジン切断を検知 → 冷却後に再作成を試行（定型文では継続しない）",
+      gpu
+        ? "GPU切断を検知 → 冷却（最大数秒）後に再作成を試行"
+        : "エンジン切断を検知 → 再作成を試行",
       "warn"
     );
   }
   let anyOk = false;
   for (const id of ids) {
     try {
-      await sleep(1500);
+      await sleep(gpu ? 4000 : 1500);
       await llmRouter.recoverEngine(id, cause || "healDeadEngines");
       anyOk = true;
     } catch (e) {
       console.warn("healDeadEngines failed for", id, e);
+      if (gpu) {
+        try {
+          await sleep(5000);
+          await llmRouter.recoverEngine(id, cause || "healDeadEngines-retry");
+          anyOk = true;
+        } catch (e2) {
+          console.warn("healDeadEngines second try failed", id, e2);
+        }
+      }
     }
   }
   return anyOk;
@@ -1129,8 +1256,25 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
         "sys",
         "GPU/LLM接続が不安定です（" +
           consecutiveLlmFailures +
-          "回連続エラー）。復旧できなければ会話を終了します。"
+          "回連続エラー）。自動復旧を試し、だめならモデル選択画面を開きます。「モデルを再読み込み」でも切り替えできます。"
       );
+    }
+    if (isGpuLostError(res.error)) {
+      const healed = await healDeadEngines(panel, res.error);
+      if (healed) {
+        consecutiveLlmFailures = 0;
+        panel.addSection("エンジン復旧", "再作成に成功 — 次の生成で続行", "meta");
+        const retry = await llmChat(system, user, { ...opts, onDelta, stream: true });
+        if (retry && retry.raw) {
+          raw = retry.raw;
+          consecutiveLlmFailures = 0;
+          const partsOk = splitThinkSpeak(raw);
+          if (partsOk.think) panel.addSection("思考（抽出）", partsOk.think, "mem");
+          if (partsOk.speak) panel.addSection("発言（抽出）", partsOk.speak, "out");
+          else if (raw) panel.addSection("raw", raw, "raw");
+          return { ...partsOk, raw, beatStart };
+        }
+      }
     }
     return {
       think: "",
@@ -2155,6 +2299,7 @@ function endGame() {
   if (btnInject) btnInject.disabled = true;
   if (btnGuess) btnGuess.disabled = true;
   if (btnPause) btnPause.disabled = true;
+  if (btnReloadModel) btnReloadModel.disabled = false;
   syncDownloadUi();
   inputEl.disabled = true;
   inputEl.placeholder = state.won ? "解明完了 — 記録をダウンロードできます" : "終了 — 記録をダウンロードできます";
@@ -2913,6 +3058,12 @@ if (btnPace) {
   });
 }
 
+if (btnReloadModel) {
+  btnReloadModel.addEventListener("click", () => {
+    void offerModelReload("オペレーターがモデル再読み込みを要求");
+  });
+}
+
 if (btnDownload) {
   btnDownload.disabled = true;
   btnDownload.addEventListener("click", () => {
@@ -3306,6 +3457,10 @@ function finishBoot() {
   hideGate();
   state.ready = true;
   syncPaceButton();
+  if (state.phase === "reload-model" && state.defined && state.origin) {
+    resumeAfterModelReload();
+    return;
+  }
   bootNarrative();
 }
 

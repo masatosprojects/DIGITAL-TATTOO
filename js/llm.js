@@ -2074,9 +2074,9 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
         }
       }
 
-      // After GPU device loss, give the adapter a moment before requestDevice.
+      // After GPU device loss, give the adapter a longer cool-down before requestDevice.
       if (gpuLost) {
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 4000));
       }
 
       // Create fresh first; only then unload the old instance.
@@ -2095,18 +2095,18 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
         } catch (_) {
           /* already disposed */
         }
-        await new Promise((r) => setTimeout(r, gpuLost ? 2500 : 800));
+        await new Promise((r) => setTimeout(r, gpuLost ? 5000 : 800));
         try {
           fresh = await createEngine(model, { prevEngine: null });
         } catch (createErr2) {
           // One more delayed attempt — mid-session DXGI_ERROR often clears
-          // after a few seconds; without this the session sticks on templates.
+          // after a few seconds.
           console.warn(
             "LLM recreate retry failed; final delayed attempt",
             engineId,
             createErr2
           );
-          await new Promise((r) => setTimeout(r, 3500));
+          await new Promise((r) => setTimeout(r, gpuLost ? 8000 : 3500));
           fresh = await createEngine(model, { prevEngine: null });
         }
       }
