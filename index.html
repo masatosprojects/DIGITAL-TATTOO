@@ -22,7 +22,6 @@
             --chat-dim: #8a8570;
             --font: "Yu Gothic", "Hiragino Sans", "Segoe UI", sans-serif;
             --sans: "Yu Gothic", "Hiragino Sans", "Segoe UI", sans-serif;
-            --cursive: "Segoe Script", "Brush Script MT", "Lucida Handwriting", "Bradley Hand", cursive;
             --radius: 10px;
         }
 
@@ -101,12 +100,6 @@
             user-select: none;
         }
         #status .brand { color: var(--green); opacity: 0.85; }
-        #status .brand .brand-cursive {
-            font-family: var(--cursive);
-            font-size: 1.15em;
-            letter-spacing: 0.01em;
-            color: #3f7a54;
-        }
         #coherenceBar {
             flex: 1;
             max-width: 140px;
@@ -630,14 +623,14 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-end;
             gap: 14px;
             padding: 24px;
-            background:
-                radial-gradient(ellipse at 50% 32%, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.12) 65%),
-                rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(7px) saturate(1.05);
-            -webkit-backdrop-filter: blur(7px) saturate(1.05);
+            background-color: var(--bg);
+            background-image: url("%BASE_URL%bg-gate.png");
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
             transition: opacity 0.45s, visibility 0.45s;
         }
         #modelGate.hidden {
@@ -646,18 +639,19 @@
             pointer-events: none;
         }
         #modelGate .gate-brand {
-            font-family: var(--cursive);
-            color: #2f4a34;
-            font-size: clamp(2.4rem, 7vw, 3.6rem);
-            letter-spacing: 0.02em;
-            opacity: 0.95;
-            text-shadow: 0 2px 10px rgba(255, 255, 255, 0.6);
+            /* Wordmark is baked into bg-gate.png — kept for screen readers only. */
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
         }
         #modelGate .gate-sub {
-            color: var(--dim);
+            color: var(--fg);
             font-size: 0.68rem;
             letter-spacing: 0.16em;
-            margin-top: -8px;
+            text-shadow: 0 1px 6px rgba(255, 255, 255, 0.75), 0 1px 2px rgba(255, 255, 255, 0.9);
         }
         #gateMsg {
             color: var(--fg);
@@ -666,6 +660,7 @@
             max-width: 36em;
             line-height: 1.6;
             min-height: 2.8em;
+            text-shadow: 0 1px 6px rgba(255, 255, 255, 0.75), 0 1px 2px rgba(255, 255, 255, 0.9);
         }
         #gateBar {
             width: min(320px, 80vw);
@@ -685,6 +680,7 @@
             color: var(--dim);
             font-size: 0.7rem;
             letter-spacing: 0.12em;
+            text-shadow: 0 1px 4px rgba(255, 255, 255, 0.85);
         }
         #gateHint {
             color: var(--dim);
@@ -693,7 +689,8 @@
             max-width: 42em;
             line-height: 1.55;
             margin-top: 8px;
-            opacity: 0.85;
+            opacity: 0.95;
+            text-shadow: 0 1px 4px rgba(255, 255, 255, 0.85);
         }
         #gateAgentAssign {
             display: grid;
@@ -856,6 +853,7 @@
             color: var(--dim);
             text-align: left;
             margin-top: 6px;
+            text-shadow: 0 1px 4px rgba(255, 255, 255, 0.85);
         }
         #gateLoad {
             background: #4f9d6e;
@@ -960,7 +958,7 @@
     <div id="atmosphere" aria-hidden="true"></div>
 
     <div id="modelGate" role="status" aria-live="polite">
-        <div class="gate-brand">Digital Tattoo</div>
+        <div class="gate-brand">DIGITAL TATTOO</div>
         <div class="gate-sub">INTERROGATION · IN-BROWSER LLM</div>
         <div id="gateMsg">WebGPU を確認しています…</div>
         <div class="gate-section-label">ゲーム形式</div>
@@ -992,7 +990,7 @@
 
     <div id="app">
         <div id="status">
-            <span class="brand"><span class="brand-cursive">Digital Tattoo</span> // 00·01·02</span>
+            <span class="brand">DIGITAL TATTOO // 00·01·02</span>
             <div id="coherenceBar" title="議論の進み"><i id="coherenceFill"></i></div>
             <span id="coherenceLabel">R0 · 議論0 · 準備</span>
             <span id="engineBadge">LLM …</span>
