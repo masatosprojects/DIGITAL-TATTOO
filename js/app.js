@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "ux-product-2";
+const CLIENT_BUILD = "floral-start-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -117,8 +117,6 @@ const btnThinkToggle = document.getElementById("btnThinkToggle");
 const btnSend = document.getElementById("btnSend");
 const gateAdvancedToggle = document.getElementById("gateAdvancedToggle");
 const gateAdvanced = document.getElementById("gateAdvanced");
-const topicCards = document.getElementById("topicCards");
-const topicEcho = document.getElementById("topicEcho");
 const panel00 = document.getElementById("panel00");
 const panel01 = document.getElementById("panel01");
 const panel02 = document.getElementById("panel02");
@@ -4393,23 +4391,6 @@ if (btnThinkToggle && boardEl) {
     const open = boardEl.classList.toggle("thinks-open");
     btnThinkToggle.setAttribute("aria-pressed", open ? "true" : "false");
     btnThinkToggle.textContent = open ? "AIの思考を隠す" : "AIの思考を見る";
-  });
-}
-
-if (topicCards) {
-  const tips = {
-    job: "就活 — 検索結果に残る印象を、尋問体験で先取りする。",
-    sns: "SNS — 軽い投稿が、あとから文脈を失って残ることがある。",
-    ai: "AI — 断片からプロフィールを推測される感覚を体験する。",
-    privacy: "個人情報 — 小さな手がかりがつながり、人物像になる。",
-  };
-  topicCards.addEventListener("click", (e) => {
-    const btn = e.target.closest(".topic-card");
-    if (!btn) return;
-    for (const c of topicCards.querySelectorAll(".topic-card")) {
-      c.classList.toggle("selected", c === btn);
-    }
-    if (topicEcho) topicEcho.textContent = tips[btn.dataset.topic] || "";
   });
 }
 

@@ -4,34 +4,34 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DIGITAL TATTOO — 尋問ゲーム</title>
-    <meta name="client-build" content="ux-product-2">
+    <meta name="client-build" content="floral-start-1">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #EEF3FB;
-            --fg: #0f172a;
-            --dim: #64748b;
-            --accent: #2563EB;
-            --accent-deep: #1d4ed8;
-            --accent-soft: rgba(37, 99, 235, 0.14);
-            --green: #2563EB;
-            --amber: #F97316;
-            --warn: #dc2626;
-            --a00: #2563EB;
-            --a01: #F97316;
-            --a02: #7c3aed;
-            --panel: rgba(255, 255, 255, 0.86);
-            --panel-edge: rgba(37, 99, 235, 0.22);
-            --chat-bg: #f4f7fd;
-            --chat-fg: #1e293b;
-            --chat-dim: #64748b;
+            --bg: #eef4ec;
+            --fg: #3a4a3c;
+            --dim: #83937f;
+            --accent: #4f9d6e;
+            --accent-deep: #3f7a54;
+            --accent-soft: rgba(79, 157, 110, 0.14);
+            --green: #4f9d6e;
+            --amber: #d99a4e;
+            --warn: #c1685a;
+            --a00: #5e9cc4;
+            --a01: #d99a4e;
+            --a02: #a98fc4;
+            --panel: rgba(255, 255, 255, 0.72);
+            --panel-edge: rgba(79, 157, 110, 0.28);
+            --chat-bg: #f8f2e8;
+            --chat-fg: #3a3228;
+            --chat-dim: #8a8570;
             --font: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
             --display: "Outfit", "Zen Kaku Gothic New", sans-serif;
             --sans: var(--font);
             --radius: 12px;
-            --content: min(720px, 100%);
+            --content: min(440px, 94vw);
         }
 
         * { box-sizing: border-box; }
@@ -58,9 +58,19 @@
             pointer-events: none;
             background-color: var(--bg);
             background-image:
-                radial-gradient(ellipse at 78% 8%, rgba(37, 99, 235, 0.22) 0%, transparent 48%),
-                radial-gradient(ellipse at 12% 88%, rgba(249, 115, 22, 0.1) 0%, transparent 42%),
-                linear-gradient(165deg, #dbe7ff 0%, #EEF3FB 42%, #f8fafc 100%);
+                radial-gradient(
+                    ellipse at 50% 35%,
+                    rgba(255, 255, 255, 0.15) 0%,
+                    rgba(255, 255, 255, 0.05) 55%,
+                    rgba(238, 244, 236, 0.35) 100%
+                ),
+                linear-gradient(
+                    180deg,
+                    rgba(255, 255, 255, 0.3) 0%,
+                    rgba(255, 255, 255, 0.05) 45%,
+                    rgba(238, 244, 236, 0.4) 100%
+                ),
+                url("%BASE_URL%bg-floral.png");
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
@@ -84,7 +94,7 @@
             -webkit-backdrop-filter: blur(14px) saturate(1.05);
             border: 1px solid var(--panel-edge);
             border-radius: var(--radius);
-            box-shadow: 0 16px 40px rgba(30, 41, 59, 0.12);
+            box-shadow: 0 16px 40px rgba(80, 100, 80, 0.16);
         }
 
         #status {
@@ -93,7 +103,7 @@
             flex-direction: column;
             gap: 4px;
             padding: 2px 2px 8px;
-            border-bottom: 1px solid rgba(37, 99, 235, 0.14);
+            border-bottom: 1px solid rgba(79, 157, 110, 0.14);
             user-select: none;
         }
         .status-top {
@@ -130,7 +140,7 @@
             max-width: 120px;
             height: 3px;
             border-radius: 2px;
-            background: rgba(37, 99, 235, 0.14);
+            background: rgba(79, 157, 110, 0.14);
             overflow: hidden;
         }
         #coherenceBar > i {
@@ -157,7 +167,7 @@
         #btnThinkToggle {
             margin-left: auto;
             background: rgba(255, 255, 255, 0.7);
-            border: 1px solid rgba(37, 99, 235, 0.28);
+            border: 1px solid rgba(79, 157, 110, 0.28);
             border-radius: 999px;
             color: var(--accent-deep);
             font-family: inherit;
@@ -217,7 +227,7 @@
             box-shadow: 0 4px 16px rgba(30, 41, 59, 0.06);
         }
         .agent-panel.active {
-            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35), 0 4px 16px rgba(30, 41, 59, 0.06);
+            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.35), 0 4px 16px rgba(30, 41, 59, 0.06);
         }
         .agent-panel.a00 { border-top: 3px solid var(--a00); }
         .agent-panel.a01 { border-top: 3px solid var(--a01); }
@@ -230,7 +240,7 @@
             justify-content: space-between;
             gap: 8px;
             padding: 7px 12px;
-            border-bottom: 1px solid rgba(37, 99, 235, 0.12);
+            border-bottom: 1px solid rgba(79, 157, 110, 0.12);
             font-size: 0.78rem;
         }
         .panel-head .who {
@@ -281,7 +291,7 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
             padding: 4px 6px;
-            border-bottom: 1px solid rgba(37, 99, 235, 0.1);
+            border-bottom: 1px solid rgba(79, 157, 110, 0.1);
         }
         #board.thinks-open .think-slot { display: block; }
 
@@ -349,7 +359,7 @@
             background-size: cover, cover;
             background-position: center, center;
             background-repeat: no-repeat, no-repeat;
-            border: 1px solid rgba(37, 99, 235, 0.2);
+            border: 1px solid rgba(79, 157, 110, 0.2);
             border-radius: var(--radius);
             box-shadow: 0 4px 16px rgba(30, 41, 59, 0.06);
         }
@@ -357,7 +367,7 @@
             position: relative;
             z-index: 1;
             background: rgba(255, 252, 247, 0.92);
-            border-bottom-color: rgba(37, 99, 235, 0.12);
+            border-bottom-color: rgba(79, 157, 110, 0.12);
         }
         #chatRoom .panel-head .who { color: var(--accent-deep); }
         #chatRoom .panel-head .role { color: var(--chat-dim); }
@@ -370,7 +380,7 @@
             min-height: 0;
             display: flex;
             flex-direction: column;
-            border-bottom: 1px solid rgba(37, 99, 235, 0.12);
+            border-bottom: 1px solid rgba(79, 157, 110, 0.12);
             background: rgba(255, 252, 247, 0.92);
         }
         #sharedMemory .mem-head {
@@ -417,7 +427,7 @@
             grid-template-columns: 1.6em 1fr;
             gap: 2px 6px;
             padding: 4px 0;
-            border-top: 1px solid rgba(37, 99, 235, 0.08);
+            border-top: 1px solid rgba(79, 157, 110, 0.08);
         }
         #sharedMemoryList .mem-row:first-of-type { border-top: none; }
         #sharedMemoryList .mem-idx {
@@ -463,7 +473,7 @@
         #sharedMemoryList::-webkit-scrollbar-thumb,
         .think-slot::-webkit-scrollbar-thumb,
         .speech-slot::-webkit-scrollbar-thumb {
-            background: rgba(37, 99, 235, 0.35);
+            background: rgba(79, 157, 110, 0.35);
             border-radius: 4px;
         }
 
@@ -515,8 +525,8 @@
         .bubble.bD3 .b-who { color: #2d7a63; }
         .bubble.bD4 { margin-left: auto; background: #f4ece8; border: 1px solid rgba(180, 110, 80, 0.5); border-bottom-right-radius: 4px; color: var(--chat-fg); }
         .bubble.bD4 .b-who { color: #a5603a; }
-        .bubble.bD5 { margin-right: auto; background: #eaeef7; border: 1px solid rgba(37, 99, 235, 0.4); border-bottom-left-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD5 .b-who { color: #1d4ed8; }
+        .bubble.bD5 { margin-right: auto; background: #eaeef7; border: 1px solid rgba(79, 157, 110, 0.4); border-bottom-left-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD5 .b-who { color: #3f7a54; }
         .bubble.bsys {
             margin: 0 auto 10px;
             max-width: 100%;
@@ -531,8 +541,8 @@
         }
         .bubble.bask {
             margin: 0 auto 10px;
-            background: #e8f0fe;
-            border: 1px solid rgba(37, 99, 235, 0.35);
+            background: #e8f3ec;
+            border: 1px solid rgba(79, 157, 110, 0.35);
             color: var(--chat-fg);
             font-size: 0.82rem;
             text-align: center;
@@ -540,7 +550,7 @@
         }
         .bubble.bguess {
             border-color: var(--accent);
-            background: #e8f0fe;
+            background: #e8f3ec;
         }
         .bubble.bwin { border-color: #16a34a; color: #166534; }
         .bubble.blose { border-color: var(--warn); color: #a04040; }
@@ -565,7 +575,7 @@
         .think-wrap { margin: 0.35em 0; }
         .think-wrap.think-done { opacity: 0.92; }
         .think-panel {
-            border: 1px solid rgba(37, 99, 235, 0.22);
+            border: 1px solid rgba(79, 157, 110, 0.22);
             border-radius: 8px;
             background: rgba(255, 255, 255, 0.55);
             font-size: 0.82rem;
@@ -584,7 +594,7 @@
         .think-summary::before { content: "▸ "; color: var(--accent); }
         .think-panel[open] > .think-summary::before { content: "▾ "; }
         .think-panel[open] > .think-summary {
-            border-bottom: 1px solid rgba(37, 99, 235, 0.18);
+            border-bottom: 1px solid rgba(79, 157, 110, 0.18);
             color: var(--accent-deep);
         }
         .think-body {
@@ -612,7 +622,7 @@
             line-height: 1.5;
         }
         .think-raw .think-pre { color: #c2410c; }
-        .think-out .think-pre { color: #1d4ed8; }
+        .think-out .think-pre { color: #3f7a54; }
         .think-warn .think-pre { color: #a5473c; }
         .think-origin .think-pre { color: #b57a2e; }
         .think-mem .think-pre { color: #64748b; }
@@ -652,13 +662,13 @@
             gap: 8px;
             flex-wrap: wrap;
             padding: 8px 2px 0;
-            border-top: 1px solid rgba(37, 99, 235, 0.14);
+            border-top: 1px solid rgba(79, 157, 110, 0.14);
         }
         #controls.show { display: flex; }
         #controls button,
         #downloadRow button {
             background: rgba(255, 255, 255, 0.65);
-            border: 1px solid rgba(37, 99, 235, 0.3);
+            border: 1px solid rgba(79, 157, 110, 0.3);
             border-radius: 999px;
             color: var(--fg);
             font-family: inherit;
@@ -687,11 +697,11 @@
             flex-wrap: wrap;
             align-items: center;
             padding: 8px 2px 0;
-            border-top: 1px solid rgba(37, 99, 235, 0.14);
+            border-top: 1px solid rgba(79, 157, 110, 0.14);
         }
         #downloadRow.show { display: flex; }
         #downloadRow #btnDownload {
-            border-color: rgba(37, 99, 235, 0.55);
+            border-color: rgba(79, 157, 110, 0.55);
             background: var(--accent-soft);
             color: var(--accent-deep);
             font-weight: 600;
@@ -723,7 +733,7 @@
             align-items: center;
             gap: 8px;
             padding: 10px 8px 12px;
-            border-top: 1px solid rgba(37, 99, 235, 0.18);
+            border-top: 1px solid rgba(79, 157, 110, 0.18);
             background: rgba(255, 255, 255, 0.45);
             border-radius: 0 0 var(--radius) var(--radius);
         }
@@ -736,7 +746,7 @@
         #userInput {
             flex: 1;
             background: rgba(255, 255, 255, 0.72);
-            border: 1px solid rgba(37, 99, 235, 0.2);
+            border: 1px solid rgba(79, 157, 110, 0.2);
             border-radius: 10px;
             outline: none;
             color: var(--fg);
@@ -763,7 +773,7 @@
             font-weight: 700;
             letter-spacing: 0.04em;
             cursor: pointer;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28);
+            box-shadow: 0 4px 12px rgba(79, 157, 110, 0.28);
         }
         #btnSend:hover:not(:disabled) { background: var(--accent-deep); }
         #btnSend:disabled {
@@ -772,24 +782,25 @@
             box-shadow: none;
         }
 
-        /* ── Landing / model gate ── */
+        /* ── Model gate (floral collage; wordmark baked into bg-gate.png) ── */
         #modelGate {
             position: fixed;
             inset: 0;
             z-index: 40;
-            display: block;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0;
+            padding: 28px 16px;
             overflow-y: auto;
             overflow-x: hidden;
             -webkit-overflow-scrolling: touch;
             background-color: var(--bg);
-            background-image:
-                radial-gradient(ellipse at 50% -10%, rgba(37, 99, 235, 0.28) 0%, transparent 52%),
-                radial-gradient(ellipse at 100% 40%, rgba(124, 58, 237, 0.08) 0%, transparent 40%),
-                linear-gradient(180deg, #dbe7ff 0%, #EEF3FB 38%, #f8fafc 100%);
+            background-image: url("%BASE_URL%bg-gate.png");
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
-            background-attachment: fixed;
             transition: opacity 0.45s, visibility 0.45s;
         }
         #modelGate.hidden {
@@ -798,197 +809,39 @@
             pointer-events: none;
         }
 
-        .landing {
-            width: var(--content);
-            max-width: 720px;
-            margin: 0 auto;
-            padding: 28px 20px 48px;
+        /* Wordmark is baked into bg-gate.png — screen readers only. */
+        #modelGate .gate-brand {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
         }
 
-        .landing-hero {
-            text-align: center;
-            padding: 36px 0 28px;
-        }
         .build-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            margin: 0 0 16px;
-            padding: 6px 12px;
-            border-radius: 999px;
-            background: rgba(37, 99, 235, 0.12);
-            border: 1px solid rgba(37, 99, 235, 0.28);
-            color: var(--accent-deep);
-            font-family: var(--display);
-            font-size: 0.72rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-        }
-        .gate-brand {
-            font-family: var(--display);
-            font-weight: 800;
-            font-size: clamp(2.4rem, 10vw, 3.6rem);
-            letter-spacing: 0.03em;
-            line-height: 1.02;
-            color: var(--accent);
-            margin: 0 0 14px;
-            text-shadow: 0 2px 0 rgba(255, 255, 255, 0.85);
-        }
-        .gate-sub {
-            display: none;
-        }
-        .hero-lead {
-            margin: 0 auto 12px;
-            max-width: 22em;
-            font-size: clamp(1.12rem, 3.8vw, 1.35rem);
-            font-weight: 700;
-            line-height: 1.45;
-            color: var(--fg);
-        }
-        .hero-sub {
-            margin: 0 auto 26px;
-            max-width: 26em;
-            font-size: 1.02rem;
-            line-height: 1.6;
-            color: var(--dim);
-        }
-        .hero-cta {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 56px;
-            padding: 14px 34px;
-            border-radius: 14px;
-            background: var(--accent);
-            color: #fff;
-            font-family: inherit;
-            font-size: 1.12rem;
-            font-weight: 700;
-            letter-spacing: 0.04em;
-            text-decoration: none;
-            border: none;
-            cursor: pointer;
-            box-shadow: 0 12px 28px rgba(37, 99, 235, 0.38);
-            animation: hero-cta-pulse 2.4s ease-in-out infinite;
-        }
-        .hero-cta:hover { background: var(--accent-deep); animation: none; }
-        @keyframes hero-cta-pulse {
-            0%, 100% { transform: translateY(0); box-shadow: 0 12px 28px rgba(37, 99, 235, 0.38); }
-            50% { transform: translateY(-2px); box-shadow: 0 16px 34px rgba(37, 99, 235, 0.48); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .hero-cta { animation: none; }
-        }
-
-        .landing-section {
-            margin: 36px 0;
-            padding-top: 8px;
-            border-top: 1px solid rgba(37, 99, 235, 0.14);
-        }
-        .landing-section h2 {
-            margin: 0 0 8px;
-            font-size: 0.72rem;
-            font-weight: 700;
-            letter-spacing: 0.16em;
-            color: var(--accent);
-            text-transform: uppercase;
-        }
-        .landing-section h3 {
-            margin: 0 0 8px;
-            font-size: 1.2rem;
-            font-weight: 700;
-            line-height: 1.35;
-            color: var(--fg);
-        }
-        .landing-section p {
+            position: absolute;
+            top: 10px;
+            left: 12px;
+            z-index: 1;
             margin: 0;
-            font-size: 1rem;
-            line-height: 1.65;
-            color: var(--dim);
-        }
-
-        .flow-row {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
-            margin-top: 16px;
-        }
-        .flow-step {
-            text-align: center;
-            padding: 12px 6px;
-            border-radius: 12px;
-            background: rgba(255, 255, 255, 0.7);
-            border: 1px solid rgba(37, 99, 235, 0.12);
-        }
-        .flow-icon {
-            display: block;
-            width: 40px;
-            height: 40px;
-            margin: 0 auto 8px;
-            color: var(--accent);
-        }
-        .flow-label {
-            display: block;
-            font-size: 0.82rem;
-            font-weight: 700;
-            color: var(--fg);
-        }
-        .flow-arrow {
-            display: none;
-        }
-
-        .topic-cards {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-            margin-top: 14px;
-        }
-        .topic-card {
-            text-align: left;
-            padding: 14px 14px;
-            min-height: 72px;
-            border-radius: 12px;
-            border: 1px solid rgba(37, 99, 235, 0.18);
-            background: rgba(255, 255, 255, 0.72);
-            font-family: inherit;
-            color: var(--fg);
-            cursor: pointer;
-            transition: border-color 0.2s, background 0.2s, transform 0.2s;
-        }
-        .topic-card:hover {
-            border-color: rgba(37, 99, 235, 0.45);
-            transform: translateY(-2px);
-        }
-        .topic-card.selected {
-            border-color: var(--accent);
-            background: var(--accent-soft);
-            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
-        }
-        .topic-card .t-title {
-            display: block;
-            font-weight: 700;
-            font-size: 1rem;
-            margin-bottom: 4px;
-        }
-        .topic-card .t-hint {
-            display: block;
-            font-size: 0.78rem;
-            color: var(--dim);
-            line-height: 1.4;
-        }
-        #topicEcho {
-            margin-top: 10px;
-            min-height: 1.4em;
-            font-size: 0.88rem;
-            color: var(--accent-deep);
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.45);
+            color: rgba(58, 74, 60, 0.55);
+            font-family: var(--display);
+            font-size: 0.58rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            pointer-events: none;
         }
 
         [data-reveal] {
             opacity: 0;
-            transform: translateY(14px);
+            transform: translateY(12px);
             transition: opacity 0.55s ease, transform 0.55s ease;
-            transition-delay: var(--reveal-delay, 0ms);
         }
         [data-reveal].is-visible {
             opacity: 1;
@@ -996,20 +849,48 @@
         }
 
         .landing-start {
-            margin-top: 40px;
-            padding: 22px 18px 28px;
+            width: var(--content);
+            max-width: 440px;
+            margin: 0;
+            padding: 22px 18px 24px;
             border-radius: 16px;
-            background: rgba(255, 255, 255, 0.82);
-            border: 1px solid rgba(37, 99, 235, 0.2);
-            box-shadow: 0 12px 32px rgba(30, 41, 59, 0.08);
+            background: rgba(255, 255, 255, 0.58);
+            backdrop-filter: blur(14px) saturate(1.08);
+            -webkit-backdrop-filter: blur(14px) saturate(1.08);
+            border: 1px solid rgba(255, 255, 255, 0.72);
+            box-shadow: 0 14px 40px rgba(60, 80, 60, 0.14);
             display: flex;
             flex-direction: column;
             align-items: stretch;
             gap: 12px;
         }
+        .start-kicker {
+            margin: 0;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            color: var(--accent-deep);
+            text-align: center;
+            text-transform: uppercase;
+        }
         .landing-start h2 {
             margin: 0;
-            font-size: 1.25rem;
+            font-size: clamp(1.15rem, 4vw, 1.35rem);
+            font-weight: 700;
+            text-align: center;
+            line-height: 1.35;
+            color: var(--fg);
+        }
+        .start-lead {
+            margin: -4px 0 4px;
+            font-size: 0.88rem;
+            line-height: 1.55;
+            text-align: center;
+            color: var(--dim);
+        }
+        .landing-start h3 {
+            margin: 4px 0 0;
+            font-size: 1.05rem;
             font-weight: 700;
             text-align: center;
             color: var(--fg);
@@ -1019,7 +900,7 @@
             padding: 12px;
             border-radius: 12px;
             background: var(--accent-soft);
-            border: 1px solid rgba(37, 99, 235, 0.28);
+            border: 1px solid rgba(79, 157, 110, 0.28);
             color: var(--accent-deep);
             font-weight: 700;
             font-size: 0.95rem;
@@ -1029,6 +910,13 @@
             margin-top: 4px;
             font-weight: 400;
             font-size: 0.78rem;
+            color: var(--dim);
+        }
+        .start-footnote {
+            margin: 0;
+            font-size: 0.72rem;
+            line-height: 1.5;
+            text-align: center;
             color: var(--dim);
         }
 
@@ -1043,7 +931,7 @@
             width: 100%;
             height: 4px;
             border-radius: 2px;
-            background: rgba(37, 99, 235, 0.14);
+            background: rgba(79, 157, 110, 0.14);
             overflow: hidden;
         }
         #gateBar > i {
@@ -1096,7 +984,7 @@
             align-items: stretch;
             gap: 4px;
             padding: 12px;
-            border: 1px solid rgba(37, 99, 235, 0.2);
+            border: 1px solid rgba(79, 157, 110, 0.2);
             border-radius: 12px;
             background: rgba(255, 255, 255, 0.7);
             cursor: pointer;
@@ -1105,11 +993,11 @@
             color: var(--fg);
             min-height: 3.6em;
         }
-        .gate-format-box:hover:not(:disabled) { border-color: rgba(37, 99, 235, 0.5); }
+        .gate-format-box:hover:not(:disabled) { border-color: rgba(79, 157, 110, 0.5); }
         .gate-format-box.selected {
             border-color: var(--accent);
             background: var(--accent-soft);
-            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.25);
         }
         .gate-format-box .box-label {
             font-size: 0.88rem;
@@ -1136,7 +1024,7 @@
 
         #gateAdvancedToggle {
             background: transparent;
-            border: 1px dashed rgba(37, 99, 235, 0.35);
+            border: 1px dashed rgba(79, 157, 110, 0.35);
             border-radius: 999px;
             color: var(--accent-deep);
             font-family: inherit;
@@ -1172,7 +1060,7 @@
             align-items: stretch;
             gap: 4px;
             padding: 10px;
-            border: 1px solid rgba(37, 99, 235, 0.2);
+            border: 1px solid rgba(79, 157, 110, 0.2);
             border-radius: 10px;
             background: rgba(255, 255, 255, 0.7);
             cursor: pointer;
@@ -1182,12 +1070,12 @@
             min-height: 4.2em;
         }
         .gate-model-box:hover:not(.unavailable):not(:disabled) {
-            border-color: rgba(37, 99, 235, 0.5);
+            border-color: rgba(79, 157, 110, 0.5);
         }
         .gate-model-box.selected {
             border-color: var(--accent);
             background: var(--accent-soft);
-            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.25);
         }
         .gate-model-box.unavailable,
         .gate-model-box:disabled {
@@ -1228,7 +1116,7 @@
             letter-spacing: 0.06em;
             padding: 1px 6px;
             border-radius: 999px;
-            border: 1px solid rgba(37, 99, 235, 0.35);
+            border: 1px solid rgba(79, 157, 110, 0.35);
             color: var(--dim);
             vertical-align: middle;
         }
@@ -1237,12 +1125,12 @@
             color: #c2410c;
         }
         .opt-tag.rec {
-            border-color: rgba(37, 99, 235, 0.5);
+            border-color: rgba(79, 157, 110, 0.5);
             color: var(--accent-deep);
         }
         .opt-tag.jp {
-            border-color: rgba(37, 99, 235, 0.55);
-            color: #1d4ed8;
+            border-color: rgba(79, 157, 110, 0.55);
+            color: #3f7a54;
         }
         .gate-section-label {
             width: 100%;
@@ -1265,13 +1153,13 @@
             min-height: 52px;
             cursor: pointer;
             margin-top: 4px;
-            box-shadow: 0 8px 22px rgba(37, 99, 235, 0.3);
+            box-shadow: 0 8px 22px rgba(79, 157, 110, 0.3);
         }
         #gateLoad:hover:not(:disabled) { background: var(--accent-deep); }
         #gateLoad:disabled {
             opacity: 0.45;
             cursor: wait;
-            background: #94a3b8;
+            background: #94a3a0;
             box-shadow: none;
         }
         #gateActions {
@@ -1284,7 +1172,7 @@
         #gateActions.show { display: flex; }
         #gateSkip {
             background: rgba(255, 255, 255, 0.6);
-            border: 1px solid rgba(37, 99, 235, 0.28);
+            border: 1px solid rgba(79, 157, 110, 0.28);
             border-radius: 999px;
             color: var(--fg);
             font-family: inherit;
@@ -1319,13 +1207,11 @@
             #gateWolfModelPick {
                 grid-template-columns: 1fr;
             }
-            .flow-row {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .landing {
-                padding: 20px 16px 40px;
-            }
             .status-meta #helpStrip { display: none; }
+            #modelGate {
+                justify-content: flex-start;
+                padding-top: 48px;
+            }
         }
 
         @media (prefers-reduced-transparency: reduce) {
@@ -1339,7 +1225,13 @@
                 background-image: none;
             }
             #modelGate {
-                background: #EEF3FB;
+                background-color: #eef4ec;
+                background-image: url("%BASE_URL%bg-gate.png");
+                backdrop-filter: none;
+                -webkit-backdrop-filter: none;
+            }
+            .landing-start {
+                background: rgba(255, 255, 255, 0.92);
                 backdrop-filter: none;
                 -webkit-backdrop-filter: none;
             }
@@ -1350,116 +1242,54 @@
     <div id="atmosphere" aria-hidden="true"></div>
 
     <div id="modelGate" role="status" aria-live="polite">
-        <div class="landing">
-            <header class="landing-hero" data-reveal>
-                <p class="build-chip" id="buildChip">build ux-product-2</p>
-                <h1 class="gate-brand">DIGITAL TATTOO</h1>
-                <p class="gate-sub">INTERROGATION · IN-BROWSER LLM</p>
-                <p class="hero-lead">ネットに残る足跡が、未来のあなたを形づくる。</p>
-                <p class="hero-sub">ブラウザ上で動くAI尋問シミュレーション。体験して、デジタル・タトゥーの意味を体感する。</p>
-                <a class="hero-cta" href="#gateStart">シミュレーションを始める</a>
-            </header>
+        <p class="build-chip" id="buildChip">build floral-start-1</p>
+        <div class="gate-brand">DIGITAL TATTOO</div>
 
-            <section class="landing-section" data-reveal aria-labelledby="sec-problem">
-                <h2 id="sec-problem">問題提起</h2>
-                <h3>一度出した情報は、消えない。</h3>
-                <p>SNSの一言、写真、プロフィール。小さな投稿がつながり、あとから自分ではコントロールできない「デジタル・タトゥー」になることがあります。</p>
-            </section>
+        <section class="landing-start" id="gateStart" data-reveal>
+            <p class="start-kicker">行動</p>
+            <h2>読むより、体験する。</h2>
+            <p class="start-lead">AI尋問シミュレーションで、デジタル・タトゥーを体感する。</p>
 
-            <section class="landing-section" data-reveal aria-labelledby="sec-flow">
-                <h2 id="sec-flow">体験</h2>
-                <h3>拡散の流れを、短く追う。</h3>
-                <div class="flow-row" aria-hidden="false">
-                    <div class="flow-step">
-                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="14" r="6" stroke="currentColor" stroke-width="2"/><path d="M8 32c2.5-6 9-8 12-8s9.5 2 12 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M28 10h6M31 7v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                        <span class="flow-label">SNS</span>
-                    </div>
-                    <div class="flow-step">
-                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><rect x="8" y="10" width="24" height="20" rx="3" stroke="currentColor" stroke-width="2"/><path d="M14 18h12M14 23h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                        <span class="flow-label">投稿</span>
-                    </div>
-                    <div class="flow-step">
-                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M12 28V12l16 8-16 8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M28 14l4-2M28 20h5M28 26l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                        <span class="flow-label">拡散</span>
-                    </div>
-                    <div class="flow-step">
-                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="20" r="10" stroke="currentColor" stroke-width="2"/><path d="M20 12v8l5 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                        <span class="flow-label">未来</span>
-                    </div>
+            <h3>ゲームを始める</h3>
+            <div class="start-simple">
+                通常モード（推奨）
+                <small>標準設定のまますぐ開始できます。形式やモデルは下から変更。</small>
+            </div>
+
+            <div class="gate-section-label">ゲーム形式</div>
+            <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
+                <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
+                    <span class="box-label">尋問モード（2人）</span>
+                    <span class="box-hint">尋問官A/B が協同で推理する標準プレイ。</span>
+                </button>
+                <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
+                    <span class="box-label">人狼モード（5人）</span>
+                    <span class="box-hint">討論者5人＋追放投票。発展ルール。</span>
+                </button>
+            </div>
+
+            <button type="button" id="gateAdvancedToggle" aria-expanded="false" aria-controls="gateAdvanced">詳細設定</button>
+
+            <div id="gateAdvanced" class="gate-advanced">
+                <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
+                <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
+                <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
+                <div id="gateWolfModelPick" role="radiogroup" aria-label="人狼モードモデル選択" hidden></div>
+                <div id="gateAssignWarn" hidden></div>
+                <div id="gateHint">
+                    推奨は TinySwallow 1.5B（JP特化）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN は対象者のみが知る。
                 </div>
-            </section>
+            </div>
 
-            <section class="landing-section" data-reveal aria-labelledby="sec-learn">
-                <h2 id="sec-learn">学べること</h2>
-                <h3>知りたいテーマを選ぶ。</h3>
-                <div class="topic-cards" id="topicCards">
-                    <button type="button" class="topic-card" data-topic="job">
-                        <span class="t-title">就活</span>
-                        <span class="t-hint">検索される自分を想像する</span>
-                    </button>
-                    <button type="button" class="topic-card" data-topic="sns">
-                        <span class="t-title">SNS</span>
-                        <span class="t-hint">軽い投稿の残り方</span>
-                    </button>
-                    <button type="button" class="topic-card" data-topic="ai">
-                        <span class="t-title">AI</span>
-                        <span class="t-hint">推測されるプロフィール</span>
-                    </button>
-                    <button type="button" class="topic-card" data-topic="privacy">
-                        <span class="t-title">個人情報</span>
-                        <span class="t-hint">断片からつながる手がかり</span>
-                    </button>
-                </div>
-                <p id="topicEcho" aria-live="polite"></p>
-            </section>
-
-            <section class="landing-section" data-reveal aria-labelledby="sec-act">
-                <h2 id="sec-act">行動</h2>
-                <h3>読むより、体験する。</h3>
-                <p>下のボタンからシミュレーションを開始。AI尋問官が「対象者」の秘密を推理します。あなたはORIGINを刻み、流れを見守ります。</p>
-            </section>
-
-            <section class="landing-start" id="gateStart" data-reveal>
-                <h2>ゲームを始める</h2>
-                <div class="start-simple">
-                    通常モード（推奨）
-                    <small>標準設定のまますぐ開始できます。形式やモデルは「詳細設定」から変更。</small>
-                </div>
-
-                <button type="button" id="gateAdvancedToggle" aria-expanded="false" aria-controls="gateAdvanced">詳細設定</button>
-
-                <div id="gateAdvanced" class="gate-advanced">
-                    <div class="gate-section-label">ゲーム形式</div>
-                    <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
-                        <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
-                            <span class="box-label">尋問モード（2人）</span>
-                            <span class="box-hint">尋問官A/B が協同で推理する標準プレイ。</span>
-                        </button>
-                        <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
-                            <span class="box-label">人狼モード（5人）</span>
-                            <span class="box-hint">討論者5人＋追放投票。発展ルール。</span>
-                        </button>
-                    </div>
-
-                    <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
-                    <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
-                    <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
-                    <div id="gateWolfModelPick" role="radiogroup" aria-label="人狼モードモデル選択" hidden></div>
-                    <div id="gateAssignWarn" hidden></div>
-                    <div id="gateHint">
-                        推奨は TinySwallow 1.5B（JP特化）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN は対象者のみが知る。
-                    </div>
-                </div>
-
-                <button type="button" id="gateLoad" disabled>▶ 開始</button>
-                <div id="gateBar"><i id="gateFill"></i></div>
-                <div id="gatePct">—</div>
-                <div id="gateMsg">準備しています…</div>
-                <div id="gateActions">
-                    <button type="button" id="gateSkip" hidden>モデル必須</button>
-                </div>
-            </section>
-        </div>
+            <button type="button" id="gateLoad" disabled>▶ 開始</button>
+            <div id="gateBar"><i id="gateFill"></i></div>
+            <div id="gatePct">—</div>
+            <div id="gateMsg">準備しています…</div>
+            <p class="start-footnote">通常モードは標準 Qwen 1.5B。詳細設定でモデル変更も可能です。</p>
+            <div id="gateActions">
+                <button type="button" id="gateSkip" hidden>モデル必須</button>
+            </div>
+        </section>
     </div>
 
     <div id="app">
@@ -1563,6 +1393,6 @@
         </form>
     </div>
 
-    <script type="module" src="./js/app.js?v=ux-product-2"></script>
+    <script type="module" src="./js/app.js?v=floral-start-1"></script>
 </body>
 </html>
