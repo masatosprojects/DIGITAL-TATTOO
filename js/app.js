@@ -211,6 +211,13 @@ let assignPickerBuilt = false;
 /** GPU/エンジンが連続で落ちた回数（成功でリセット）。到達で会話終了。 */
 let consecutiveLlmFailures = 0;
 const LLM_FAILURE_WARN_THRESHOLD = 3;
+/**
+ * このページ読み込み中に GPU 切断（device lost）が起きた回数。成功しても
+ * リセットしない — ブラウザの GPU プロセス自体が壊れている場合、同一タブ内
+ * では何度モデルを選び直しても再現し続けることがあるため、2回目以降は
+ * ページの本当のリロードを明確に勧める判断に使う。
+ */
+let gpuDeathCount = 0;
 
 /** Chronological session transcript for UTF-8 .txt download. */
 /** @type {Array<{ t: number, kind: string, agent?: string, label?: string, text: string }>} */
@@ -765,11 +772,21 @@ function isGpuLostError(err) {
  */
 async function offerModelReload(reason) {
   if (state.phase === "reload-model") return;
+  gpuDeathCount++;
   const detail = reason ? String(reason).slice(0, 160) : "";
+  const repeatWarn =
+    gpuDeathCount >= 2
+      ? "GPUが" +
+        gpuDeathCount +
+        "回切断しています。ブラウザのGPUプロセス自体が不安定になっている可能性が高く、" +
+        "このタブ内でモデルを選び直しても同じ切断が再発しやすいです。" +
+        "ページ全体を再読み込み（Ctrl+Shift+R）してから再開することを推奨します。"
+      : "";
   appendChatBubble(
     "sys",
     "GPU/エンジンが切断されました。モデル選択画面を開きます — 別モデルや同じモデルを「読み込む」で尋問を続行できます。" +
-      (detail ? "（" + detail + "）" : "")
+      (detail ? "（" + detail + "）" : "") +
+      (repeatWarn ? " " + repeatWarn : "")
   );
   logSession({
     kind: "sys",
@@ -820,7 +837,10 @@ async function offerModelReload(reason) {
   }
   if (modelGate) modelGate.classList.remove("hidden");
   gateMsg.textContent =
-    "【GPU切断】モデルを選び直して「読み込む」を押してください。VRAM 節約のためいったん 軽量(0.5B) を選択済みです。Swallow は重いので再発しやすいです。";
+    "【GPU切断】モデルを選び直して「読み込む」を押してください。VRAM 節約のためいったん 軽量(0.5B) を選択済みです。Swallow は重いので再発しやすいです。" +
+    (gpuDeathCount >= 2
+      ? " ⚠ GPU切断" + gpuDeathCount + "回目 — このタブ内での再選択では直らない可能性が高いです。ブラウザで Ctrl+Shift+R（強制再読み込み）してから改めて開始してください。"
+      : "");
   gateFill.style.width = "0%";
   gatePct.textContent = "—";
   gateLoad.disabled = false;
@@ -4282,7 +4302,14 @@ gateLoad.addEventListener("click", async () => {
     await syncAssignPickerUI();
 
     const msg = explainLoadError(e);
-    if (e && (e.code === "AGENT_ASSIGN_LOAD_FAILED" || /VRAM|メモリ|memory/i.test(String(e.message || e)))) {
+    const isGpuErr = !!(e && isGpuLostError(e));
+    if (isGpuErr) gpuDeathCount++;
+    if (
+      e &&
+      (e.code === "AGENT_ASSIGN_LOAD_FAILED" ||
+        isGpuErr ||
+        /VRAM|メモリ|memory/i.test(String(e.message || e)))
+    ) {
       const safeKey = getDefaultModelKey();
       const safe = {
         "00": safeKey,
@@ -4297,11 +4324,19 @@ gateLoad.addEventListener("click", async () => {
       }
       await syncAssignPickerUI();
       const label = resolveModel(safeKey)?.label || safeKey;
+      const repeatWarn =
+        isGpuErr && gpuDeathCount >= 2
+          ? " ⚠ GPU切断" +
+            gpuDeathCount +
+            "回目 — このタブ内でモデルを選び直しても直らない可能性が高いです。" +
+            "ブラウザで Ctrl+Shift+R（強制再読み込み）してから改めて開始してください。"
+          : "";
       gateMsg.textContent =
         msg +
         " → 全エージェントを " +
         label +
-        " に揃えました。もう一度「読み込む」を試してください。";
+        " に揃えました。もう一度「読み込む」を試してください。" +
+        repeatWarn;
       gateLoad.disabled = false;
       gateLoad.textContent = "読み込む";
       gateActions.classList.add("show");
