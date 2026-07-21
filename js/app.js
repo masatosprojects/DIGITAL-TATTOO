@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "anti-meta-1";
+const CLIENT_BUILD = "narrow-coop-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -509,28 +509,32 @@ function namingClarityRule() {
   return (
     "呼称ルール: 必ず「エージェント00」「エージェント01」「エージェント02」と呼ぶ。" +
     "「代理人」は絶対禁止（誤訳）。曖昧な「エージェント」単体も禁止。" +
-    "固定役割（開幕から既知・確認不要）: " +
+    "固定役割（t=0から既知・確認不要）: " +
     "エージェント00＝被尋問者（ORIGIN を持つ。質問にははい/いいえ等の5段階のみで答える）。" +
-    "エージェント01とエージェント02＝友人であり同僚の協同尋問官（開幕から互いを知っている。" +
-    "二人で共有仮説を育て、エージェント00だけを尋問する）。"
+    "エージェント01とエージェント02＝友人であり同僚の協同尋問官（t=0から互いを知っており協力確定。" +
+    "二人で共有仮説を育て、エージェント00だけを尋問し、ORIGIN空間をどんどん絞る）。"
   );
 }
 
 /** Keep 00/01/02 from burning early turns on “who am I?” role discovery. */
 function roleAlreadyKnownRule() {
   return (
-    "重要: 上記の役割と関係はすでに確定している。" +
-    "自分が誰か・何の立場か・相手が同僚／友人かどうかを問い直したり議論したりするな。" +
-    "自己紹介・役割確認・立場の推測・初対面アピールは禁止。最初の発言から尋問または議論の本題に入れ。"
+    "重要: 役割・協力関係は開幕（t=0）から確定済み。" +
+    "事前の会話がゼロでも、友人・同僚の協同尋問官としてすでに息が合っている前提で動け。" +
+    "自分が誰か・何の立場か・相手が同僚／友人かどうか・協力体制の確認は一切不要・禁止。" +
+    "自己紹介・役割確認・初対面アピール・「これから議論する準備」・ウォームアップ・メタ前置きは禁止。" +
+    "最初の発言からORIGIN空間を絞る尋問／議論の本題に入れ。"
   );
 }
 
 /** Duo partnership — friends/colleagues who already work together from turn 0. */
 function duoPartnershipRule() {
   return (
-    "関係（開幕から既知）: あなたと同僚は友人であり協同尋問官のパートナーである。" +
-    "初対面ではない。互いを「エージェント01」「エージェント02」と呼び捨てでよい。" +
-    "二人は同じ共有仮説を持ち、答えごとに一緒に更新する。私的な別仮説を抱え込まない。"
+    "関係（t=0から確定）: あなたと同僚は友人であり協同尋問官のパートナーである。" +
+    "コミュニケーション0でも協力関係は確定済み。知り合い直し・関係構築・作戦会議の宣言は不要。" +
+    "互いを「エージェント01」「エージェント02」と呼び捨てでよい。" +
+    "二人は同じ共有仮説と同一の絞り込み線を持つ。答えごとに一緒に更新し、私的な別仮説を抱え込まない。" +
+    "同僚が開いたカテゴリ／属性の問いには追いつき、同じ線でさらに狭めよ（最初からやり直すな）。"
   );
 }
 
@@ -564,14 +568,17 @@ function formatSharedHypDisplay() {
 function formatSharedHypPromptBlock() {
   if (!state.sharedHyp || isVagueSharedHyp(state.sharedHyp)) {
     return (
-      "共有仮説: まだない。エージェント01と02が議論の中で初めて自由に立てよ。" +
-      "用意された定型仮説は使わず、自分たちが考えた内容だけでよい（奇妙でも可）。" +
+      "共有仮説: まだない。議論の直後に短い名詞句で初めて立てよ（定型の用意なし・奇妙でも可）。" +
+      "仮説が空でも、最初の質問からカテゴリ／属性／行動でORIGIN空間を具体的に絞れ。" +
       "\n共有の別候補: （まだなし）"
     );
   }
   const main = clip(state.sharedHyp, 48);
   const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 3);
-  let s = "共有仮説（エージェント01と02が共同で持つ本命）: 「" + main + "」";
+  let s =
+    "共有仮説（エージェント01と02が共同で持つ本命・絞り込みの軸）: 「" +
+    main +
+    "」";
   if (alts.length) {
     s +=
       "\n共有の別候補: " +
@@ -579,6 +586,8 @@ function formatSharedHypPromptBlock() {
   } else {
     s += "\n共有の別候補: （まだなし）";
   }
+  s +=
+    "\n次の問い／議論はこの仮説とQ&A履歴で残っている可能性空間をさらに狭めること。";
   return s;
 }
 
@@ -1868,7 +1877,7 @@ function investigatorContext(agent) {
     agentPromptName(agent) +
     "（尋問官）。同僚かつ友人の協同尋問官は" +
     agentPromptName(partner) +
-    "。二人は開幕から互いを知っており、被尋問者エージェント00だけを尋問する。\n" +
+    "。二人はt=0から協力関係が確定しており（事前会話ゼロでも）、被尋問者エージェント00だけを尋問する。\n" +
     namingClarityRule() +
     "\n" +
     roleAlreadyKnownRule() +
@@ -1877,6 +1886,8 @@ function investigatorContext(agent) {
     "\nORIGIN は知らされていない（推測してはいけない・プロンプトにも無い）。" +
     "あなたと同僚は自由に日本語で話し合う。" +
     "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
+    "尋問方針: はい/いいえ質問でORIGINの候補空間をどんどん絞る。" +
+    "遅いウォームアップや関係確認は禁止。同僚の線に追いつき、同じ軸で狭め続けよ。\n" +
     formatSharedHypPromptBlock() +
     "\nQ&A履歴:\n" +
     historyBlock()
@@ -1927,7 +1938,7 @@ function isUselessMetaOrEcho(text, kind) {
   const c = s.replace(/\s+/g, "");
   if (!c || c.length < 3) return true;
   if (
-    /準備ができる|議論してみ|議論する準備|一緒に議論|5段階評価|答えましょう|ORIGINが提示|まだ何も言及|共有し[、,]?一緒|共通認識を作|協力体制|一緒に準備|まずは.彼女|情報を提供してください|協力して質問を考える|道筋を見直す必要があることを理解/.test(
+    /準備ができる|議論してみ|議論する準備|一緒に議論|5段階評価|答えましょう|ORIGINが提示|まだ何も言及|共有し[、,]?一緒|共通認識を作|協力体制|一緒に準備|まずは.彼女|情報を提供してください|協力して質問を考える|道筋を見直す必要があることを理解|知り合い直し|初めまして|自己紹介|役割を確認|これから尋問|ウォームアップ|作戦を立て|まずは話し合い/.test(
       c
     )
   ) {
@@ -1987,7 +1998,7 @@ async function agentAskQuestion(asker) {
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
   panel.addSection(
     "同僚",
-    partnerName + "＝友人・協同尋問官（開幕から既知）。",
+    partnerName + "＝友人・協同尋問官（t=0から協力確定・追いつき同線）。",
     "meta"
   );
 
@@ -2003,6 +2014,7 @@ async function agentAskQuestion(asker) {
     endConversationAiStopped("LLM未ロードのため質問を生成できない");
     return null;
   } else {
+    const historyLen = (state.history && state.history.length) || 0;
     const system =
       "あなたは" +
       name +
@@ -2012,19 +2024,24 @@ async function agentAskQuestion(asker) {
       duoPartnershipRule() +
       "友人であり同僚の協同尋問官" +
       partnerName +
-      "と協力し、被尋問者エージェント00だけに日本語で問いかける。" +
-      "二人は同じ共有仮説を持つ（まだ無ければ後で立てる）。" +
+      "とすでに協力関係にあり、被尋問者エージェント00だけに日本語で問いかける。" +
+      "二人は同じ共有仮説と同一の絞り込み線を持つ。" +
       "発言は必ず1文だけ。エージェント00への具体的なはい/いいえ質問（？で終わる）。" +
-      "例の形: 「あなたは夜に活動しますか？」「あなたは生き物ですか？」" +
+      "目的: ORIGIN候補空間をカテゴリ・属性・行動でどんどん狭める。" +
+      "最初の質問から具体的に絞れ（関係確認・準備・ウォームアップ禁止）。" +
+      "履歴があるときは直前の答えで分岐し、残った可能性をさらに狭めよ。" +
+      "例の形: 「あなたは夜に活動しますか？」「あなたは生き物ですか？」「あなたは屋内で働きますか？」" +
       "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
       structuredOutRule() +
       "発言行に質問文だけを書く。";
     const askUserBase =
       investigatorContext(asker) +
-      "\nエージェント00へのはい/いいえ質問を1つだけ作れ（？で終わる）。準備や議論の宣言は禁止。";
+      (historyLen === 0
+        ? "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動のはい/いいえ質問を1つだけ（？で終わる）。準備・関係確認・議論宣言は禁止。"
+        : "\n共有仮説とQ&A履歴を使い、直前の答えで分岐して候補空間をさらに狭めるはい/いいえ質問を1つだけ（？で終わる）。準備や議論の宣言は禁止。");
     const askUserStrict =
       investigatorContext(asker) +
-      "\n短い1文だけ。エージェント00に聞く具体的な質問（？必須）。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
+      "\n短い1文だけ。エージェント00に聞く具体的な絞り込み質問（？必須）。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
 
     panel.addSection("params", "stream · max_tokens=500 · メタ拒否・再試行あり", "meta");
     for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
@@ -2167,7 +2184,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "友人であり同僚の協同尋問官" +
     partnerName +
     "と、エージェント00の答えがORIGIN仮説にどう効くかを議論する。" +
-    "発言は1〜2短文だけ。仮説の更新案や含意を述べる。" +
+    "t=0から協力確定。同僚が開いた絞り込み線に追いつき、同じ軸を進めよ（メタ準備や最初からのやり直し禁止）。" +
+    "発言は1〜2短文だけ。何が残った／消えたかを述べ、次に狭める方向を示す。" +
     "禁止: 準備・議論しましょう・5段階評価・メタ・同僚への呼びかけだけの文・複数エージェント台本・了解しました・代理人。" +
     structuredOutRule();
   const debateUserBase =
@@ -2178,14 +2196,14 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n" +
     (lastPartnerLine ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n" : "") +
-    "この答えの含意を1〜2短文で述べよ。準備や台本は禁止。";
+    "この答えで何が残った／消えたかを1〜2短文で述べ、同僚と同じ絞り込み線を進めよ。準備や台本は禁止。";
   const debateUserStrict =
     investigatorContext(agent) +
     "\n質問「" +
     question +
     "」→答え「" +
     answer +
-    "」。ORIGIN仮説への含意を短い1文だけ。メタ・準備禁止。";
+    "」。残った候補への含意を短い1文だけ。メタ・準備禁止。追いつき同線。";
 
   panel.addSection("params", "stream · メタ拒否・再試行あり", "meta");
   let opinion = null;
@@ -2224,7 +2242,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     name +
     "。" +
     partnerName +
-    "と共有する仮説を短い名詞句で。「代理人」禁止。" +
+    "と共有する仮説を短い名詞句で。" +
+    "答えで残った／消えた属性を織り込み、絞り込み線を進める更新にせよ。「代理人」禁止。" +
     "禁止: 了解しました・はい・いいえ・質問文・準備の宣言。" +
     structuredOutRule() +
     "発言行は仮説だけ（36字以内）。";
@@ -2237,7 +2256,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n議論「" +
     clip(opinion, 120) +
-    "」\n共有仮説を短い句だけで書け。";
+    "」\n残った／消えた点を反映した短い共有仮説を句だけで書け。";
   const hypNote = panel.addSection("共有仮説 更新中…", "…", "belief");
   const resH = await llmChat(hypSystem, hypUser, {
     agent,
@@ -3130,7 +3149,8 @@ async function bootNarrative() {
     appendChatBubble(
       "sys",
       "規則: ORIGIN はエージェント00（被尋問者）のみ。" +
-        "エージェント01/02は開幕から友人・同僚の協同尋問官（役割確認不要）。" +
+        "エージェント01/02はt=0から友人・同僚の協同尋問官（コミュニケーション0でも協力確定・役割確認不要）。" +
+        "最初の質問からORIGIN空間を絞り、02は01の線に追いつく。" +
         "共有仮説はAIが立てたものだけ（用意された定型仮説は無し）。" +
         "AIの生成が止まったらそこで会話終了。正解「あなたは〇〇です。」で勝利"
     );
@@ -3205,16 +3225,17 @@ formEl.addEventListener("submit", (e) => {
       appendSpeech("00", "ORIGIN 刻印完了（エージェント01/02 には秘匿）", "system");
       appendChatBubble(
         "sys",
-        "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01が質問。"
+        "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01がすぐ具体的な絞り込み質問。"
       );
       appendChatBubble(
         "sys",
-        "役割確定: エージェント00＝被尋問者（はい/いいえ）。" +
-          "エージェント01・02＝友人であり同僚の協同尋問官。立場の自己確認は不要 — 最初から尋問を進める。"
+        "協力はt=0から確定: エージェント00＝被尋問者（はい/いいえ）。" +
+          "エージェント01・02＝友人・同僚の協同尋問官（コミュニケーション0でも息が合っている）。" +
+          "知り合い直し・準備宣言は不要 — 最初から候補空間を狭め、02は01の線に追いつく。"
       );
       appendChatBubble(
         "sys",
-        "共有仮説はまだ空。エージェント01/02が議論の中で初めて立てる（定型の用意なし）。"
+        "共有仮説はまだ空。議論の中でAIが初めて立てる（定型の用意なし）。空でも最初の問いから絞れ。"
       );
     }
     currentGameLoopTick();
