@@ -398,7 +398,7 @@ export const MODEL_CATALOG = [
 export const MODELS = Object.fromEntries(MODEL_CATALOG.map((m) => [m.key, m]));
 
 /** Recommended pick — JP-specialized and usable=yes. */
-export const DEFAULT_MODEL_KEY = "swallow";
+export const DEFAULT_MODEL_KEY = "default";
 
 /** Pages CI publishes this same-origin by default (fits ≈1 GB soft cap). */
 export const PAGES_MODEL_KEY = "lite";

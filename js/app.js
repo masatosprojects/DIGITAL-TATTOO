@@ -41,7 +41,11 @@ import {
   createAgentLlmRouter,
   unloadAllEngines,
   isLlmDeadError,
+  PAGES_MODEL_KEY,
 } from "./llm.js";
+
+/** Shown in chat so operators can verify they are not on a cached old build. */
+const CLIENT_BUILD = "gpu-reload-2";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -643,7 +647,10 @@ function isGpuLostError(err) {
     msg.includes("requestdevice") ||
     msg.includes("gpuadapter") ||
     msg.includes("lost access to the gpu") ||
-    (msg.includes("device") && msg.includes("removed"))
+    msg.includes("0x887a0005") ||
+    msg.includes("(0x8") ||
+    (msg.includes("device") && msg.includes("removed")) ||
+    (msg.includes("d3d12") && msg.includes("command queue"))
   );
 }
 
@@ -691,17 +698,32 @@ async function offerModelReload(reason) {
   agentEngineMap = null;
 
   state.ready = false;
+  // Prefer lite after GPU death — Swallow/1.5B×heavy often triggers DXGI again.
+  try {
+    const safe = {
+      "00": PAGES_MODEL_KEY,
+      "01": PAGES_MODEL_KEY,
+      "02": PAGES_MODEL_KEY,
+    };
+    if (catalogAvail) {
+      setAgentAssignments(coerceAssignmentsToAvailable(safe, catalogAvail));
+    } else {
+      setAgentAssignments(safe);
+    }
+  } catch (_) {
+    /* keep prior assignments */
+  }
   if (modelGate) modelGate.classList.remove("hidden");
   gateMsg.textContent =
-    "GPU切断のためモデルを再読み込みしてください。エージェント別のボックスを選んで「読み込む」。ORIGIN と履歴は保持されます。";
+    "【GPU切断】モデルを選び直して「読み込む」を押してください。VRAM 節約のためいったん 軽量(0.5B) を選択済みです。Swallow は重いので再発しやすいです。";
   gateFill.style.width = "0%";
   gatePct.textContent = "—";
   gateLoad.disabled = false;
   gateLoad.hidden = false;
   gateLoad.textContent = "読み込む";
   gateHint.innerHTML =
-    "VRAMが足りない場合は <strong>軽量 0.5B</strong> や <strong>標準 1.5B</strong> に切り替えてください。<br>" +
-    "読み込み成功後、同じ尋問セッションを続行します。";
+    "推奨: <strong>軽量 0.5B</strong> または <strong>標準 Qwen 1.5B</strong> を全エージェントで共有。<br>" +
+    "ORIGIN と会話履歴は保持したまま続行できます。Ctrl+Shift+R で最新版か確認してください。";
   gateActions.classList.add("show");
   if (gateSkip) gateSkip.hidden = true;
   await syncAssignPickerUI();
@@ -1275,6 +1297,22 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
           return { ...partsOk, raw, beatStart };
         }
       }
+      // Do not leave the operator stuck in a dead session — open model picker now.
+      panel.addSection(
+        "GPU切断",
+        "自動復旧に失敗。モデル選択画面を開きます（軽量 0.5B 推奨）。",
+        "warn"
+      );
+      await offerModelReload(res.error);
+      return {
+        think: "",
+        speak: "",
+        structured: false,
+        raw: "",
+        beatStart,
+        error: res.error,
+        gpuReload: true,
+      };
     }
     return {
       think: "",
@@ -1914,6 +1952,7 @@ async function agentAskQuestion(asker) {
     beatStart = streamed.beatStart;
     if (streamed.error && !streamed.raw) {
       panel.collapse();
+      if (streamed.gpuReload || state.phase === "reload-model") return null;
       endConversationAiStopped(streamed.error);
       return null;
     }
@@ -2894,7 +2933,10 @@ function applyWolfPanelLabels() {
 }
 
 async function bootNarrative() {
-  appendChatBubble("sys", "DIGITAL TATTOO — interrogation online");
+  appendChatBubble(
+    "sys",
+    "DIGITAL TATTOO — interrogation online · build " + CLIENT_BUILD
+  );
   if (state.mode !== "llm") {
     appendChatBubble("sys", "LLM が必要です。ゲートでモデルを読み込んでください。");
     return;
