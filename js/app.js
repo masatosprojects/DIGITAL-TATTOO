@@ -1281,6 +1281,62 @@ function isBadInvestigatorQuestion(q) {
   );
 }
 
+/** Truly unusable debate opinion (empty / instruction echo / format leak / bare はい). */
+function isBadDebateOpinion(t) {
+  return (
+    !t ||
+    isInstructionEchoText(t) ||
+    isFormatLeakText(t) ||
+    isBareAnswerOpinion(t)
+  );
+}
+
+/**
+ * Soft angle hints so 01/02 don't open every session with the same
+ * 生物／人間／機械 triad. Seeded by round so sessions diverge without
+ * hard-coding a fixed first question.
+ */
+const QUESTION_ANGLE_HINTS = Object.freeze([
+  "活動時間や場所など、生活リズムに関わる角度",
+  "道具・道具を使う場面など、仕事や行為の具体像に近づく角度",
+  "他者との関わり方（教える／守る／作る等）に関わる角度",
+  "屋内か屋外か、一人か複数かなど環境の角度",
+  "身体的特徴や動き方に関わる角度（無理にカテゴリ名は聞かない）",
+  "専門知識や訓練が要るかどうかに関わる角度",
+]);
+
+function questionAngleHint(seed, round) {
+  const i = Math.abs((Number(seed) || 0) + (Number(round) || 0) * 7) %
+    QUESTION_ANGLE_HINTS.length;
+  return QUESTION_ANGLE_HINTS[i];
+}
+
+/** Extra nudge when a prior LLM attempt was unusable — prefer retry over template. */
+function questionRetryNudge(badText) {
+  const shown = clip(String(badText || "").replace(/\s+/g, " "), 36);
+  return (
+    "\n前回の出力「" +
+    (shown || "（空）") +
+    "」は質問として使えなかった。" +
+    "はい／いいえの1語だけ・メタ指示・履歴の繰り返しは禁止。" +
+    "別の具体的な日本語の質問文を1つだけ、発言行に書け。"
+  );
+}
+
+function debateRetryNudge(badText) {
+  const shown = clip(String(badText || "").replace(/\s+/g, " "), 36);
+  return (
+    "\n前回の出力「" +
+    (shown || "（空）") +
+    "」は議論として使えなかった。" +
+    "はい／いいえ等の5段階語だけ・指示文の繰り返しは禁止。" +
+    "答えの意味と仮説についての平易な日本語1〜2文を、発言行に書け。"
+  );
+}
+
+/** How many times to re-prompt the LLM before substituting a template line. */
+const LLM_CONTENT_RETRIES = 2;
+
 /**
  * Reject non-hypothesis "hypothesis" output (0.5B often rambles a narrative
  * paragraph or echoes the question/history instead of a short role guess).
@@ -1371,15 +1427,27 @@ async function agentAskQuestion(asker) {
     round: state.round,
     agent: asker,
   });
+  const angle = questionAngleHint(state.seed, state.round);
 
   let question = null;
   let beatStart = performance.now();
+  let usedTemplate = false;
 
   if (state.pendingInject) {
     question = ensureQuestionMark(state.pendingInject);
     panel.addSection("オペレーター注入", question, "out");
     panel.setLive("注入質問を使用: " + question);
     state.pendingInject = null;
+  } else if (state.mode !== "llm") {
+    usedTemplate = true;
+    panel.addSection("params", "TEMPLATE · fake-stream", "meta");
+    const streamed = await streamIntoPanel(panel, "", "", {
+      agent: asker,
+      fallbackText: fallbackQ,
+      fallbackThink: "別角度で深める質問をする",
+    });
+    beatStart = streamed.beatStart;
+    question = fallbackQ;
   } else {
     const system =
       "あなたは" +
@@ -1388,42 +1456,81 @@ async function agentAskQuestion(asker) {
       namingClarityRule() +
       "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
       "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
-      "質問はエージェント00がはい／いいえで答えられる内容にする（例: 「あなたは人間ですか？」）。" +
+      "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
+      "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
       "禁止: 回答形式の説明・メタ発言（例: 「はいといいえで答えて」「yes or noで答えさせます」）を質問にすること。" +
-      "禁止: 「代理人」という語。" +
-      "最初の質問は身分・カテゴリが分かる平易な内容（生物／人間／機械など）がよい。" +
+      "禁止: 「代理人」という語。スローガン・詩・ホラー禁止。" +
       structuredOutRule() +
-      "発言行の例: あなたは生き物ですか？";
-    const user =
+      "発言行は質問文のみ（例: 夜に主な活動をしますか？／道具を使って作業しますか？）。";
+    const userBase =
       investigatorContext(asker) +
       "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
+      "\n今のヒント角度: " +
+      angle +
+      "（必須ではない。自然な別角度でもよい）。" +
       "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
 
-    panel.addSection("params", "stream · max_tokens=500", "meta");
-    const streamed = await streamIntoPanel(panel, system, user, {
-      agent: asker,
-      temperature: 0.5,
-      max_tokens: 500,
-      fallbackText: fallbackQ,
-      fallbackThink: "身分やカテゴリを確認する質問をする",
-    });
-    beatStart = streamed.beatStart;
-    if (streamed.speak) {
-      question = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
-    } else if (streamed.raw) {
-      question = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+    panel.addSection("params", "stream · max_tokens=500 · retry≤" + LLM_CONTENT_RETRIES, "meta");
+    panel.addSection("角度ヒント", angle, "meta");
+
+    let lastBad = null;
+    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        panel.addSection(
+          "再試行",
+          "前回の出力が質問として不適のため LLM に再依頼 (" +
+            attempt +
+            "/" +
+            LLM_CONTENT_RETRIES +
+            ")",
+          "warn"
+        );
+        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
+      }
+      const user =
+        userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
+      // Do not template-substitute mid-retry; only the final fallback path uses it.
+      const streamed = await streamIntoPanel(panel, system, user, {
+        agent: asker,
+        temperature: attempt === 0 ? 0.55 : 0.75,
+        max_tokens: 500,
+        fallbackText: null,
+        fallbackThink: null,
+      });
+      beatStart = streamed.beatStart;
+      let candidate = null;
+      if (streamed.speak) {
+        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
+      } else if (streamed.raw) {
+        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+      }
+      if (candidate && !isBadInvestigatorQuestion(candidate)) {
+        question = candidate;
+        break;
+      }
+      lastBad = candidate || streamed.raw || "（空）";
+    }
+
+    if (!question || isBadInvestigatorQuestion(question)) {
+      panel.addSection(
+        "質問補正（テンプレート）",
+        "再試行後もモデル出力が質問として不適（メタ／履歴エコー／空／はいのみ等）→ テンプレート質問を採用。上記の思考抽出は不採用。",
+        "warn"
+      );
+      question = fallbackQ;
+      usedTemplate = true;
+      await fakeStreamText(
+        "思考: テンプレートで代替\n発言: " + fallbackQ,
+        (_d, full) => panel.setLive(full)
+      );
     }
   }
 
-  if (!question || isBadInvestigatorQuestion(question)) {
-    panel.addSection(
-      "質問補正",
-      "モデル出力が質問として不適（メタ／履歴エコー／形式崩れ）→ テンプレート質問を採用。上記の思考抽出は不採用。",
-      "warn"
-    );
-    question = fallbackQ;
-  }
-  panel.addSection("最終質問", question, "out");
+  panel.addSection(
+    usedTemplate ? "最終質問（テンプレート）" : "最終質問",
+    question,
+    "out"
+  );
   panel.collapse();
 
   const line = "「" + question + "」";
@@ -1579,7 +1686,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
     "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
     structuredOutRule();
-  const user =
+  const userBase =
     investigatorContext(agent) +
     "\n直前の質問（→エージェント00）: 「" +
     question +
@@ -1595,33 +1702,73 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     DISCUSSION_TURNS_PER_ANSWER +
     "。";
 
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent,
-    temperature: 0.55,
-    max_tokens: 500,
-    fallbackText: fb,
-    fallbackThink: "答えから候補を整理する",
-  });
+  let opinion = null;
+  let beatStart = performance.now();
+  let usedTemplate = false;
 
-  let opinion = streamed.speak
-    ? cleanJapaneseLine(streamed.speak, 160)
-    : streamed.raw
-      ? cleanJapaneseLine(streamed.raw, 160)
-      : null;
-  if (
-    !opinion ||
-    isInstructionEchoText(opinion) ||
-    isFormatLeakText(opinion) ||
-    isBareAnswerOpinion(opinion)
-  ) {
-    if (opinion && isBareAnswerOpinion(opinion)) {
+  if (state.mode !== "llm") {
+    usedTemplate = true;
+    const streamed = await streamIntoPanel(panel, system, userBase, {
+      agent,
+      fallbackText: fb,
+      fallbackThink: "答えから候補を整理する",
+    });
+    beatStart = streamed.beatStart;
+    opinion = fb;
+  } else {
+    let lastBad = null;
+    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        panel.addSection(
+          "再試行",
+          "前回の出力が議論として不適のため LLM に再依頼 (" +
+            attempt +
+            "/" +
+            LLM_CONTENT_RETRIES +
+            ")",
+          "warn"
+        );
+        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
+      }
+      const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
+      const streamed = await streamIntoPanel(panel, system, user, {
+        agent,
+        temperature: attempt === 0 ? 0.55 : 0.75,
+        max_tokens: 500,
+        fallbackText: null,
+        fallbackThink: null,
+      });
+      beatStart = streamed.beatStart;
+      const candidate = streamed.speak
+        ? cleanJapaneseLine(streamed.speak, 160)
+        : streamed.raw
+          ? cleanJapaneseLine(streamed.raw, 160)
+          : null;
+      if (!isBadDebateOpinion(candidate)) {
+        opinion = candidate;
+        break;
+      }
+      lastBad = candidate || streamed.raw || "（空）";
+    }
+    if (isBadDebateOpinion(opinion)) {
+      const why = lastBad && isBareAnswerOpinion(lastBad)
+        ? "5段階語のみの発言を検知（役割外）"
+        : "空／指示エコー／形式崩れ";
       panel.addSection(
-        "発言補正",
-        "5段階語のみの発言を検知（思考と不一致・役割外）→ テンプレート議論文を採用。上記の思考抽出は不採用。",
+        "発言補正（テンプレート）",
+        why + " → 再試行後も不適のためテンプレート議論文を採用。上記の思考抽出は不採用。",
         "warn"
       );
+      opinion = fb;
+      usedTemplate = true;
+      await fakeStreamText(
+        "思考: テンプレートで代替\n発言: " + fb,
+        (_d, full) => panel.setLive(full)
+      );
     }
-    opinion = fb;
+  }
+  if (usedTemplate) {
+    panel.addSection("最終発言（テンプレート）", opinion, "out");
   }
 
   let newHyp = null;
@@ -1684,7 +1831,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   panel.collapse();
   appendSpeech(agent, "「" + opinion + "」", "a" + agent);
   await typeChatBubble(agent, opinion);
-  await paceAfterBeat(opinion, streamed.beatStart);
+  await paceAfterBeat(opinion, beatStart);
   return opinion;
 }
 
@@ -1986,15 +2133,30 @@ async function wolfAskQuestion(askerId) {
     round: state.wolfCours * 10 + state.wolfQInCours,
     agent: askerId,
   });
+  const angle = questionAngleHint(
+    state.seed,
+    state.wolfCours * 10 + state.wolfQInCours
+  );
 
   let question = null;
   let beatStart = performance.now();
+  let usedTemplate = false;
 
   if (state.pendingInject) {
     question = ensureQuestionMark(state.pendingInject);
     panel.addSection("オペレーター注入", question, "out");
     panel.setLive("注入質問を使用: " + question);
     state.pendingInject = null;
+  } else if (state.mode !== "llm") {
+    usedTemplate = true;
+    panel.addSection("params", "TEMPLATE · fake-stream", "meta");
+    const streamed = await streamIntoPanel(panel, "", "", {
+      agent: askerId,
+      fallbackText: fallbackQ,
+      fallbackThink: "別角度で深める質問をする",
+    });
+    beatStart = streamed.beatStart;
+    question = fallbackQ;
   } else {
     const system =
       "あなたは" +
@@ -2003,41 +2165,80 @@ async function wolfAskQuestion(askerId) {
       wolfNamingClarityRule() +
       "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
       "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
-      "質問はエージェント00がはい／いいえ寄りで答えられる内容にする（例: 「あなたは人間ですか？」）。" +
-      "禁止: 回答形式の説明・メタ発言を質問にすること。禁止: 「代理人」という語。" +
+      "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
+      "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
+      "禁止: 回答形式の説明・メタ発言を質問にすること。禁止: 「代理人」という語。スローガン・詩・ホラー禁止。" +
       structuredOutRule() +
-      "発言行の例: あなたは生き物ですか？" +
+      "発言行は質問文のみ（例: 夜に主な活動をしますか？／道具を使って作業しますか？）。" +
       (asker && asker.isHallucinator ? hallucinatorAddendum() : "");
-    const user =
+    const userBase =
       wolfInvestigatorContext(askerId) +
       "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
+      "\n今のヒント角度: " +
+      angle +
+      "（必須ではない。自然な別角度でもよい）。" +
       "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
 
-    panel.addSection("params", "stream · max_tokens=500", "meta");
-    const streamed = await streamIntoPanel(panel, system, user, {
-      agent: askerId,
-      temperature: 0.5,
-      max_tokens: 500,
-      fallbackText: fallbackQ,
-      fallbackThink: "身分やカテゴリを確認する質問をする",
-    });
-    beatStart = streamed.beatStart;
-    if (streamed.speak) {
-      question = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
-    } else if (streamed.raw) {
-      question = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+    panel.addSection("params", "stream · max_tokens=500 · retry≤" + LLM_CONTENT_RETRIES, "meta");
+    panel.addSection("角度ヒント", angle, "meta");
+
+    let lastBad = null;
+    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        panel.addSection(
+          "再試行",
+          "前回の出力が質問として不適のため LLM に再依頼 (" +
+            attempt +
+            "/" +
+            LLM_CONTENT_RETRIES +
+            ")",
+          "warn"
+        );
+        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
+      }
+      const user =
+        userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
+      const streamed = await streamIntoPanel(panel, system, user, {
+        agent: askerId,
+        temperature: attempt === 0 ? 0.55 : 0.75,
+        max_tokens: 500,
+        fallbackText: null,
+        fallbackThink: null,
+      });
+      beatStart = streamed.beatStart;
+      let candidate = null;
+      if (streamed.speak) {
+        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
+      } else if (streamed.raw) {
+        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+      }
+      if (candidate && !isBadInvestigatorQuestion(candidate)) {
+        question = candidate;
+        break;
+      }
+      lastBad = candidate || streamed.raw || "（空）";
+    }
+
+    if (!question || isBadInvestigatorQuestion(question)) {
+      panel.addSection(
+        "質問補正（テンプレート）",
+        "再試行後もモデル出力が質問として不適（メタ／履歴エコー／空／はいのみ等）→ テンプレート質問を採用。上記の思考抽出は不採用。",
+        "warn"
+      );
+      question = fallbackQ;
+      usedTemplate = true;
+      await fakeStreamText(
+        "思考: テンプレートで代替\n発言: " + fallbackQ,
+        (_d, full) => panel.setLive(full)
+      );
     }
   }
 
-  if (!question || isBadInvestigatorQuestion(question)) {
-    panel.addSection(
-      "質問補正",
-      "モデル出力が質問として不適（メタ／履歴エコー／形式崩れ）→ テンプレート質問を採用。上記の思考抽出は不採用。",
-      "warn"
-    );
-    question = fallbackQ;
-  }
-  panel.addSection("最終質問", question, "out");
+  panel.addSection(
+    usedTemplate ? "最終質問（テンプレート）" : "最終質問",
+    question,
+    "out"
+  );
   panel.collapse();
 
   appendChatBubble("ask", "[" + name + "] → エージェント00: " + question);
@@ -2081,7 +2282,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
     structuredOutRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "");
-  const user =
+  const userBase =
     wolfInvestigatorContext(speakerId) +
     "\n直前の質問（→エージェント00）: 「" +
     question +
@@ -2097,33 +2298,73 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     WOLF_DISCUSSION_TURNS_PER_ANSWER +
     "。";
 
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent: speakerId,
-    temperature: 0.55,
-    max_tokens: 500,
-    fallbackText: fb,
-    fallbackThink: "答えから候補を整理する",
-  });
+  let opinion = null;
+  let beatStart = performance.now();
+  let usedTemplate = false;
 
-  let opinion = streamed.speak
-    ? cleanJapaneseLine(streamed.speak, 160)
-    : streamed.raw
-      ? cleanJapaneseLine(streamed.raw, 160)
-      : null;
-  if (
-    !opinion ||
-    isInstructionEchoText(opinion) ||
-    isFormatLeakText(opinion) ||
-    isBareAnswerOpinion(opinion)
-  ) {
-    if (opinion && isBareAnswerOpinion(opinion)) {
+  if (state.mode !== "llm") {
+    usedTemplate = true;
+    const streamed = await streamIntoPanel(panel, system, userBase, {
+      agent: speakerId,
+      fallbackText: fb,
+      fallbackThink: "答えから候補を整理する",
+    });
+    beatStart = streamed.beatStart;
+    opinion = fb;
+  } else {
+    let lastBad = null;
+    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        panel.addSection(
+          "再試行",
+          "前回の出力が議論として不適のため LLM に再依頼 (" +
+            attempt +
+            "/" +
+            LLM_CONTENT_RETRIES +
+            ")",
+          "warn"
+        );
+        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
+      }
+      const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
+      const streamed = await streamIntoPanel(panel, system, user, {
+        agent: speakerId,
+        temperature: attempt === 0 ? 0.55 : 0.75,
+        max_tokens: 500,
+        fallbackText: null,
+        fallbackThink: null,
+      });
+      beatStart = streamed.beatStart;
+      const candidate = streamed.speak
+        ? cleanJapaneseLine(streamed.speak, 160)
+        : streamed.raw
+          ? cleanJapaneseLine(streamed.raw, 160)
+          : null;
+      if (!isBadDebateOpinion(candidate)) {
+        opinion = candidate;
+        break;
+      }
+      lastBad = candidate || streamed.raw || "（空）";
+    }
+    if (isBadDebateOpinion(opinion)) {
+      const why = lastBad && isBareAnswerOpinion(lastBad)
+        ? "5段階語のみの発言を検知（役割外）"
+        : "空／指示エコー／形式崩れ";
       panel.addSection(
-        "発言補正",
-        "5段階語のみの発言を検知（思考と不一致・役割外）→ テンプレート議論文を採用。上記の思考抽出は不採用。",
+        "発言補正（テンプレート）",
+        why + " → 再試行後も不適のためテンプレート議論文を採用。上記の思考抽出は不採用。",
         "warn"
       );
+      opinion = fb;
+      usedTemplate = true;
+      await fakeStreamText(
+        "思考: テンプレートで代替\n発言: " + fb,
+        (_d, full) => panel.setLive(full)
+      );
     }
-    opinion = fb;
+  }
+  if (usedTemplate) {
+    panel.addSection("最終発言（テンプレート）", opinion, "out");
   }
 
   let newHyp = null;
@@ -2181,7 +2422,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
 
   panel.collapse();
   await typeChatBubble(speakerId, opinion);
-  await paceAfterBeat(opinion, streamed.beatStart);
+  await paceAfterBeat(opinion, beatStart);
   renderWolfRoster();
   return opinion;
 }
