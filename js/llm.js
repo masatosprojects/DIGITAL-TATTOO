@@ -34,6 +34,7 @@ import {
   prebuiltAppConfig,
   modelLibURLPrefix,
   modelVersion,
+  deleteModelAllInfoInCache,
 } from "@mlc-ai/web-llm";
 
 export const STORAGE_KEY = "digital-tattoo-model";
@@ -197,12 +198,13 @@ export const MODEL_CATALOG = [
     jpQuality: 1,
     jpSpecialized: true,
     requiresF16: false,
-    remoteOk: true,
+    // HF repo lacks tensor-cache.json required by web-llm 0.2.84 — Pages ships weights.
+    remoteOk: false,
     license: "Apache-2.0",
     isDefault: true,
     hint:
-      "Sakana JP特化蒸留・最推奨。初回 ≈830 MB（HF+IndexedDB）· VRAM ≈1.9 GB（q4f32）。" +
-      "WASM は同一オリジン優先（無ければ jsDelivr）。",
+      "Sakana JP特化蒸留・最推奨。Pages 同一オリジン配置（≈830 MB）· VRAM ≈1.9 GB（q4f32）。" +
+      "HF リモート不可（tensor-cache.json 欠落）。WASM は同一オリジン優先。",
   },
   {
     key: "default",
@@ -865,13 +867,73 @@ export function preferredCacheBackend() {
 /**
  * Missing same-origin weights may load from Hugging Face + IndexedDB.
  * Default: yes when model.remoteOk (catalog) or on GitHub Pages.
+ * TinySwallow's HF repo lacks tensor-cache.json (web-llm 0.2.84) — remote is broken.
  * @param {ModelInfo | string} [model]
  */
 export function allowsRemoteFallback(model) {
   const m = typeof model === "string" ? resolveModel(model) : model;
+  if (m && m.key === "swallow") return false;
   if (m && m.remoteOk === false) return false;
   if (m && m.remoteOk === true) return true;
   return isGitHubPagesHost();
+}
+
+/**
+ * True when CreateMLCEngine / ArtifactIndexedDBCache failed on network or cache I/O
+ * (not VRAM / WebGPU). These errors should trigger HF retry or cache purge — not
+ * a silent "align everyone to 1.5B" that hits the same broken source again.
+ * @param {unknown} err
+ */
+export function isFetchOrCacheLoadError(err) {
+  if (err && typeof err === "object" && err.fetchOrCache) return true;
+  const raw =
+    err && typeof err === "object" && "message" in err && err.message
+      ? String(err.message)
+      : String(err || "");
+  const cause =
+    err && typeof err === "object" && "cause" in err && err.cause
+      ? err.cause
+      : null;
+  const causeRaw =
+    cause && typeof cause === "object" && "message" in cause && cause.message
+      ? String(cause.message)
+      : cause
+        ? String(cause)
+        : "";
+  const lower = (raw + " " + causeRaw).toLowerCase();
+  return (
+    lower.includes("artifactindexeddbcache") ||
+    lower.includes("artifactopfscache") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("failed to store") ||
+    lower.includes("network response was not ok") ||
+    lower.includes("networkerror") ||
+    lower.includes("net::err") ||
+    lower.includes("load failed") ||
+    lower.includes("quotaexceeded") ||
+    lower.includes("hugging face 取得") ||
+    (lower.includes("cache") && lower.includes("network")) ||
+    lower.includes("cache.add")
+  );
+}
+
+/**
+ * Best-effort purge of WebLLM IndexedDB entries for a model id (and aliases).
+ * Corrupt / quota-stuck cache rows are a common cause of
+ * "ArtifactIndexedDBCache failed to fetch" on github.io.
+ * @param {ModelInfo | string} model
+ */
+export async function clearWebllmModelCache(model) {
+  const m = typeof model === "string" ? resolveModel(model) : model;
+  if (!m) return;
+  const ids = [m.id, ...(Array.isArray(m.idAliases) ? m.idAliases : [])];
+  for (const id of ids) {
+    try {
+      await deleteModelAllInfoInCache(id);
+    } catch (_) {
+      /* best-effort */
+    }
+  }
 }
 
 /** @deprecated use allowsRemoteFallback(model) */
@@ -1065,12 +1127,14 @@ export function explainLoadError(err) {
     lower.includes("failed to fetch") ||
     lower.includes("networkerror") ||
     lower.includes("load failed") ||
-    lower.includes("net::err")
+    lower.includes("net::err") ||
+    lower.includes("artifactindexeddbcache") ||
+    lower.includes("failed to store")
   ) {
     return (
-      "モデルの取得に失敗しました（ネットワーク / WASM / Hugging Face）。" +
-      "通信を確認し、再読み込みするか、標準 Qwen 1.5B や軽量 0.5B を試してください。" +
-      "TinySwallow 初回は ≈830 MB のダウンロードが必要です。" +
+      "モデルの取得に失敗しました（ネットワーク / WASM / キャッシュ / Hugging Face）。" +
+      "再試行時は同一オリジン失敗後に Hugging Face へ自動切替します。" +
+      "通信を確認し、もう一度「▶ 開始」を押してください。" +
       "（" +
       raw +
       "）"
@@ -1174,6 +1238,48 @@ async function probeConfigJson(configUrl) {
 }
 
 /**
+ * Probe tensor-cache.json (web-llm 0.2.84 remote loads require it).
+ * Unlike mlc-chat-config, this file has no model_type field.
+ * @param {string} url
+ * @returns {Promise<{ ok: boolean, hardMiss?: boolean, reason?: string }>}
+ */
+async function probeTensorCacheJson(url) {
+  try {
+    const c = await fetch(url, { method: "GET", cache: "no-cache" });
+    if (c.status === 404 || c.status === 401 || c.status === 403) {
+      return {
+        ok: false,
+        hardMiss: true,
+        reason: "tensor-cache.json がありません（HTTP " + c.status + "）。",
+      };
+    }
+    if (!c.ok) {
+      return {
+        ok: false,
+        hardMiss: false,
+        reason: "tensor-cache の確認に失敗（HTTP " + c.status + "）。",
+      };
+    }
+    const ct = (c.headers.get("content-type") || "").toLowerCase();
+    const body = await c.text();
+    if (ct.includes("text/html") || !(body.includes("{") || body.includes("["))) {
+      return {
+        ok: false,
+        hardMiss: true,
+        reason: "tensor-cache.json が JSON ではありません。",
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      hardMiss: false,
+      reason: e && e.message ? e.message : String(e),
+    };
+  }
+}
+
+/**
  * @param {ModelInfo} model
  * @returns {Promise<{
  *   ok: boolean,
@@ -1185,15 +1291,19 @@ async function probeConfigJson(configUrl) {
  * }>}
  */
 async function probeRemoteModel(model) {
-  const configUrl = remoteWeightsBase(model) + "mlc-chat-config.json";
   // After cleanModelUrl this is the same path WebLLM will request.
   const configUrlResolved =
     remoteWeightsBase(model).includes("resolve/")
       ? remoteWeightsBase(model) + "mlc-chat-config.json"
       : remoteWeightsBase(model) + "resolve/main/mlc-chat-config.json";
+  const tensorUrl = configUrlResolved.replace(
+    /mlc-chat-config\.json$/,
+    "tensor-cache.json"
+  );
   const wasmUrl = await resolveWasmUrl(model, "remote");
-  const [cfg, wasm] = await Promise.all([
+  const [cfg, tensor, wasm] = await Promise.all([
     probeConfigJson(configUrlResolved),
+    probeTensorCacheJson(tensorUrl),
     probeWasm(wasmUrl),
   ]);
 
@@ -1215,11 +1325,27 @@ async function probeRemoteModel(model) {
     };
   }
 
+  // web-llm 0.2.84 requires tensor-cache.json for remote loads (TinySwallow HF lacks it).
+  if (tensor.hardMiss) {
+    return {
+      ok: false,
+      model,
+      source: "remote",
+      configUrl: configUrlResolved,
+      wasmUrl,
+      reason:
+        model.shortLabel +
+        " は Hugging Face に tensor-cache.json が無くリモート取得できません。" +
+        "同一オリジン配置があるモデルを選ぶか、サイト更新をお待ちください。",
+    };
+  }
+
   // Config OK (or ambiguous network) + remoteOk → allow load attempt.
   // Do not grey out solely because HEAD/CORS failed on wasm CDN.
   if (cfg.ok || allowsRemoteFallback(model)) {
     const notes = [];
     if (!cfg.ok) notes.push("HF設定の事前確認は不完全（読み込み時に再試行）");
+    if (!tensor.ok) notes.push("tensor-cache の事前確認は不完全（読み込み時に再試行）");
     if (!wasm.ok) notes.push("WASM の事前確認は不完全（読み込み時に再試行）");
     return {
       ok: true,
@@ -1244,7 +1370,7 @@ async function probeRemoteModel(model) {
     model,
     configUrl: configUrlResolved,
     wasmUrl,
-    reason: missingReason(model, configUrl),
+    reason: missingReason(model, configUrlResolved),
   };
 }
 
@@ -1270,13 +1396,15 @@ export async function probeModel(modelOrKey) {
     };
   }
   const configUrl = modelWeightsBase(model) + "mlc-chat-config.json";
+  const shardUrl = modelWeightsBase(model) + "params_shard_0.bin";
   const wasmUrl = localWasmUrl(model);
   try {
-    const [c, w] = await Promise.all([
+    const [c, w, shard] = await Promise.all([
       probeConfigJson(configUrl),
       probeWasm(wasmUrl),
+      probeWasm(shardUrl),
     ]);
-    if (c.ok && w.ok) {
+    if (c.ok && w.ok && shard.ok) {
       return {
         ok: true,
         model,
@@ -1286,7 +1414,22 @@ export async function probeModel(modelOrKey) {
       };
     }
 
-    // Missing / incomplete same-origin → Hugging Face + IndexedDB
+    // Config+WASM present but shard probe failed: prefer HF when allowed.
+    // Local-only models (TinySwallow — no HF tensor-cache) still attempt local;
+    // shard HEAD/Range can be flaky while full GET works.
+    if (c.ok && w.ok && !allowsRemoteFallback(model)) {
+      return {
+        ok: true,
+        model,
+        source: "local",
+        configUrl,
+        wasmUrl,
+        reason: shard.ok
+          ? undefined
+          : "同一オリジン重みの事前確認は不完全（読み込み時に再試行）",
+      };
+    }
+
     if (allowsRemoteFallback(model)) {
       return probeRemoteModel(model);
     }
@@ -1387,43 +1530,111 @@ export async function createLocalEngine(
   const m = typeof model === "string" ? resolveModel(model) : model;
   if (!m) throw new Error("Unknown model: " + String(model));
   await unloadEngine(prevEngine);
-  const src = source === "remote" ? "remote" : "local";
-  const modelLib = await resolveWasmUrl(m, src);
-  const appConfig = buildAppConfig(m, src, { modelLib });
-  const listed = (appConfig.model_list || []).some((r) => r.model_id === m.id);
-  if (!listed) {
-    throw new Error(
-      "appConfig.model_list に " + m.id + " がありません（内部設定エラー）。"
-    );
+
+  /**
+   * @param {ModelSource} src
+   * @param {string} [forcedLib]
+   * @param {string} [progressPrefix]
+   */
+  async function attempt(src, forcedLib, progressPrefix) {
+    const modelLib = forcedLib || (await resolveWasmUrl(m, src));
+    const appConfig = buildAppConfig(m, src, { modelLib });
+    const listed = (appConfig.model_list || []).some((r) => r.model_id === m.id);
+    if (!listed) {
+      throw new Error(
+        "appConfig.model_list に " + m.id + " がありません（内部設定エラー）。"
+      );
+    }
+    const initProgressCallback = (report) => {
+      const progress = typeof report.progress === "number" ? report.progress : 0;
+      let text = report.text || "モデルを読み込み中…";
+      if (progressPrefix) text = progressPrefix + text;
+      else if (src === "remote" && text && !/HF|Hugging|取得/.test(text)) {
+        text = "HF取得 · " + text;
+      }
+      if (onProgress) onProgress({ text, progress });
+    };
+    return {
+      engine: await CreateMLCEngine(m.id, { appConfig, initProgressCallback }),
+      modelLib,
+    };
   }
 
-  const initProgressCallback = (report) => {
-    const progress = typeof report.progress === "number" ? report.progress : 0;
-    let text = report.text || "モデルを読み込み中…";
-    if (src === "remote" && text && !/HF|Hugging|取得/.test(text)) {
-      text = "HF取得 · " + text;
-    }
-    if (onProgress) onProgress({ text, progress });
-  };
+  const initialSrc = source === "remote" ? "remote" : "local";
 
   try {
-    return await CreateMLCEngine(m.id, { appConfig, initProgressCallback });
+    return (await attempt(initialSrc)).engine;
   } catch (e) {
+    const fetchish = isFetchOrCacheLoadError(e);
     const msg = String(
       e && typeof e === "object" && "message" in e ? e.message : e || ""
     );
-    const fetchish = /fetch|network|wasm|failed to load|load failed/i.test(msg);
-    if (src === "remote" && fetchish) {
-      const alt = modelLib.includes("jsdelivr")
-        ? remoteWasmUrl(m, "fallback")
-        : remoteWasmUrl(m, "primary");
-      if (alt !== modelLib) {
-        console.warn("TinySwallow/remote load: retrying with alternate WASM CDN", alt, e);
-        const retryConfig = buildAppConfig(m, src, { modelLib: alt });
-        return CreateMLCEngine(m.id, {
-          appConfig: retryConfig,
-          initProgressCallback,
+
+    // Same-origin probe can pass (config+wasm) while shard IndexedDB fetch fails.
+    // Purge corrupt/quota-stuck cache rows, then fall back to Hugging Face.
+    if (initialSrc === "local" && fetchish && allowsRemoteFallback(m)) {
+      console.warn(
+        "Local model fetch/cache failed; clearing cache and retrying via Hugging Face",
+        m.id,
+        e
+      );
+      if (onProgress) {
+        onProgress({
+          text: "同一オリジン取得に失敗 — Hugging Face に切替…",
+          progress: 0.02,
         });
+      }
+      await clearWebllmModelCache(m);
+      try {
+        return (
+          await attempt(/** @type {ModelSource} */ ("remote"), undefined, "HF再試行 · ")
+        ).engine;
+      } catch (remoteErr) {
+        // Still try alternate WASM CDN on the remote path.
+        const remoteLib = await resolveWasmUrl(m, "remote");
+        const alt = remoteLib.includes("jsdelivr")
+          ? remoteWasmUrl(m, "fallback")
+          : remoteWasmUrl(m, "primary");
+        if (alt !== remoteLib && isFetchOrCacheLoadError(remoteErr)) {
+          console.warn("Remote load: retrying with alternate WASM CDN", alt, remoteErr);
+          await clearWebllmModelCache(m);
+          return (await attempt("remote", alt, "HF·WASM再試行 · ")).engine;
+        }
+        throw remoteErr;
+      }
+    }
+
+    // Remote (or local-only) path: purge cache once, then alternate WASM CDN.
+    if (fetchish) {
+      await clearWebllmModelCache(m);
+      const curLib = await resolveWasmUrl(m, initialSrc);
+      if (initialSrc === "remote" || /wasm|jsdelivr|githubusercontent/i.test(msg)) {
+        const alt = curLib.includes("jsdelivr")
+          ? remoteWasmUrl(m, "fallback")
+          : remoteWasmUrl(m, "primary");
+        if (alt !== curLib) {
+          console.warn("Model load: retrying with alternate WASM CDN", alt, e);
+          try {
+            return (await attempt(initialSrc, alt, "WASM再試行 · ")).engine;
+          } catch (_) {
+            /* fall through */
+          }
+        }
+      }
+      // One more attempt after purge with the original source (fixes corrupt IDB rows).
+      if (initialSrc === "local" || initialSrc === "remote") {
+        try {
+          console.warn("Model load: retrying once after cache purge", m.id, e);
+          return (
+            await attempt(
+              initialSrc,
+              undefined,
+              initialSrc === "remote" ? "HF再試行 · " : "再試行 · "
+            )
+          ).engine;
+        } catch (_) {
+          /* fall through to original error */
+        }
       }
     }
     throw e;
@@ -1846,13 +2057,19 @@ export async function loadAgentAssignments(assignments, onProgress) {
   } catch (e) {
     await unloadAllEngines(loaded);
     const detail = e && e.message ? e.message : String(e);
+    const fetchish = isFetchOrCacheLoadError(e);
     const err = new Error(
-      "エージェント別モデルの読み込みに失敗しました（" +
-        detail +
-        "）。VRAM 不足の場合は同じモデルを共有するか、軽量 (0.5B) を選んでください。"
+      fetchish
+        ? "エージェント別モデルの読み込みに失敗しました（" +
+            detail +
+            "）。通信またはキャッシュの問題の可能性があります。再試行で Hugging Face 取得に切り替わります。"
+        : "エージェント別モデルの読み込みに失敗しました（" +
+            detail +
+            "）。VRAM 不足の場合は同じモデルを共有するか、軽量 (0.5B) を選んでください。"
     );
     err.code = "AGENT_ASSIGN_LOAD_FAILED";
     err.cause = e;
+    if (fetchish) err.fetchOrCache = true;
     throw err;
   }
 

@@ -11,7 +11,8 @@ import { defineConfig } from "vite";
  * - Override anytime: `VITE_BASE=/my-repo/` or `VITE_BASE=./`
  *
  * `public/models/` is copied into `dist/models/` on build.
- * Runtime never fetches Hugging Face / CDN; only same-origin models/.
+ * Runtime prefers same-origin models/; on GitHub Pages, missing or
+ * failed same-origin weight fetches fall back to Hugging Face + IndexedDB.
  */
 function resolveBase() {
   let base;

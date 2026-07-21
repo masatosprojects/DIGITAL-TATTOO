@@ -32,6 +32,8 @@ import {
   areAssignmentsAvailable,
   loadAgentAssignments,
   explainLoadError,
+  isFetchOrCacheLoadError,
+  clearWebllmModelCache,
   isGitHubPagesHost,
   hasWebGPU,
   createLlmQueue,
@@ -43,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "terminal-think-1";
+const CLIENT_BUILD = "model-fetch-fix-1";
 
 const THINK_SPINNER_SRC =
   ((typeof import.meta !== "undefined" &&
@@ -4443,11 +4445,32 @@ gateLoad.addEventListener("click", async () => {
 
     const msg = explainLoadError(e);
     const isGpuErr = !!(e && isGpuLostError(e));
+    const isFetchErr = !!(e && isFetchOrCacheLoadError(e));
     if (isGpuErr) gpuDeathCount++;
+
+    // Network / IndexedDB cache failures: purge caches and keep the user's picks.
+    // Do NOT silently coerce everyone to 1.5B — that used the same broken path again
+    // when Pages same-origin shards failed and HF fallback never ran.
+    if (isFetchErr && !isGpuErr) {
+      const keys = uniqueAssignmentKeys(getAgentAssignments());
+      for (const key of keys) {
+        const m = resolveModel(key);
+        if (m) await clearWebllmModelCache(m);
+      }
+      gateMsg.textContent =
+        msg +
+        " → モデルキャッシュをクリアしました。もう一度「▶ 開始」を押すと" +
+        " Hugging Face 取得を再試行します（初回はダウンロードに時間がかかります）。";
+      gateLoad.disabled = false;
+      gateLoad.textContent = "▶ 開始";
+      gateActions.classList.add("show");
+      if (gateSkip) gateSkip.hidden = true;
+      return;
+    }
+
     if (
       e &&
-      (e.code === "AGENT_ASSIGN_LOAD_FAILED" ||
-        isGpuErr ||
+      (isGpuErr ||
         /VRAM|メモリ|memory/i.test(String(e.message || e)))
     ) {
       const safeKey = getDefaultModelKey();
@@ -4491,10 +4514,10 @@ gateLoad.addEventListener("click", async () => {
 async function init() {
   const pages = isGitHubPagesHost();
   gateHint.innerHTML = pages
-    ? "<strong>推奨: TinySwallow 1.5B（JP特化）</strong> — Pages でも選択可。" +
-      "未同梱時は Hugging Face + IndexedDB（初回 ≈830 MB）。" +
-      "標準 Qwen 1.5B / Qwen3 1.7B・0.6B / 3B / Gemma-JPN / Llama 3.2 も選択可。<br>" +
-      "0.5B は品質が落ちます。CI は 0.5B を同一オリジン同梱。同じ選択はエンジン共有。"
+    ? "<strong>推奨: 標準 Qwen 1.5B</strong>（未同梱時は Hugging Face + IndexedDB）。" +
+      "軽量 0.5B は Pages 同一オリジン同梱 — 取得失敗時は自動で HF に切替。" +
+      "TinySwallow は同一オリジンのみ（HF に tensor-cache 無し）。<br>" +
+      "同じ選択はエンジン共有。初回 HF 取得は数百 MB〜かかります。"
     : "<strong>推奨: TinySwallow 1.5B（JP特化）</strong> · " +
       "標準 Qwen 1.5B · Qwen3 1.7B・0.6B（新世代）· 軽量 0.5B · " +
       "高精度 3B · Gemma-JPN（system不可）· Llama 3.2 1B・3B（日本語弱め）。<br>" +
