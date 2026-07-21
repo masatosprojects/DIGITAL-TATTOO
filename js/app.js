@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "gpu-reload-2";
+const CLIENT_BUILD = "anti-meta-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -1887,17 +1887,95 @@ function structuredOutRule() {
   return "出力は必ず2行だけ。1行目: 思考: （短い理由） 2行目: 発言: （最終文のみ）。英語禁止。";
 }
 
-/** First LLM manuscript is authoritative — no suitability filter / retry. */
+/** First usable speech line from a stream (unwraps paren / markdown / speaker tags). */
 function firstDraftSpeech(streamed) {
   if (!streamed) return "";
-  const speak = String(streamed.speak || "").trim();
-  if (speak) return speak;
-  const raw = String(streamed.raw || "").trim();
-  if (!raw) return "";
-  const parts = splitThinkSpeak(raw);
-  if (parts.speak && parts.speak.trim()) return parts.speak.trim();
-  return raw;
+  let t = "";
+  if (streamed.speak && String(streamed.speak).trim()) t = String(streamed.speak).trim();
+  else if (streamed.raw) {
+    const parts = splitThinkSpeak(streamed.raw);
+    t = (parts.speak && parts.speak.trim()) || String(streamed.raw).trim();
+  }
+  return unwrapSpeechJunk(t);
 }
+
+/** Strip Swallow/meta wrappers that are not the actual utterance. */
+function unwrapSpeechJunk(raw) {
+  let t = String(raw || "").trim();
+  if (!t) return "";
+  // Prefer last "## 発言" / "発言:" block
+  const md = [...t.matchAll(/(?:^|\n)#*\s*発言\s*[:：]?\s*\n?([\s\S]*?)(?=\n#+\s*(?:思考|発言)|$)/gi)];
+  if (md.length) t = md[md.length - 1][1].trim();
+  t = t.replace(/^思考\s*[:：]\s*/m, "").trim();
+  // One line only — drop fake multi-agent scripts
+  t = t.split(/\n+/).map((l) => l.trim()).filter(Boolean)[0] || t;
+  t = t.replace(/^\[エージェント\d{0,2}\]\s*/g, "");
+  t = t.replace(/^エージェント\d{0,2}\s*[：:→]\s*/g, "");
+  t = t.replace(/^["「『]+|["」』]+$/g, "");
+  t = t.replace(/^[（(【\[]+|［]|[）)】\]]+$/g, "");
+  t = t.replace(/^[（(]+|[）)]+$/g, "");
+  return t.trim();
+}
+
+/**
+ * Reject only useless meta / echo — NOT valid short asks like「夜に主な活動をしますか？」.
+ * (User: no progress when agents only say "let's prepare / discuss".)
+ */
+function isUselessMetaOrEcho(text, kind) {
+  const original = String(text || "");
+  const s = unwrapSpeechJunk(original);
+  const c = s.replace(/\s+/g, "");
+  if (!c || c.length < 3) return true;
+  if (
+    /準備ができる|議論してみ|議論する準備|一緒に議論|5段階評価|答えましょう|ORIGINが提示|まだ何も言及|共有し[、,]?一緒|共通認識を作|協力体制|一緒に準備|まずは.彼女|情報を提供してください|協力して質問を考える|道筋を見直す必要があることを理解/.test(
+      c
+    )
+  ) {
+    return true;
+  }
+  if (/^はい[。．.!！?？]*$|^いいえ|^了解しました|^どちらかというと/.test(c) && kind === "ask") {
+    return true;
+  }
+  if (/\[エージェント0[12]\]/.test(original) && /\[エージェント0[12]\]/.test(original.slice(5))) {
+    return true; // multi-speaker script
+  }
+  if (/##\s*思考/.test(original) && /##\s*発言/.test(original)) return true;
+  if (kind === "ask") {
+    if (!/[？?]$/.test(s) && !/(ですか|ますか|でしょうか|ないか|るか|のか)[？?]?$/.test(c)) {
+      return true;
+    }
+  }
+  if (kind === "debate") {
+    if (/^はい[。．.!！?？]*$|^いいえ/.test(c)) return true;
+  }
+  if (kind === "hyp") {
+    if (/[？?]$/.test(s) || /ですか|ますか/.test(c)) return true;
+    if (/^了解|^はい|^いいえ|^思考/.test(c)) return true;
+    if (c.length > 36) return true; // keep hyp short
+  }
+  return false;
+}
+
+function extractAskTo00(streamed) {
+  const pool = [];
+  const speak = firstDraftSpeech(streamed);
+  if (speak) pool.push(speak);
+  const blob = [streamed.think, streamed.speak, streamed.raw].filter(Boolean).join("\n");
+  for (const m of blob.matchAll(/「([^」]{4,80}?[？?])」/g)) pool.push(m[1]);
+  for (const m of blob.matchAll(/(あなた[はが]?[^。\n「」]{2,40}?[？?])/g)) pool.push(m[1]);
+  for (const m of blob.matchAll(/([^\n「」]{4,40}(?:ですか|ますか|でしょうか)[？?]?)/g)) {
+    pool.push(m[1]);
+  }
+  for (const cand of pool) {
+    const q = ensureQuestionMark(unwrapSpeechJunk(cand));
+    if (q && !isUselessMetaOrEcho(q, "ask")) return q;
+  }
+  return null;
+}
+
+const ASK_RETRY_MAX = 2;
+/** Debate / hyp: one retry after a useless first draft (2 attempts total). */
+const DEBATE_RETRY_MAX = 1;
 
 // ── Agent turns ──────────────────────────────────────────
 
@@ -1934,37 +2012,59 @@ async function agentAskQuestion(asker) {
       duoPartnershipRule() +
       "友人であり同僚の協同尋問官" +
       partnerName +
-      "と協力し、被尋問者エージェント00に日本語で問いかける。" +
+      "と協力し、被尋問者エージェント00だけに日本語で問いかける。" +
       "二人は同じ共有仮説を持つ（まだ無ければ後で立てる）。" +
-      "禁止: 「代理人」。" +
+      "発言は必ず1文だけ。エージェント00への具体的なはい/いいえ質問（？で終わる）。" +
+      "例の形: 「あなたは夜に活動しますか？」「あなたは生き物ですか？」" +
+      "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
       structuredOutRule() +
-      "発言行に、あなたの発する文を書く。最初の原稿がそのまま採用される。";
-    const user =
+      "発言行に質問文だけを書く。";
+    const askUserBase =
       investigatorContext(asker) +
-      "\nエージェント00への発言を1つ作れ。";
+      "\nエージェント00へのはい/いいえ質問を1つだけ作れ（？で終わる）。準備や議論の宣言は禁止。";
+    const askUserStrict =
+      investigatorContext(asker) +
+      "\n短い1文だけ。エージェント00に聞く具体的な質問（？必須）。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
 
-    panel.addSection("params", "stream · max_tokens=500 · 初稿絶対（不適判定なし）", "meta");
-    const streamed = await streamIntoPanel(panel, system, user, {
-      agent: asker,
-      temperature: 0.55,
-      max_tokens: 500,
-    });
-    beatStart = streamed.beatStart;
-    if (streamed.error && !streamed.raw) {
-      panel.collapse();
-      if (streamed.gpuReload || state.phase === "reload-model") return null;
-      endConversationAiStopped(streamed.error);
-      return null;
+    panel.addSection("params", "stream · max_tokens=500 · メタ拒否・再試行あり", "meta");
+    for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
+      const user = attempt === 0 ? askUserBase : askUserStrict;
+      if (attempt > 0) {
+        panel.addSection("再試行", "メタ/非質問のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")", "warn");
+      }
+      const streamed = await streamIntoPanel(panel, system, user, {
+        agent: asker,
+        temperature: attempt === 0 ? 0.55 : 0.35,
+        max_tokens: 500,
+      });
+      beatStart = streamed.beatStart;
+      if (streamed.error && !streamed.raw) {
+        panel.collapse();
+        if (streamed.gpuReload || state.phase === "reload-model") return null;
+        endConversationAiStopped(streamed.error);
+        return null;
+      }
+      question = extractAskTo00(streamed);
+      if (!question) {
+        const draft = firstDraftSpeech(streamed);
+        const cand = draft ? ensureQuestionMark(draft) : "";
+        if (cand && !isUselessMetaOrEcho(cand, "ask")) question = cand;
+      }
+      if (question) break;
+      panel.addSection(
+        "却下",
+        clip(firstDraftSpeech(streamed) || streamed.raw || "(空)", 80),
+        "warn"
+      );
     }
-    question = firstDraftSpeech(streamed);
     if (!question) {
       panel.collapse();
-      endConversationAiStopped("質問の生成結果が空");
+      endConversationAiStopped("AIが使える質問を出せなかった（メタ・非質問の繰り返し）");
       return null;
     }
   }
 
-  panel.addSection("最終質問（初稿）", question, "out");
+  panel.addSection("最終質問", question, "out");
   panel.collapse();
   appendSpeech(asker, "「" + question + "」", "a" + asker);
   appendChatBubble(
@@ -1994,6 +2094,7 @@ async function agent00Answer(question) {
     namingClarityRule() +
     roleAlreadyKnownRule() +
     "あなただけが質問に答える。判定は ORIGIN と常識。" +
+    "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。発言は「どちらとも言えない」のみ。" +
     "回答は次の5段階から1つが望ましい: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
     "最初に書いた発言がそのまま採用される。「代理人」禁止。" +
     structuredOutRule();
@@ -2002,7 +2103,8 @@ async function agent00Answer(question) {
     state.origin +
     "」\n質問 = 「" +
     question +
-    "」\n答えて。";
+    "」\n" +
+    "これがエージェント00への具体的なはい/いいえ質問なら5段階で答えよ。質問でなければ「どちらとも言えない」だけ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
@@ -2064,12 +2166,11 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     duoPartnershipRule() +
     "友人であり同僚の協同尋問官" +
     partnerName +
-    "と、エージェント00の答えについて議論する。" +
-    "共有仮説を一緒に扱う。まだ無ければ自由に立ててよい。" +
-    "「代理人」禁止。" +
-    structuredOutRule() +
-    "最初の原稿がそのまま採用される。";
-  const user =
+    "と、エージェント00の答えがORIGIN仮説にどう効くかを議論する。" +
+    "発言は1〜2短文だけ。仮説の更新案や含意を述べる。" +
+    "禁止: 準備・議論しましょう・5段階評価・メタ・同僚への呼びかけだけの文・複数エージェント台本・了解しました・代理人。" +
+    structuredOutRule();
+  const debateUserBase =
     investigatorContext(agent) +
     "\n直前の質問: 「" +
     question +
@@ -2077,24 +2178,44 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n" +
     (lastPartnerLine ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n" : "") +
-    "議論せよ。";
+    "この答えの含意を1〜2短文で述べよ。準備や台本は禁止。";
+  const debateUserStrict =
+    investigatorContext(agent) +
+    "\n質問「" +
+    question +
+    "」→答え「" +
+    answer +
+    "」。ORIGIN仮説への含意を短い1文だけ。メタ・準備禁止。";
 
-  panel.addSection("params", "stream · 初稿絶対（不適判定なし）", "meta");
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  const beatStart = streamed.beatStart;
-  if (streamed.error && !streamed.raw) {
-    panel.collapse();
-    endConversationAiStopped(streamed.error);
-    return null;
+  panel.addSection("params", "stream · メタ拒否・再試行あり", "meta");
+  let opinion = null;
+  let beatStart = performance.now();
+  for (let attempt = 0; attempt <= DEBATE_RETRY_MAX; attempt++) {
+    const user = attempt === 0 ? debateUserBase : debateUserStrict;
+    if (attempt > 0) {
+      panel.addSection("再試行", "メタ/エコーのため再生成", "warn");
+    }
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent,
+      temperature: attempt === 0 ? 0.55 : 0.35,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error && !streamed.raw) {
+      panel.collapse();
+      endConversationAiStopped(streamed.error);
+      return null;
+    }
+    const draft = firstDraftSpeech(streamed);
+    if (draft && !isUselessMetaOrEcho(draft, "debate")) {
+      opinion = draft;
+      break;
+    }
+    panel.addSection("却下", clip(draft || streamed.raw || "(空)", 80), "warn");
   }
-  const opinion = firstDraftSpeech(streamed);
   if (!opinion) {
     panel.collapse();
-    endConversationAiStopped("議論文が空");
+    endConversationAiStopped("AIが使える議論文を出せなかった（メタ・エコーの繰り返し）");
     return null;
   }
 
@@ -2103,9 +2224,10 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     name +
     "。" +
     partnerName +
-    "と共有する仮説を短い句で。「代理人」禁止。" +
+    "と共有する仮説を短い名詞句で。「代理人」禁止。" +
+    "禁止: 了解しました・はい・いいえ・質問文・準備の宣言。" +
     structuredOutRule() +
-    "発言行は仮説だけ。初稿が採用される。";
+    "発言行は仮説だけ（36字以内）。";
   const hypUser =
     "現在の共有仮説: 「" +
     (hyp || "（まだない）") +
@@ -2115,7 +2237,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n議論「" +
     clip(opinion, 120) +
-    "」\n共有仮説を書け。";
+    "」\n共有仮説を短い句だけで書け。";
   const hypNote = panel.addSection("共有仮説 更新中…", "…", "belief");
   const resH = await llmChat(hypSystem, hypUser, {
     agent,
@@ -2128,17 +2250,19 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   });
   if (resH && resH.raw) {
     const sp = splitThinkSpeak(resH.raw);
-    const newHyp = String(sp.speak || resH.raw).trim();
-    if (newHyp) {
+    const newHyp = unwrapSpeechJunk(String(sp.speak || resH.raw).trim());
+    if (newHyp && !isUselessMetaOrEcho(newHyp, "hyp")) {
       setSharedHypothesis(cleanJapaneseLine(newHyp, 40) || newHyp, {
         keepPrevAsAlt: !isVagueSharedHyp(hyp),
       });
+    } else if (newHyp) {
+      panel.addSection("仮説却下", clip(newHyp, 60), "warn");
     }
   } else if (resH && resH.error) {
     panel.addSection("LLM error", formatLlmErrorForPanel(resH.error), "warn");
   }
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-  panel.addSection("最終発言（初稿）", opinion, "out");
+  panel.addSection("最終発言", opinion, "out");
 
   state.discussTurns++;
   updateHud();
@@ -2458,34 +2582,56 @@ async function wolfAskQuestion(askerId) {
     name +
     "。" +
     wolfNamingClarityRule() +
-    "エージェント00に日本語で問いかける。「代理人」禁止。" +
+    "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的なはい/いいえ質問（？で終わる）。" +
+    "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人。" +
     structuredOutRule() +
-    "初稿が採用される。";
-  const user = wolfInvestigatorContext(askerId) + "\nエージェント00への発言を1つ。";
+    "発言行に質問文だけを書く。";
+  const askUserBase =
+    wolfInvestigatorContext(askerId) +
+    "\nエージェント00へのはい/いいえ質問を1つだけ作れ（？で終わる）。準備や議論の宣言は禁止。";
+  const askUserStrict =
+    wolfInvestigatorContext(askerId) +
+    "\n短い1文だけ。エージェント00に聞く具体的な質問（？必須）。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
 
-  panel.addSection("params", "初稿絶対", "meta");
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent: askerId,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  if (streamed.error && !streamed.raw) {
-    panel.collapse();
-    endConversationAiStopped(streamed.error);
-    return null;
+  panel.addSection("params", "メタ拒否・再試行あり", "meta");
+  let question = null;
+  let beatStart = performance.now();
+  for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
+    const user = attempt === 0 ? askUserBase : askUserStrict;
+    if (attempt > 0) {
+      panel.addSection("再試行", "メタ/非質問のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")", "warn");
+    }
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: askerId,
+      temperature: attempt === 0 ? 0.55 : 0.35,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error && !streamed.raw) {
+      panel.collapse();
+      endConversationAiStopped(streamed.error);
+      return null;
+    }
+    question = extractAskTo00(streamed);
+    if (!question) {
+      const draft = firstDraftSpeech(streamed);
+      const cand = draft ? ensureQuestionMark(draft) : "";
+      if (cand && !isUselessMetaOrEcho(cand, "ask")) question = cand;
+    }
+    if (question) break;
+    panel.addSection("却下", clip(firstDraftSpeech(streamed) || streamed.raw || "(空)", 80), "warn");
   }
-  const question = firstDraftSpeech(streamed);
   if (!question) {
     panel.collapse();
-    endConversationAiStopped("質問が空");
+    endConversationAiStopped("AIが使える質問を出せなかった（メタ・非質問の繰り返し）");
     return null;
   }
 
-  panel.addSection("最終質問（初稿）", question, "out");
+  panel.addSection("最終質問", question, "out");
   panel.collapse();
   appendSpeech(askerId, "「" + question + "」", "a" + askerId);
   appendChatBubble("ask", "[" + name + "] → エージェント00: " + question);
-  await paceAfterBeat(question, streamed.beatStart);
+  await paceAfterBeat(question, beatStart);
   return question;
 }
 
@@ -2507,10 +2653,10 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "。" +
     wolfNamingClarityRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
-    "議論せよ。「代理人」禁止。" +
-    structuredOutRule() +
-    "初稿が採用される。";
-  const user =
+    "エージェント00の答えがORIGIN仮説にどう効くかを1〜2短文で述べる。" +
+    "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人。" +
+    structuredOutRule();
+  const debateUserBase =
     wolfInvestigatorContext(speakerId) +
     "\n質問「" +
     question +
@@ -2518,31 +2664,54 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     answer +
     "」\n" +
     (lastSpeakerLine ? "直前「" + lastSpeakerLine + "」\n" : "") +
-    "発言せよ。";
+    "この答えの含意を1〜2短文で述べよ。準備や台本は禁止。";
+  const debateUserStrict =
+    wolfInvestigatorContext(speakerId) +
+    "\n質問「" +
+    question +
+    "」→答え「" +
+    answer +
+    "」。ORIGIN仮説への含意を短い1文だけ。メタ・準備禁止。";
 
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent: speakerId,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  if (streamed.error && !streamed.raw) {
-    panel.collapse();
-    endConversationAiStopped(streamed.error);
-    return null;
+  panel.addSection("params", "メタ拒否・再試行あり", "meta");
+  let opinion = null;
+  let beatStart = performance.now();
+  for (let attempt = 0; attempt <= DEBATE_RETRY_MAX; attempt++) {
+    const user = attempt === 0 ? debateUserBase : debateUserStrict;
+    if (attempt > 0) {
+      panel.addSection("再試行", "メタ/エコーのため再生成", "warn");
+    }
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: speakerId,
+      temperature: attempt === 0 ? 0.55 : 0.35,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error && !streamed.raw) {
+      panel.collapse();
+      endConversationAiStopped(streamed.error);
+      return null;
+    }
+    const draft = firstDraftSpeech(streamed);
+    if (draft && !isUselessMetaOrEcho(draft, "debate")) {
+      opinion = draft;
+      break;
+    }
+    panel.addSection("却下", clip(draft || streamed.raw || "(空)", 80), "warn");
   }
-  const opinion = firstDraftSpeech(streamed);
   if (!opinion) {
     panel.collapse();
-    endConversationAiStopped("議論文が空");
+    endConversationAiStopped("AIが使える議論文を出せなかった（メタ・エコーの繰り返し）");
     return null;
   }
 
   const hypSystem =
     "あなたは" +
     name +
-    "。仮説を短い句で。「代理人」禁止。" +
+    "。仮説を短い名詞句で。「代理人」禁止。" +
+    "禁止: 了解しました・はい・いいえ・質問文・準備の宣言。" +
     structuredOutRule() +
-    "発言行は仮説だけ。";
+    "発言行は仮説だけ（36字以内）。";
   const hypUser =
     "現在「" +
     (speaker ? speaker.hyp || "（まだない）" : "（まだない）") +
@@ -2552,7 +2721,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     answer +
     "」\n議論「" +
     clip(opinion, 80) +
-    "」\n仮説を書け。";
+    "」\n仮説を短い句だけで書け。";
   const resH = await llmChat(hypSystem, hypUser, {
     agent: speakerId,
     temperature: 0.55,
@@ -2561,15 +2730,17 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
   });
   if (resH && resH.raw && speaker) {
     const sp = splitThinkSpeak(resH.raw);
-    const h = String(sp.speak || resH.raw).trim();
-    if (h) speaker.hyp = cleanJapaneseLine(h, 40) || h;
+    const h = unwrapSpeechJunk(String(sp.speak || resH.raw).trim());
+    if (h && !isUselessMetaOrEcho(h, "hyp")) {
+      speaker.hyp = cleanJapaneseLine(h, 40) || h;
+    }
   }
 
-  panel.addSection("最終発言（初稿）", opinion, "out");
+  panel.addSection("最終発言", opinion, "out");
   panel.collapse();
   appendSpeech(speakerId, "「" + opinion + "」", "a" + speakerId);
   await typeChatBubble(speakerId, opinion);
-  await paceAfterBeat(opinion, streamed.beatStart);
+  await paceAfterBeat(opinion, beatStart);
   return opinion;
 }
 
