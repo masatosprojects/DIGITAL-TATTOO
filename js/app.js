@@ -14,10 +14,6 @@ import {
   clip,
   answerYesNoFallback,
   isClearOriginIdentityAsk,
-  askQuestionFallback,
-  debateFallback,
-  updateHypFallback,
-  guessFallback,
   formatGuess,
   extractGuessRole,
   guessMatchesOrigin,
@@ -130,11 +126,8 @@ const btnDownload = document.getElementById("btnDownload");
 const controlsEl = document.getElementById("controls");
 const downloadRowEl = document.getElementById("downloadRow");
 
-/**
- * Duo-mode initial shared working hypothesis (broad / uncertain, but never empty).
- * Must NOT encode the real ORIGIN — investigators never see ORIGIN.
- */
-const INITIAL_SHARED_HYP = "まだ特定できていないが、実在する何か／誰か";
+/** Display only — never used as a prepared hypothesis for the AIs. */
+const HYP_NOT_YET = "（まだAIが立てていない）";
 
 const state = {
   ready: false,
@@ -146,13 +139,13 @@ const state = {
   round: 0,
   nextAsker: "01",
   history: [],
-  /** Duo: one shared working hypothesis both 01 and 02 read/write. */
-  sharedHyp: INITIAL_SHARED_HYP,
+  /** Duo: shared hyp — empty until AI invents one (no prepared starter). */
+  sharedHyp: "",
   /** @type {string[]} short alternate candidates (shared). */
   sharedHypAlts: [],
   /** UI mirrors of sharedHyp (kept in sync for panel heads). */
-  hyp01: INITIAL_SHARED_HYP,
-  hyp02: INITIAL_SHARED_HYP,
+  hyp01: "",
+  hyp02: "",
   pollution: 0,
   wrongGuesses: 0,
   guessCount: 0,
@@ -197,7 +190,7 @@ let loadedEngines = [];
 let catalogAvail = null;
 let loadingModel = false;
 let assignPickerBuilt = false;
-/** GPU/エンジンが連続で落ちて template 代替が続いている回数（成功でリセット）。 */
+/** GPU/エンジンが連続で落ちた回数（成功でリセット）。到達で会話終了。 */
 let consecutiveLlmFailures = 0;
 const LLM_FAILURE_WARN_THRESHOLD = 3;
 
@@ -250,7 +243,7 @@ function buildSessionTranscript() {
   const lines = [];
   lines.push("DIGITAL TATTOO — セッション記録");
   lines.push("保存時刻: " + new Date().toLocaleString("ja-JP"));
-  lines.push("エンジン: " + (state.mode === "llm" ? "LLM · " + assignmentShortLabel() : "TEMPLATE"));
+  lines.push("エンジン: " + (state.mode === "llm" ? "LLM · " + assignmentShortLabel() : "LLM 未ロード"));
   lines.push("");
   lines.push("======== ORIGIN（エージェント00のみ） ========");
   lines.push(state.origin ? state.origin : "（未刻印）");
@@ -364,7 +357,7 @@ function setBadge(mode) {
     engineBadge.textContent = "LLM · " + assignmentShortLabel();
     engineBadge.className = "llm";
   } else {
-    engineBadge.textContent = "TEMPLATE";
+    engineBadge.textContent = "LLM 未ロード";
     engineBadge.className = "fallback";
   }
 }
@@ -537,29 +530,38 @@ function partnerAgent(agent) {
   return agent === "01" ? "02" : "01";
 }
 
-/** Vague / bootstrap shared-hyp phrases (not empty, but not a concrete role yet). */
+/** Empty or non-AI placeholder — not a real working hypothesis yet. */
 function isVagueSharedHyp(h) {
   const t = String(h || "").trim();
   if (!t) return true;
   return (
     t === "未定" ||
+    t === HYP_NOT_YET ||
     t === "まだ分からない" ||
     t === "まだ不明" ||
     t === "別候補を検討中" ||
-    t === INITIAL_SHARED_HYP ||
     /^まだ特定できていない/.test(t)
   );
 }
 
 function formatSharedHypDisplay() {
-  const main = clip(state.sharedHyp || INITIAL_SHARED_HYP, 36);
+  const main = state.sharedHyp
+    ? clip(state.sharedHyp, 36)
+    : HYP_NOT_YET;
   const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 2);
   if (!alts.length) return main;
   return main + "（別: " + alts.map((a) => clip(a, 12)).join(" / ") + "）";
 }
 
 function formatSharedHypPromptBlock() {
-  const main = clip(state.sharedHyp || INITIAL_SHARED_HYP, 48);
+  if (!state.sharedHyp || isVagueSharedHyp(state.sharedHyp)) {
+    return (
+      "共有仮説: まだない。エージェント01と02が議論の中で初めて自由に立てよ。" +
+      "用意された定型仮説は使わず、自分たちが考えた内容だけでよい（奇妙でも可）。" +
+      "\n共有の別候補: （まだなし）"
+    );
+  }
+  const main = clip(state.sharedHyp, 48);
   const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 3);
   let s = "共有仮説（エージェント01と02が共同で持つ本命）: 「" + main + "」";
   if (alts.length) {
@@ -575,12 +577,14 @@ function formatSharedHypPromptBlock() {
 /**
  * Write the duo shared hypothesis; mirror onto both panel fields.
  * Never store ORIGIN here — callers must not pass state.origin.
+ * Empty input is ignored (keep prior / stay empty until AI invents one).
  */
 function setSharedHypothesis(newHyp, opts) {
-  let next = clip(String(newHyp || "").trim(), 40) || INITIAL_SHARED_HYP;
+  let next = clip(String(newHyp || "").trim(), 40);
+  if (!next) return state.sharedHyp;
   // Investigators must never store the real ORIGIN as their shared hyp.
   if (state.origin && next === state.origin) {
-    next = state.sharedHyp || INITIAL_SHARED_HYP;
+    return state.sharedHyp;
   }
   const prev = state.sharedHyp;
   const keepPrevAsAlt = opts && opts.keepPrevAsAlt;
@@ -617,10 +621,28 @@ function setSharedHypothesis(newHyp, opts) {
 }
 
 function initSharedHypothesisForSession() {
-  state.sharedHyp = INITIAL_SHARED_HYP;
+  // No prepared hypothesis — AIs invent the first one during play.
+  state.sharedHyp = "";
   state.sharedHypAlts = [];
-  state.hyp01 = INITIAL_SHARED_HYP;
-  state.hyp02 = INITIAL_SHARED_HYP;
+  state.hyp01 = "";
+  state.hyp02 = "";
+}
+
+/** AI generation stopped — end the session; never continue with stock lines. */
+function endConversationAiStopped(reason) {
+  if (state.phase === "ended") return;
+  const detail = reason ? "（" + String(reason).slice(0, 120) + "）" : "";
+  appendChatBubble(
+    "sys",
+    "AIの生成が止まったため、会話をここで終了します。" + detail
+  );
+  logSession({
+    kind: "sys",
+    label: "AI停止",
+    text: String(reason || "generation stopped"),
+  });
+  state.won = false;
+  endGame();
 }
 
 // ── Japanese input ───────────────────────────────────────
@@ -807,10 +829,10 @@ function formatLlmErrorForPanel(err) {
   const msg = String(err || "");
   const lower = msg.toLowerCase();
   if (lower.includes("disposed")) {
-    return "エンジン切断（Object disposed）— 再接続を試みたが失敗。テンプレートで継続。";
+    return "エンジン切断（Object disposed）— 再接続を試みたが失敗。会話を終了します。";
   }
   if (lower.includes("model not loaded") || lower.includes("not loaded before")) {
-    return "モデル未ロード — 再読み込みを試みたが失敗。テンプレートで継続。";
+    return "モデル未ロード — 再読み込みを試みたが失敗。会話を終了します。";
   }
   if (
     lower.includes("device") ||
@@ -821,7 +843,7 @@ function formatLlmErrorForPanel(err) {
     return "GPU切断 — 再読み込み失敗。ページ再読込が必要な場合があります。";
   }
   if (lower.includes("engine not ready") || lower.includes("no engine bound")) {
-    return "エンジン未準備 — テンプレートで継続。";
+    return "エンジン未準備 — 会話を終了します。";
   }
   return msg.length > 160 ? msg.slice(0, 160) + "…" : msg;
 }
@@ -1025,7 +1047,7 @@ function engineMetaForAgent(agent) {
     const m = getActiveModel();
     return "engine main · " + m.shortLabel + " · " + m.id;
   }
-  return "TEMPLATE";
+  return "LLM 未ロード";
 }
 
 /**
@@ -1043,7 +1065,7 @@ async function healDeadEngines(panel, cause) {
   if (panel) {
     panel.addSection(
       "エンジン復旧",
-      "GPU/エンジン切断を検知 → 冷却後に再作成を試行（テンプレートより復旧優先）",
+      "GPU/エンジン切断を検知 → 冷却後に再作成を試行（定型文では継続しない）",
       "warn"
     );
   }
@@ -1061,9 +1083,8 @@ async function healDeadEngines(panel, cause) {
 }
 
 /**
- * Stream into think panel. Returns { raw, think, speak, structured, beatStart }.
- * opts.fallbackText used when not LLM / on error.
- * opts.agent routes to the bound engine in multi-engine modes.
+ * Stream into think panel. Returns { raw, think, speak, structured, beatStart, error? }.
+ * No stock/template lines — if LLM fails, returns error and empty raw.
  */
 async function streamIntoPanel(panel, system, user, opts = {}) {
   const beatStart = performance.now();
@@ -1080,44 +1101,42 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
     }
   };
 
-  if (state.mode === "llm" && (llmRouter || llmQueue)) {
-    if (opts.agent) {
-      panel.addSection("engine", engineMetaForAgent(opts.agent), "meta");
-    }
-    panel.setStatus("思考過程 · ライブ推論中…");
-    const res = await llmChat(system, user, { ...opts, onDelta, stream: true });
-    if (res && res.raw) {
-      raw = res.raw;
-      consecutiveLlmFailures = 0;
-    } else if (res && res.error) {
-      panel.addSection(
-        "LLM error → fallback",
-        formatLlmErrorForPanel(res.error),
-        "warn"
+  if (state.mode !== "llm" || (!llmRouter && !llmQueue)) {
+    panel.addSection("error", "LLM が未ロードのため生成できません", "warn");
+    return { think: "", speak: "", structured: false, raw: "", beatStart, error: "no-llm" };
+  }
+
+  if (opts.agent) {
+    panel.addSection("engine", engineMetaForAgent(opts.agent), "meta");
+  }
+  panel.setStatus("思考過程 · ライブ推論中…");
+  const res = await llmChat(system, user, { ...opts, onDelta, stream: true });
+  if (res && res.raw) {
+    raw = res.raw;
+    consecutiveLlmFailures = 0;
+  } else if (res && res.error) {
+    consecutiveLlmFailures++;
+    panel.addSection(
+      "LLM error",
+      formatLlmErrorForPanel(res.error),
+      "warn"
+    );
+    if (consecutiveLlmFailures === LLM_FAILURE_WARN_THRESHOLD) {
+      appendChatBubble(
+        "sys",
+        "GPU/LLM接続が不安定です（" +
+          consecutiveLlmFailures +
+          "回連続エラー）。復旧できなければ会話を終了します。"
       );
-      if (consecutiveLlmFailures === LLM_FAILURE_WARN_THRESHOLD) {
-        appendChatBubble(
-          "sys",
-          "GPU/LLM接続が不安定なようです（" +
-            consecutiveLlmFailures +
-            "回連続でエラー）。エンジン再作成を優先し、なお失敗する場合はページ再読み込みを。"
-        );
-      }
-      if (opts.fallbackText) {
-        await fakeStreamText(
-          "思考: テンプレートで代替\n発言: " + opts.fallbackText,
-          onDelta
-        );
-      }
     }
-  } else {
-    panel.addSection("engine", "TEMPLATE · fake-stream", "meta");
-    const fb = opts.fallbackText || "…";
-    const structured =
-      opts.fallbackThink != null
-        ? "思考: " + opts.fallbackThink + "\n発言: " + fb
-        : "思考: （テンプレート）\n発言: " + fb;
-    await fakeStreamText(structured, onDelta);
+    return {
+      think: "",
+      speak: "",
+      structured: false,
+      raw: "",
+      beatStart,
+      error: res.error,
+    };
   }
 
   const parts = splitThinkSpeak(raw);
@@ -1251,7 +1270,7 @@ function clampAnswerLoose(raw) {
 /**
  * Resolve エージェント00's final answer so speech matches the decision path
  * shown in the think panel. Prefer: identity override → thinking conclusion
- * when speak contradicts → speak → clamp → fallback.
+ * when speak contradicts → speak → clamp. No stock answer if AI produced nothing.
  */
 function resolveAgent00Answer(think, speak, raw, origin, question) {
   if (isClearOriginIdentityAsk(origin, question)) {
@@ -1290,11 +1309,10 @@ function resolveAgent00Answer(think, speak, raw, origin, question) {
     return { answer: clamped, source: "clamp", note: null };
   }
 
-  const fb = answerYesNoFallback(origin, question);
   return {
-    answer: fb,
-    source: "fallback",
-    note: "回答抽出に失敗したため字面照合テンプレートで「" + fb + "」",
+    answer: null,
+    source: "none",
+    note: "AIの回答を抽出できなかった",
   };
 }
 
@@ -1494,7 +1512,6 @@ function isPlaceholderEchoQuestion(q) {
     "未定",
     "まだ分からない",
     "別候補を検討中",
-    INITIAL_SHARED_HYP,
     "まだ特定できていないが実在する何か誰か",
     ...ANSWER_LEVELS,
   ];
@@ -1700,20 +1717,10 @@ async function agentAskQuestion(asker) {
     "meta"
   );
 
-  const hyp = state.sharedHyp || INITIAL_SHARED_HYP;
-  const fallbackQ = askQuestionFallback({
-    history: state.history,
-    hyp,
-    pollution: 0,
-    seed: state.seed,
-    round: state.round,
-    agent: asker,
-  });
   const angle = questionAngleHint(state.seed, state.round);
 
   let question = null;
   let beatStart = performance.now();
-  let usedTemplate = false;
 
   if (state.pendingInject) {
     question = ensureQuestionMark(state.pendingInject);
@@ -1721,15 +1728,10 @@ async function agentAskQuestion(asker) {
     panel.setLive("注入質問を使用: " + question);
     state.pendingInject = null;
   } else if (state.mode !== "llm") {
-    usedTemplate = true;
-    panel.addSection("params", "TEMPLATE · fake-stream", "meta");
-    const streamed = await streamIntoPanel(panel, "", "", {
-      agent: asker,
-      fallbackText: fallbackQ,
-      fallbackThink: "別角度で深める質問をする",
-    });
-    beatStart = streamed.beatStart;
-    question = fallbackQ;
+    panel.addSection("error", "LLM 未ロード", "warn");
+    panel.collapse();
+    endConversationAiStopped("LLM未ロードのため質問を生成できない");
+    return null;
   } else {
     const system =
       "あなたは" +
@@ -1741,7 +1743,8 @@ async function agentAskQuestion(asker) {
       "役割: 友人であり同僚の協同尋問官" +
       partnerName +
       "と協力し、被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
-      "二人は同じ共有仮説を持つ。質問はその共有仮説を検証・絞り込みする方向でよい。" +
+      "二人は同じ共有仮説を持つ（まだ無ければ、この先の議論で初めて立てる）。" +
+      "質問はその共有仮説を検証・絞り込みする方向でよい。" +
       "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
       "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
       "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
@@ -1764,6 +1767,7 @@ async function agentAskQuestion(asker) {
     panel.addSection("角度ヒント", angle, "meta");
 
     let lastBad = null;
+    let lastError = null;
     for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
       if (attempt > 0) {
         panel.addSection(
@@ -1779,15 +1783,17 @@ async function agentAskQuestion(asker) {
       }
       const user =
         userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
-      // Do not template-substitute mid-retry; only the final fallback path uses it.
       const streamed = await streamIntoPanel(panel, system, user, {
         agent: asker,
         temperature: attempt === 0 ? 0.55 : 0.75,
         max_tokens: 500,
-        fallbackText: null,
-        fallbackThink: null,
       });
       beatStart = streamed.beatStart;
+      if (streamed.error) {
+        lastError = streamed.error;
+        lastBad = String(streamed.error);
+        continue;
+      }
       let candidate = null;
       if (streamed.speak) {
         candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
@@ -1804,7 +1810,7 @@ async function agentAskQuestion(asker) {
       if (salvaged) {
         panel.addSection(
           "質問抽出",
-          "ノイズ付き出力から質問文を抽出して採用（テンプレート不使用）: " + salvaged,
+          "ノイズ付き出力から質問文を抽出して採用: " + salvaged,
           "meta"
         );
         question = salvaged;
@@ -1816,27 +1822,19 @@ async function agentAskQuestion(asker) {
     if (!question || isBadInvestigatorQuestion(question)) {
       const why = badQuestionReason(lastBad);
       panel.addSection(
-        "質問補正（テンプレート）",
-        "再試行後も不適（理由: " +
+        "生成失敗",
+        "再試行後も使える質問を得られず（理由: " +
           why +
-          "）→ テンプレートから別角度の質問を採用。" +
-          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
+          "）。定型文では続けないため会話を終了します。",
         "warn"
       );
-      question = fallbackQ;
-      usedTemplate = true;
-      await fakeStreamText(
-        "思考: テンプレートで代替\n発言: " + fallbackQ,
-        (_d, full) => panel.setLive(full)
-      );
+      panel.collapse();
+      endConversationAiStopped(lastError || why || "質問生成失敗");
+      return null;
     }
   }
 
-  panel.addSection(
-    usedTemplate ? "最終質問（テンプレート）" : "最終質問",
-    question,
-    "out"
-  );
+  panel.addSection("最終質問", question, "out");
   panel.collapse();
 
   const line = "「" + question + "」";
@@ -1879,7 +1877,6 @@ async function agent00Answer(question) {
     return answer;
   }
 
-  const fb = answerYesNoFallback(state.origin, question);
   const system =
     "あなたはエージェント00（被尋問者）。ORIGIN（秘密の役割）は「" +
     state.origin +
@@ -1923,9 +1920,14 @@ async function agent00Answer(question) {
     temperature: 0,
     max_tokens: 500,
     top_p: 0.5,
-    fallbackText: fb,
-    fallbackThink: "ORIGIN と常識で判定（テンプレート時は文言一致のみ）",
   });
+
+  if (streamed.error && !streamed.raw) {
+    panel.addSection("生成失敗", "エージェント00の回答を得られませんでした", "warn");
+    panel.collapse();
+    endConversationAiStopped(streamed.error);
+    return null;
+  }
 
   // Resolve ONLY for エージェント00: prefer thinking conclusion when speak
   // contradicts, and surface that decision path in the think panel.
@@ -1938,6 +1940,12 @@ async function agent00Answer(question) {
   );
   if (resolved.note) {
     panel.addSection("判定整合", resolved.note, "warn");
+  }
+  if (!resolved.answer) {
+    panel.addSection("生成失敗", resolved.note || "回答なし", "warn");
+    panel.collapse();
+    endConversationAiStopped(resolved.note || "エージェント00回答なし");
+    return null;
   }
   panel.addSection("最終判定", resolved.answer, "out");
   panel.collapse();
@@ -1962,22 +1970,15 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     agent,
     "思考過程 · " + name + " 議論 " + turnIndex + "/" + DISCUSSION_TURNS_PER_ANSWER
   );
-  const hyp = state.sharedHyp || INITIAL_SHARED_HYP;
+  const hyp = state.sharedHyp || "";
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
 
-  const fb = debateFallback({
-    answer,
-    question,
-    hyp,
-    otherHyp: hyp,
-    shared: true,
-    partnerName,
-    pollution: 0,
-    seed: state.seed,
-    round: state.round + turnIndex * 17,
-    agent,
-    history: state.history,
-  });
+  if (state.mode !== "llm") {
+    panel.addSection("error", "LLM 未ロード", "warn");
+    panel.collapse();
+    endConversationAiStopped("LLM未ロードのため議論できない");
+    return null;
+  }
 
   const system =
     "あなたは" +
@@ -1989,7 +1990,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "友人であり同僚の協同尋問官" +
     partnerName +
     "と会議室で、被尋問者エージェント00の直前の答えについて議論する。" +
-    "二人は同じ共有仮説を持つ。私的な別仮説を主張せず、共有仮説を一緒に更新・除外する。" +
+    "二人は同じ共有仮説を持つ。まだ無ければ、ここで初めて二人の共有仮説を自由に立ててよい（奇妙でも可。定型の用意された仮説は使わない）。" +
+    "私的な別仮説を主張せず、共有仮説を一緒に更新・除外する。" +
     "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
     "必須: (1) エージェント00の答え「" +
     answer +
@@ -2020,72 +2022,56 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
 
   let opinion = null;
   let beatStart = performance.now();
-  let usedTemplate = false;
+  let lastBad = null;
+  let lastError = null;
 
-  if (state.mode !== "llm") {
-    usedTemplate = true;
-    const streamed = await streamIntoPanel(panel, system, userBase, {
-      agent,
-      fallbackText: fb,
-      fallbackThink: "答えから共有仮説を整理する",
-    });
-    beatStart = streamed.beatStart;
-    opinion = fb;
-  } else {
-    let lastBad = null;
-    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
-      if (attempt > 0) {
-        panel.addSection(
-          "再試行",
-          "前回の出力が議論として不適のため LLM に再依頼 (" +
-            attempt +
-            "/" +
-            LLM_CONTENT_RETRIES +
-            ")",
-          "warn"
-        );
-        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
-      }
-      const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
-      const streamed = await streamIntoPanel(panel, system, user, {
-        agent,
-        temperature: attempt === 0 ? 0.55 : 0.75,
-        max_tokens: 500,
-        fallbackText: null,
-        fallbackThink: null,
-      });
-      beatStart = streamed.beatStart;
-      const candidate = streamed.speak
-        ? cleanJapaneseLine(streamed.speak, 160)
-        : streamed.raw
-          ? cleanJapaneseLine(streamed.raw, 160)
-          : null;
-      if (!isBadDebateOpinion(candidate)) {
-        opinion = candidate;
-        break;
-      }
-      lastBad = candidate || streamed.raw || "（空）";
-    }
-    if (isBadDebateOpinion(opinion)) {
-      const why = badDebateReason(lastBad);
+  for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+    if (attempt > 0) {
       panel.addSection(
-        "発言補正（テンプレート）",
-        "再試行後も不適（理由: " +
-          why +
-          "）→ テンプレート議論文を採用。" +
-          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
+        "再試行",
+        "前回の出力が議論として不適のため LLM に再依頼 (" +
+          attempt +
+          "/" +
+          LLM_CONTENT_RETRIES +
+          ")",
         "warn"
       );
-      opinion = fb;
-      usedTemplate = true;
-      await fakeStreamText(
-        "思考: テンプレートで代替\n発言: " + fb,
-        (_d, full) => panel.setLive(full)
-      );
+      panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
     }
+    const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent,
+      temperature: attempt === 0 ? 0.55 : 0.75,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error) {
+      lastError = streamed.error;
+      lastBad = String(streamed.error);
+      continue;
+    }
+    const candidate = streamed.speak
+      ? cleanJapaneseLine(streamed.speak, 160)
+      : streamed.raw
+        ? cleanJapaneseLine(streamed.raw, 160)
+        : null;
+    if (!isBadDebateOpinion(candidate)) {
+      opinion = candidate;
+      break;
+    }
+    lastBad = candidate || streamed.raw || "（空）";
   }
-  if (usedTemplate) {
-    panel.addSection("最終発言（テンプレート）", opinion, "out");
+
+  if (isBadDebateOpinion(opinion)) {
+    const why = badDebateReason(lastBad);
+    panel.addSection(
+      "生成失敗",
+      "再試行後も使える議論文を得られず（理由: " + why + "）。会話を終了します。",
+      "warn"
+    );
+    panel.collapse();
+    endConversationAiStopped(lastError || why || "議論生成失敗");
+    return null;
   }
 
   let newHyp = null;
@@ -2096,52 +2082,40 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     agentPromptName(partner) +
     "と共有する、エージェント00の役割についての短い仮説を1語〜短い句で。" +
     "これは二人の共有仮説（本命）になる。ORIGIN の正解は知らない。" +
+    "用意された定型仮説は使わず、自分たちが考えた内容だけでよい（奇妙でも可）。" +
     namingClarityRule() +
     structuredOutRule() +
     "発言行は仮説だけ。「代理人」禁止。";
   const hypUser =
     "現在の共有仮説: 「" +
-    hyp +
+    (hyp || "（まだない）") +
     "」\n質問: 「" +
     question +
     "」→ エージェント00「" +
     answer +
     "」\n議論: 「" +
     clip(opinion, 80) +
-    "」\n共有仮説を更新せよ（維持でもよい）。";
-  if (state.mode === "llm") {
-    const hypPanelNote = panel.addSection("共有仮説 更新中…", "…", "belief");
-    const resH = await llmChat(hypSystem, hypUser, {
-      agent,
-      temperature: 0.55,
-      max_tokens: 500,
-      onDelta: (_d, full) => {
-        hypPanelNote.textContent = full;
-      },
-      stream: true,
-    });
-    if (resH && resH.raw) {
-      const sp = splitThinkSpeak(resH.raw);
-      const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
-      if (!isBadHypothesis(candidate, question)) newHyp = candidate;
-    } else if (resH && resH.error) {
-      panel.addSection(
-        "LLM error → fallback",
-        formatLlmErrorForPanel(resH.error),
-        "warn"
-      );
-    }
+    "」\n共有仮説を更新せよ（初めて立てても、維持でもよい）。";
+  const hypPanelNote = panel.addSection("共有仮説 更新中…", "…", "belief");
+  const resH = await llmChat(hypSystem, hypUser, {
+    agent,
+    temperature: 0.55,
+    max_tokens: 500,
+    onDelta: (_d, full) => {
+      hypPanelNote.textContent = full;
+    },
+    stream: true,
+  });
+  if (resH && resH.raw) {
+    const sp = splitThinkSpeak(resH.raw);
+    const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
+    if (!isBadHypothesis(candidate, question)) newHyp = candidate;
+  } else if (resH && resH.error) {
+    panel.addSection("LLM error", formatLlmErrorForPanel(resH.error), "warn");
   }
-  if (!newHyp) {
-    newHyp = updateHypFallback({
-      hyp,
-      answer,
-      pollution: 0,
-      seed: state.seed,
-      round: state.round + turnIndex,
-    });
+  if (newHyp) {
+    setSharedHypothesis(newHyp, { keepPrevAsAlt: !isVagueSharedHyp(hyp) });
   }
-  setSharedHypothesis(newHyp, { keepPrevAsAlt: !isVagueSharedHyp(hyp) });
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
 
   state.discussTurns++;
@@ -2165,6 +2139,7 @@ async function runDiscussionPhase(asker, question, answer) {
   let lastLine = null;
   for (let i = 1; i <= DISCUSSION_TURNS_PER_ANSWER; i++) {
     lastLine = await agentDebate(speaker, question, answer, i, lastLine);
+    if (!lastLine || state.phase === "ended") return;
     speaker = partnerAgent(speaker);
   }
 }
@@ -2172,14 +2147,22 @@ async function runDiscussionPhase(asker, question, answer) {
 async function agentFormalGuess(agent) {
   setTurn(agent, "AGENT-" + agent + " が正式推測");
   const panel = createThinkPanel(agent, "思考過程 · AGENT-" + agent + " 正式推測…");
-  const hyp = state.sharedHyp || INITIAL_SHARED_HYP;
+  const hyp = state.sharedHyp || "";
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-  const fb = guessFallback({
-    hyp,
-    pollution: 0,
-    seed: state.seed,
-    round: state.round,
-  });
+
+  if (state.mode !== "llm") {
+    panel.addSection("error", "LLM 未ロード", "warn");
+    panel.collapse();
+    endConversationAiStopped("LLM未ロードのため推測できない");
+    return false;
+  }
+
+  if (!hyp || isVagueSharedHyp(hyp)) {
+    panel.addSection("error", "共有仮説がまだAIから出ていない", "warn");
+    panel.collapse();
+    endConversationAiStopped("共有仮説なしで正式推測できない");
+    return false;
+  }
 
   const system =
     "あなたは" +
@@ -2191,15 +2174,21 @@ async function agentFormalGuess(agent) {
     "発言行の形式は必ず: あなたは〇〇です。（〇〇はエージェント00の短い日本語の役割。「代理人」禁止）";
   const user =
     investigatorContext(agent) +
-    "\n共有仮説を本命として、エージェント00への正式推測を出力せよ。";
+    "\n共有仮説「" +
+    hyp +
+    "」に基づき、エージェント00への正式推測を出力せよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
     temperature: 0.45,
     max_tokens: 500,
-    fallbackText: fb,
-    fallbackThink: "共有仮説から役割を断言する",
   });
+
+  if (streamed.error && !streamed.raw) {
+    panel.collapse();
+    endConversationAiStopped(streamed.error);
+    return false;
+  }
 
   let guessLine = null;
   if (streamed.speak) {
@@ -2209,7 +2198,12 @@ async function agentFormalGuess(agent) {
     const cleaned = cleanJapaneseLine(streamed.raw, 60);
     guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
   }
-  if (!guessLine) guessLine = fb;
+  if (!guessLine) {
+    panel.addSection("生成失敗", "正式推測を抽出できない", "warn");
+    panel.collapse();
+    endConversationAiStopped("正式推測生成失敗");
+    return false;
+  }
 
   state.guessCount++;
   updateHud();
@@ -2263,10 +2257,13 @@ async function runQaRound() {
 
   const asker = state.nextAsker;
   const question = await agentAskQuestion(asker);
+  if (!question || state.phase === "ended") return;
   const answer = await agent00Answer(question);
+  if (!answer || state.phase === "ended") return;
   state.history.push({ q: question, a: answer, asker });
 
   await runDiscussionPhase(asker, question, answer);
+  if (state.phase === "ended") return;
 
   state.nextAsker = partnerAgent(asker);
   setTurn(null, "次は " + agentDisplayName(state.nextAsker) + " が質問");
@@ -2379,7 +2376,7 @@ function initWolfRoster() {
     name: agentDisplayName(id),
     alive: true,
     isHallucinator: i === hallucinatorIdx,
-    hyp: "未定",
+    hyp: "",
   }));
   state.wolfCours = 1;
   state.wolfQInCours = 0;
@@ -2448,139 +2445,74 @@ async function wolfAskQuestion(askerId) {
   const panel = createThinkPanel(askerId, "思考過程 · " + name + " が質問を作成…");
   panel.addSection("注意", "ORIGIN はプロンプトに含まれない · 発言は質問文（はい/いいえではない）", "warn");
 
-  const fallbackQ = askQuestionFallback({
-    history: state.history,
-    hyp: asker ? asker.hyp : "未定",
-    pollution: 0,
-    seed: state.seed,
-    round: state.wolfCours * 10 + state.wolfQInCours,
-    agent: askerId,
-  });
-  const angle = questionAngleHint(
-    state.seed,
-    state.wolfCours * 10 + state.wolfQInCours
-  );
-
-  let question = null;
-  let beatStart = performance.now();
-  let usedTemplate = false;
-
-  if (state.pendingInject) {
-    question = ensureQuestionMark(state.pendingInject);
-    panel.addSection("オペレーター注入", question, "out");
-    panel.setLive("注入質問を使用: " + question);
-    state.pendingInject = null;
-  } else if (state.mode !== "llm") {
-    usedTemplate = true;
-    panel.addSection("params", "TEMPLATE · fake-stream", "meta");
-    const streamed = await streamIntoPanel(panel, "", "", {
-      agent: askerId,
-      fallbackText: fallbackQ,
-      fallbackThink: "別角度で深める質問をする",
-    });
-    beatStart = streamed.beatStart;
-    question = fallbackQ;
-  } else {
-    const system =
-      "あなたは" +
-      name +
-      "。" +
-      wolfNamingClarityRule() +
-      "役割は開幕から既知。自分が誰か・何の立場かを問い直すな。" +
-      "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
-      "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
-      "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
-      "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
-      "禁止: 回答形式の説明・メタ発言を質問にすること。禁止: 「代理人」という語。スローガン・詩・ホラー禁止。" +
-      structuredOutRule() +
-      "発言行は質問文のみ（例: 夜に主な活動をしますか？／道具を使って作業しますか？）。" +
-      (asker && asker.isHallucinator ? hallucinatorAddendum() : "");
-    const userBase =
-      wolfInvestigatorContext(askerId) +
-      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。役割確認は不要・禁止。" +
-      "\n今のヒント角度: " +
-      angle +
-      "（必須ではない。自然な別角度でもよい）。" +
-      "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
-
-    panel.addSection("params", "stream · max_tokens=500 · retry≤" + LLM_CONTENT_RETRIES, "meta");
-    panel.addSection("角度ヒント", angle, "meta");
-
-    let lastBad = null;
-    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
-      if (attempt > 0) {
-        panel.addSection(
-          "再試行",
-          "前回の出力が質問として不適のため LLM に再依頼 (" +
-            attempt +
-            "/" +
-            LLM_CONTENT_RETRIES +
-            ")",
-          "warn"
-        );
-        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
-      }
-      const user =
-        userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
-      const streamed = await streamIntoPanel(panel, system, user, {
-        agent: askerId,
-        temperature: attempt === 0 ? 0.55 : 0.75,
-        max_tokens: 500,
-        fallbackText: null,
-        fallbackThink: null,
-      });
-      beatStart = streamed.beatStart;
-      let candidate = null;
-      if (streamed.speak) {
-        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
-      } else if (streamed.raw) {
-        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
-      }
-      if (candidate && !isBadInvestigatorQuestion(candidate)) {
-        question = candidate;
-        break;
-      }
-      const salvaged = salvageInvestigatorQuestion(
-        (streamed.speak || "") + "\n" + (streamed.raw || "")
-      );
-      if (salvaged) {
-        panel.addSection(
-          "質問抽出",
-          "ノイズ付き出力から質問文を抽出して採用（テンプレート不使用）: " + salvaged,
-          "meta"
-        );
-        question = salvaged;
-        break;
-      }
-      lastBad = candidate || streamed.raw || "（空）";
-    }
-
-    if (!question || isBadInvestigatorQuestion(question)) {
-      const why = badQuestionReason(lastBad);
-      panel.addSection(
-        "質問補正（テンプレート）",
-        "再試行後も不適（理由: " +
-          why +
-          "）→ テンプレートから別角度の質問を採用。" +
-          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
-        "warn"
-      );
-      question = fallbackQ;
-      usedTemplate = true;
-      await fakeStreamText(
-        "思考: テンプレートで代替\n発言: " + fallbackQ,
-        (_d, full) => panel.setLive(full)
-      );
-    }
+  if (state.mode !== "llm") {
+    panel.collapse();
+    endConversationAiStopped("LLM未ロード");
+    return null;
   }
 
-  panel.addSection(
-    usedTemplate ? "最終質問（テンプレート）" : "最終質問",
-    question,
-    "out"
-  );
-  panel.collapse();
+  const angle = questionAngleHint(state.seed, state.round + state.wolfQInCours);
+  let question = null;
+  let beatStart = performance.now();
+  let lastBad = null;
+  let lastError = null;
 
+  const system =
+    "あなたは" +
+    name +
+    "（討論者・尋問側）。" +
+    wolfNamingClarityRule() +
+    "被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
+    "あなた自身ははい／いいえで答えない。発言行は質問文のみ。「代理人」禁止。" +
+    structuredOutRule();
+  const userBase =
+    wolfInvestigatorContext(askerId) +
+    "\nタスク: エージェント00への質問文を1つ。履歴と違う内容。\nヒント角度: " +
+    angle;
+
+  panel.addSection("params", "stream · max_tokens=500 · retry≤" + LLM_CONTENT_RETRIES, "meta");
+
+  for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      panel.addSection("再試行", "LLM 再依頼 " + attempt + "/" + LLM_CONTENT_RETRIES, "warn");
+    }
+    const user = userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: askerId,
+      temperature: attempt === 0 ? 0.55 : 0.75,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error) {
+      lastError = streamed.error;
+      lastBad = String(streamed.error);
+      continue;
+    }
+    let candidate = null;
+    if (streamed.speak) candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
+    else if (streamed.raw) candidate = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+    if (candidate && !isBadInvestigatorQuestion(candidate)) {
+      question = candidate;
+      break;
+    }
+    const salvaged = salvageInvestigatorQuestion((streamed.speak || "") + "\n" + (streamed.raw || ""));
+    if (salvaged) {
+      question = salvaged;
+      break;
+    }
+    lastBad = candidate || streamed.raw || "（空）";
+  }
+
+  if (!question || isBadInvestigatorQuestion(question)) {
+    panel.addSection("生成失敗", "質問を得られず会話終了", "warn");
+    panel.collapse();
+    endConversationAiStopped(lastError || badQuestionReason(lastBad));
+    return null;
+  }
+
+  panel.addSection("最終質問", question, "out");
+  panel.collapse();
+  appendSpeech(askerId, "「" + question + "」", "a" + askerId);
   appendChatBubble("ask", "[" + name + "] → エージェント00: " + question);
   await paceAfterBeat(question, beatStart);
   return question;
@@ -2590,198 +2522,114 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
   const speaker = wolfMemberById(speakerId);
   const name = speaker ? speaker.name : agentDisplayName(speakerId);
   setTurn(speakerId, name + " が議論中 (" + turnIndex + ")");
-  const panel = createThinkPanel(
-    speakerId,
-    "思考過程 · " + name + " 議論 " + turnIndex + "/" + WOLF_DISCUSSION_TURNS_PER_ANSWER
-  );
+  const panel = createThinkPanel(speakerId, "思考過程 · " + name + " 議論");
 
-  const otherFirst = wolfAliveRoster().find((m) => m.id !== speakerId);
-  const fb = debateFallback({
-    answer,
-    question,
-    hyp: speaker ? speaker.hyp : "未定",
-    otherHyp: otherFirst ? otherFirst.hyp : "未定",
-    pollution: 0,
-    seed: state.seed,
-    round: state.wolfCours * 100 + turnIndex,
-    agent: speakerId,
-    history: state.history,
-  });
+  if (state.mode !== "llm") {
+    panel.collapse();
+    endConversationAiStopped("LLM未ロード");
+    return null;
+  }
 
   const system =
     "あなたは" +
     name +
     "。" +
     wolfNamingClarityRule() +
-    "討論者チームで、エージェント00の直前の答えについて議論する。" +
-    "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
-    "必須: (1) エージェント00の答え「" +
-    answer +
-    "」の意味 (2) 自分の仮説の更新または除外 (3) 他の討論者の発言への短い反応。" +
-    "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
-    "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
-    structuredOutRule() +
-    (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "");
+    (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
+    "エージェント00の答えについて討論する。平易な日本語。「代理人」禁止。" +
+    structuredOutRule();
   const userBase =
     wolfInvestigatorContext(speakerId) +
-    "\n直前の質問（→エージェント00）: 「" +
-    question +
-    "」\nエージェント00の答え: 「" +
-    answer +
-    "」\n" +
-    (lastSpeakerLine
-      ? "直前の発言: 「" + lastSpeakerLine + "」\nそれに反応しつつ深めて。"
-      : "議論の最初。答えから何が言えるか述べよ。") +
-    "\n議論ターン " +
-    turnIndex +
-    "/" +
-    WOLF_DISCUSSION_TURNS_PER_ANSWER +
-    "。";
-
-  let opinion = null;
-  let beatStart = performance.now();
-  let usedTemplate = false;
-
-  if (state.mode !== "llm") {
-    usedTemplate = true;
-    const streamed = await streamIntoPanel(panel, system, userBase, {
-      agent: speakerId,
-      fallbackText: fb,
-      fallbackThink: "答えから候補を整理する",
-    });
-    beatStart = streamed.beatStart;
-    opinion = fb;
-  } else {
-    let lastBad = null;
-    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
-      if (attempt > 0) {
-        panel.addSection(
-          "再試行",
-          "前回の出力が議論として不適のため LLM に再依頼 (" +
-            attempt +
-            "/" +
-            LLM_CONTENT_RETRIES +
-            ")",
-          "warn"
-        );
-        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
-      }
-      const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
-      const streamed = await streamIntoPanel(panel, system, user, {
-        agent: speakerId,
-        temperature: attempt === 0 ? 0.55 : 0.75,
-        max_tokens: 500,
-        fallbackText: null,
-        fallbackThink: null,
-      });
-      beatStart = streamed.beatStart;
-      const candidate = streamed.speak
-        ? cleanJapaneseLine(streamed.speak, 160)
-        : streamed.raw
-          ? cleanJapaneseLine(streamed.raw, 160)
-          : null;
-      if (!isBadDebateOpinion(candidate)) {
-        opinion = candidate;
-        break;
-      }
-      lastBad = candidate || streamed.raw || "（空）";
-    }
-    if (isBadDebateOpinion(opinion)) {
-      const why = badDebateReason(lastBad);
-      panel.addSection(
-        "発言補正（テンプレート）",
-        "再試行後も不適（理由: " +
-          why +
-          "）→ テンプレート議論文を採用。" +
-          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
-        "warn"
-      );
-      opinion = fb;
-      usedTemplate = true;
-      await fakeStreamText(
-        "思考: テンプレートで代替\n発言: " + fb,
-        (_d, full) => panel.setLive(full)
-      );
-    }
-  }
-  if (usedTemplate) {
-    panel.addSection("最終発言（テンプレート）", opinion, "out");
-  }
-
-  let newHyp = null;
-  const hypSystem =
-    "あなたは" +
-    name +
-    "。エージェント00の役割についての短い仮説を1語〜短い句で。" +
-    wolfNamingClarityRule() +
-    structuredOutRule() +
-    "発言行は仮説だけ。「代理人」禁止。";
-  const hypUser =
-    "旧仮説: 「" +
-    (speaker ? speaker.hyp : "未定") +
-    "」\n質問: 「" +
+    "\n質問: 「" +
     question +
     "」→ エージェント00「" +
     answer +
-    "」\n議論: 「" +
-    clip(opinion, 80) +
-    "」";
-  if (state.mode === "llm") {
-    const hypPanelNote = panel.addSection("仮説更新中…", "…", "belief");
-    const resH = await llmChat(hypSystem, hypUser, {
-      agent: speakerId,
-      temperature: 0.55,
-      max_tokens: 500,
-      onDelta: (_d, full) => {
-        hypPanelNote.textContent = full;
-      },
-      stream: true,
-    });
-    if (resH && resH.raw) {
-      const sp = splitThinkSpeak(resH.raw);
-      const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
-      if (!isBadHypothesis(candidate, question)) newHyp = candidate;
-    } else if (resH && resH.error) {
-      panel.addSection(
-        "LLM error → fallback",
-        formatLlmErrorForPanel(resH.error),
-        "warn"
-      );
+    "」\n" +
+    (lastSpeakerLine ? "直前の同僚発言: 「" + lastSpeakerLine + "」\n" : "") +
+    "議論せよ。";
+
+  let opinion = null;
+  let beatStart = performance.now();
+  let lastBad = null;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      panel.addSection("再試行", "LLM 再依頼 " + attempt + "/" + LLM_CONTENT_RETRIES, "warn");
     }
-  }
-  if (!newHyp) {
-    newHyp = updateHypFallback({
-      hyp: speaker ? speaker.hyp : "未定",
-      answer,
-      pollution: 0,
-      seed: state.seed,
-      round: state.wolfCours * 100 + turnIndex,
+    const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: speakerId,
+      temperature: attempt === 0 ? 0.55 : 0.75,
+      max_tokens: 500,
     });
+    beatStart = streamed.beatStart;
+    if (streamed.error) {
+      lastError = streamed.error;
+      continue;
+    }
+    const candidate = streamed.speak
+      ? cleanJapaneseLine(streamed.speak, 160)
+      : streamed.raw
+        ? cleanJapaneseLine(streamed.raw, 160)
+        : null;
+    if (!isBadDebateOpinion(candidate)) {
+      opinion = candidate;
+      break;
+    }
+    lastBad = candidate || streamed.raw || "（空）";
   }
-  if (speaker) speaker.hyp = newHyp;
-  panel.addSection("仮説", newHyp, "belief");
+
+  if (isBadDebateOpinion(opinion)) {
+    panel.addSection("生成失敗", "議論文なし → 会話終了", "warn");
+    panel.collapse();
+    endConversationAiStopped(lastError || badDebateReason(lastBad));
+    return null;
+  }
+
+  // Hyp update — AI only, never stock roles
+  const hypSystem =
+    "あなたは" +
+    name +
+    "。エージェント00の役割仮説を短い句で。「代理人」禁止。" +
+    structuredOutRule() +
+    "発言行は仮説だけ。";
+  const hypUser =
+    "現在の仮説: 「" +
+    (speaker ? speaker.hyp || "（まだない）" : "（まだない）") +
+    "」\n質問「" +
+    question +
+    "」→「" +
+    answer +
+    "」\n議論「" +
+    clip(opinion, 80) +
+    "」\n仮説を更新（初めてでも可）。";
+  const resH = await llmChat(hypSystem, hypUser, {
+    agent: speakerId,
+    temperature: 0.55,
+    max_tokens: 500,
+    stream: false,
+  });
+  if (resH && resH.raw && speaker) {
+    const sp = splitThinkSpeak(resH.raw);
+    const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
+    if (!isBadHypothesis(candidate, question)) speaker.hyp = candidate;
+  }
 
   panel.collapse();
+  appendSpeech(speakerId, "「" + opinion + "」", "a" + speakerId);
   await typeChatBubble(speakerId, opinion);
   await paceAfterBeat(opinion, beatStart);
-  renderWolfRoster();
   return opinion;
 }
 
 async function wolfRunDiscussionPhase(askerId, question, answer) {
-  appendChatBubble(
-    "sys",
-    "── 討論者たちの議論（この答えについて " + WOLF_DISCUSSION_TURNS_PER_ANSWER + " 発言）──"
-  );
   const alive = wolfAliveRoster();
-  if (!alive.length) return;
-  let idx = alive.findIndex((m) => m.id === askerId);
-  if (idx < 0) idx = 0;
   let lastLine = null;
-  for (let i = 1; i <= WOLF_DISCUSSION_TURNS_PER_ANSWER; i++) {
-    const speaker = alive[idx % alive.length];
-    lastLine = await wolfDiscussTurn(speaker.id, question, answer, i, lastLine);
-    idx++;
+  for (let i = 0; i < Math.min(4, alive.length); i++) {
+    const speaker = alive[i];
+    lastLine = await wolfDiscussTurn(speaker.id, question, answer, i + 1, lastLine);
+    if (!lastLine || state.phase === "ended") return;
   }
 }
 
@@ -2817,8 +2665,6 @@ async function wolfVotePhase() {
       continue;
     }
     const candidateList = candidates.map((m) => m.name).join("、");
-    const fbTarget = candidates[Math.floor(Math.random() * candidates.length)];
-    const fb = "投票: " + fbTarget.name;
 
     const system =
       "あなたは" +
@@ -2841,15 +2687,24 @@ async function wolfVotePhase() {
       agent: voter.id,
       temperature: 0.6,
       max_tokens: 500,
-      fallbackText: fb,
-      fallbackThink: "議論を振り返って怪しい相手を選ぶ",
     });
 
-    const raw = streamed.speak || streamed.raw || fb;
+    if (streamed.error && !streamed.raw) {
+      panel.collapse();
+      endConversationAiStopped(streamed.error || "投票生成失敗");
+      return;
+    }
+
+    const raw = streamed.speak || streamed.raw || "";
     let target = null;
     const m = String(raw || "").match(/討論者\s*([1-5])/);
     if (m) target = wolfMemberById("D" + m[1]);
-    if (!target || target.id === voter.id || !target.alive) target = fbTarget;
+    if (!target || target.id === voter.id || !target.alive) {
+      panel.addSection("生成失敗", "投票先を抽出できない", "warn");
+      panel.collapse();
+      endConversationAiStopped("投票先を抽出できない");
+      return;
+    }
 
     votes[target.id] = (votes[target.id] || 0) + 1;
     reasons.push(voter.name + "→" + target.name);
@@ -2898,7 +2753,12 @@ async function wolfFormalGuess() {
   if (!guesser) return false;
   setTurn(guesser.id, guesser.name + " が正式推測");
   const panel = createThinkPanel(guesser.id, "思考過程 · " + guesser.name + " 正式推測…");
-  const fb = guessFallback({ hyp: guesser.hyp, pollution: 0, seed: state.seed, round: state.wolfCours });
+
+  if (state.mode !== "llm") {
+    panel.collapse();
+    endConversationAiStopped("LLM未ロード");
+    return false;
+  }
 
   const system =
     "あなたは" +
@@ -2906,16 +2766,20 @@ async function wolfFormalGuess() {
     "。エージェント00への正式推測を行う。" +
     wolfNamingClarityRule() +
     structuredOutRule() +
-    "発言行の形式は必ず: あなたは〇〇です。（〇〇はエージェント00の短い日本語の役割。「代理人」禁止）";
+    "発言行の形式は必ず: あなたは〇〇です。（「代理人」禁止）";
   const user = wolfInvestigatorContext(guesser.id) + "\nエージェント00への正式推測を出力せよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: guesser.id,
     temperature: 0.45,
     max_tokens: 500,
-    fallbackText: fb,
-    fallbackThink: "仮説から役割を断言する",
   });
+
+  if (streamed.error && !streamed.raw) {
+    panel.collapse();
+    endConversationAiStopped(streamed.error);
+    return false;
+  }
 
   let guessLine = null;
   if (streamed.speak) {
@@ -2925,7 +2789,11 @@ async function wolfFormalGuess() {
     const cleaned = cleanJapaneseLine(streamed.raw, 60);
     guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
   }
-  if (!guessLine) guessLine = fb;
+  if (!guessLine) {
+    panel.collapse();
+    endConversationAiStopped("正式推測生成失敗");
+    return false;
+  }
 
   state.guessCount++;
   panel.addSection("推測", guessLine, "out");
@@ -2959,21 +2827,23 @@ async function wolfQaRound() {
     endGame();
     return;
   }
-  const asker = alive[(state.wolfQInCours - 1) % alive.length];
+  const asker = alive[Math.floor(Math.random() * alive.length)];
   const question = await wolfAskQuestion(asker.id);
+  if (!question || state.phase === "ended") return;
   const answer = await agent00Answer(question);
+  if (!answer || state.phase === "ended") return;
   state.history.push({ q: question, a: answer, asker: asker.id });
 
   await wolfRunDiscussionPhase(asker.id, question, answer);
-
-  renderWolfRoster();
-  updateWolfHud();
+  if (state.phase === "ended") return;
 
   if (state.wolfQInCours >= WOLF_QUESTIONS_PER_COURS) {
-    if (!state.wolfPurged) await wolfVotePhase();
-    state.wolfCours++;
+    await wolfVotePhase();
     state.wolfQInCours = 0;
+    state.wolfCours++;
   }
+  renderWolfRoster();
+  updateWolfHud();
 }
 
 async function wolfGameLoop() {
@@ -3117,14 +2987,11 @@ function applyWolfPanelLabels() {
 
 async function bootNarrative() {
   appendChatBubble("sys", "DIGITAL TATTOO — interrogation online");
-  if (state.mode === "llm") {
-    appendChatBubble("sys", "engines: " + assignmentShortLabel());
-  } else {
-    appendChatBubble(
-      "sys",
-      "engine: template fallback（AGENT-00 は文言一致のみ。カテゴリ推論には LLM を読み込んでください）"
-    );
+  if (state.mode !== "llm") {
+    appendChatBubble("sys", "LLM が必要です。ゲートでモデルを読み込んでください。");
+    return;
   }
+  appendChatBubble("sys", "engines: " + assignmentShortLabel());
   appendSpeech(
     "00",
     "待機中。オペレーターが ORIGIN を刻印してください。",
@@ -3136,15 +3003,15 @@ async function bootNarrative() {
       "sys",
       "規則: ORIGIN はエージェント00のみ。討論者5人のうち1人は秘密のハルシネーター。" +
         WOLF_QUESTIONS_PER_COURS +
-        "問ごとに追放投票。正解「あなたは〇〇です。」で勝利"
+        "問ごとに追放投票。正解「あなたは〇〇です。」で勝利。定型文の代替は無し — AI生成が止まったら会話終了。"
     );
   } else {
     appendChatBubble(
       "sys",
       "規則: ORIGIN はエージェント00（被尋問者）のみ。" +
         "エージェント01/02は開幕から友人・同僚の協同尋問官（役割確認不要）。" +
-        "共有仮説を最初から持ち、一緒に更新する。" +
-        "無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
+        "共有仮説はAIが立てたものだけ（用意された定型仮説は無し）。" +
+        "AIの生成が止まったらそこで会話終了。正解「あなたは〇〇です。」で勝利"
     );
   }
   state.phase = "imprint";
@@ -3226,7 +3093,7 @@ formEl.addEventListener("submit", (e) => {
       );
       appendChatBubble(
         "sys",
-        "共有仮説（01↔02）: 「" + INITIAL_SHARED_HYP + "」— 二人とも同じ本命から開始。ORIGIN は含めない。"
+        "共有仮説はまだ空。エージェント01/02が議論の中で初めて立てる（定型の用意なし）。"
       );
     }
     currentGameLoopTick();
@@ -3300,18 +3167,19 @@ document.addEventListener("click", (e) => {
 // ── Model gate (per-agent assignment) ────────────────────
 
 function enterFallback(reason) {
-  state.mode = "fallback";
-  setBadge("fallback");
+  state.mode = "booting";
+  setBadge("offline");
   gateMsg.textContent = reason;
-  gateFill.style.width = "100%";
+  gateFill.style.width = "0%";
   gatePct.textContent = "—";
-  gateLoad.disabled = true;
-  gateLoad.hidden = true;
+  gateLoad.disabled = false;
+  gateLoad.hidden = false;
+  gateLoad.textContent = "読み込む";
   gateHint.innerHTML =
-    "下の <strong>テンプレートで続行</strong> でゲームを開始できます。<br>" +
-    "推奨は標準 Qwen 1.5B（もともとの標準）。Pages でも HF+IndexedDB で選べます。";
+    "モデルの読み込みが必要です。定型文でのプレイはありません。<br>" +
+    "推奨は標準 Qwen 1.5B。別モデルや再読み込みを試してください。";
   gateActions.classList.add("show");
-  if (gateSkip) gateSkip.hidden = false;
+  if (gateSkip) gateSkip.hidden = true;
 }
 
 function usableTag(usable) {
@@ -3678,11 +3546,13 @@ function finishBoot() {
   bootNarrative();
 }
 
-gateSkip.addEventListener("click", () => {
-  state.mode = "fallback";
-  setBadge("fallback");
-  finishBoot();
-});
+if (gateSkip) {
+  gateSkip.hidden = true;
+  gateSkip.addEventListener("click", (e) => {
+    e.preventDefault();
+    gateMsg.textContent = "定型文での続行はありません。モデルを読み込んでください。";
+  });
+}
 
 if (gateAgentAssign) {
   gateAgentAssign.addEventListener("click", (e) => {
@@ -3744,11 +3614,11 @@ gateLoad.addEventListener("click", async () => {
         msg +
         " → 全エージェントを " +
         label +
-        " に揃えました。もう一度「読み込む」か、テンプレートで続行できます。";
+        " に揃えました。もう一度「読み込む」を試してください。";
       gateLoad.disabled = false;
       gateLoad.textContent = "読み込む";
       gateActions.classList.add("show");
-      if (gateSkip) gateSkip.hidden = false;
+      if (gateSkip) gateSkip.hidden = true;
       return;
     }
 
@@ -3774,7 +3644,7 @@ async function init() {
 
   if (!hasWebGPU()) {
     enterFallback(
-      "WebGPU が使えません。Chrome / Edge の最新版で開くか、「テンプレートで続行」を押してください。"
+      "WebGPU が使えません。Chrome / Edge の最新版で開いてください（LLM必須）。"
     );
     return;
   }
@@ -3788,7 +3658,7 @@ async function init() {
       (pages
         ? "Pages 用の 0.5B がまだありません（CI 配置待ちの可能性）。"
         : "利用可能なモデルファイルがありません。") +
-        "「テンプレートで続行」で遊べます。"
+        "モデルを読み込めない場合はこのブラウザではプレイできません。"
     );
     return;
   }

@@ -871,7 +871,7 @@ function missingReason(model, configUrl) {
   }
   return (
     "モデルデータが読めません（models/…/resolve/main/mlc-chat-config.json）。" +
-    "「テンプレートで続行」を使うか、公開者がモデルを配置してください。" +
+    "公開者がモデルを配置するか、別モデルを選んでください。" +
     pathHint
   );
 }
@@ -923,22 +923,22 @@ export function explainLoadError(err) {
       return (
         "モデル読み込みに失敗しました（Cache / ネットワーク）。" +
         "IndexedDB キャッシュを使っています。通信・容量・VRAM を確認し、" +
-        "軽量 (0.5B) や別モデルを試すか「テンプレートで続行」を使ってください。"
+        "軽量 (0.5B) や別モデルを試してください。"
       );
     }
     return (
       "モデル読み込みに失敗しました（Cache / ネットワーク）。" +
-      "通信切断・容量不足・破損ファイルの可能性があります。再読み込みするか「テンプレートで続行」を使ってください。" +
+      "通信切断・容量不足・破損ファイルの可能性があります。再読み込みしてください。" +
       "（" +
       raw +
       "）"
     );
   }
   if (err && typeof err === "object" && "code" in err && err.code === "MODEL_UNAVAILABLE") {
-    return raw + " 「テンプレートで続行」が使えます。";
+    return raw + " 別モデルを選ぶか再読み込みしてください。";
   }
   return (
-    "モデル読み込みに失敗しました。「テンプレートで続行」が使えます。（" + raw + "）"
+    "モデル読み込みに失敗しました。別モデルを選ぶか再読み込みしてください。（" + raw + "）"
   );
 }
 
@@ -1049,7 +1049,7 @@ async function probeRemoteModel(model) {
         model.hfRepo +
         "）で見つかりません。" +
         (cfg.reason || "") +
-        " 別モデルを選ぶか「テンプレートで続行」を使ってください。",
+        " 別モデルを選んでください。",
     };
   }
 
@@ -1144,7 +1144,7 @@ export async function probeModel(modelOrKey) {
       ok: false,
       model,
       reason:
-        "ローカルモデルの確認に失敗しました。「テンプレートで続行」が使えます。（" +
+        "ローカルモデルの確認に失敗しました。再読み込みしてください。（" +
         (e && e.message ? e.message : String(e)) +
         "）",
       configUrl,

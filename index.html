@@ -944,7 +944,7 @@
             推奨は標準 Qwen 1.5B（もともとの標準）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN はエージェント00のみが知る。
         </div>
         <div id="gateActions">
-            <button type="button" id="gateSkip">テンプレートで続行</button>
+            <button type="button" id="gateSkip" hidden>モデル必須</button>
         </div>
     </div>
 
@@ -985,7 +985,7 @@
                 <section id="panel01" class="agent-panel a01" aria-label="AGENT-01">
                     <div class="panel-head">
                         <span class="who">エージェント01 · 尋問</span>
-                        <span class="hyp">共有仮説: <span id="hyp01">まだ特定できていないが、実在する何か／誰か</span></span>
+                        <span class="hyp">共有仮説: <span id="hyp01">（まだAIが立てていない）</span></span>
                     </div>
                     <div class="panel-body">
                         <div class="think-slot" id="think01"></div>
@@ -1004,7 +1004,7 @@
                 <section id="panel02" class="agent-panel a02" aria-label="AGENT-02">
                     <div class="panel-head">
                         <span class="who">エージェント02 · 尋問</span>
-                        <span class="hyp">共有仮説: <span id="hyp02">まだ特定できていないが、実在する何か／誰か</span></span>
+                        <span class="hyp">共有仮説: <span id="hyp02">（まだAIが立てていない）</span></span>
                     </div>
                     <div class="panel-body">
                         <div class="think-slot" id="think02"></div>
