@@ -1543,6 +1543,15 @@ function cleanAgent00Answer(raw, origin) {
  * Prefer: clear identity override → speak → think conclusion → raw.
  * No clamp to 5-scale tokens.
  */
+/**
+ * Fixed refusal for open "what/who is your ORIGIN" asks. Returned verbatim,
+ * ignoring whatever the LLM actually produced — the model's own wording
+ * can't be trusted not to paraphrase the ORIGIN away (redactOriginLabel only
+ * catches the literal string), so a direct ask never reaches the free-form
+ * answer path at all.
+ */
+const ORIGIN_DIRECT_ASK_REFUSAL = "それは明かせない。周辺のことなら答えられる。";
+
 function resolveAgent00Answer(think, speak, raw, origin, question) {
   if (isClearOriginIdentityAsk(origin, question)) {
     const answer = answerYesNoFallback(origin, question);
@@ -1550,6 +1559,14 @@ function resolveAgent00Answer(think, speak, raw, origin, question) {
       answer,
       source: "identity",
       note: identityAnswerRationale(origin, question, answer),
+    };
+  }
+
+  if (isDirectOriginAsk(question)) {
+    return {
+      answer: ORIGIN_DIRECT_ASK_REFUSAL,
+      source: "refusal",
+      note: "ORIGIN／正体の直接開示要求のため定型拒否で応答",
     };
   }
 
@@ -1673,12 +1690,50 @@ function isAgentNameOnlyOrAboutAgentsQuestion(q) {
   return false;
 }
 
+/**
+ * Direct identity-extraction question: asks WHAT/WHO エージェント00's ORIGIN
+ * is, wholesale, with no specific attribute/category qualifier to narrow it.
+ * Distinct from isClearOriginIdentityAsk() (fallback.js), which only catches
+ * a yes/no "are you exactly <ORIGIN text>" guess — that stays a fair direct
+ * hit. This catches the open "just tell me" ask, which must never be put to
+ * エージェント00 at all (rejected here) and must never be answered even if
+ * it slips through (forced refusal in resolveAgent00Answer()).
+ */
+function isDirectOriginAsk(q) {
+  const t = String(q || "").replace(/\s+/g, "");
+  if (!t) return false;
+  // ORIGIN／オリジン／起源／正体／秘密の役割 + 何／誰／教えて／明かして 等。
+  if (
+    /(ORIGIN|オリジン|起源|正体|秘密の役割)(は|を|って)?(何|なん|だれ|誰|教えて|明かして|開示|言って)/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // 「あなたは誰／何者／何ですか」— bare identity ask, no attribute qualifier.
+  if (
+    /(あなたは|貴方は|君は|お前は)(誰|だれ|何者|なにもの|何|なん)(です|だ)?(か)?[？?]?$/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // 「役割／役職／職業／立場は何ですか」— asks to state the whole role, not an attribute of it.
+  if (/(役割|役職|職業|立場)は(何|なん)です?か/.test(t)) return true;
+  // 完全に開いた自己開示要求。
+  if (/自己紹介(して|を)|自分について(教えて|話して|語って)/.test(t)) return true;
+  return false;
+}
+
 /** Soft rule for asker prompts: one concrete question to 00 (any shape OK). */
 function freeAskRule() {
   return (
     "【必須】発言はエージェント00への具体的な質問をちょうど1つ。" +
     "はい/いいえでも、なぜ／どうして／詳しく等の自由質問でもよい。" +
-    "禁止: 準備・議論宣言・メタ説明・答え方そのものについての質問・エージェント名だけ。"
+    "禁止: 準備・議論宣言・メタ説明・答え方そのものについての質問・エージェント名だけ。" +
+    "禁止: ORIGIN・正体・役割そのものを直接尋ねる質問（『あなたは誰ですか』『正体は何ですか』" +
+    "『役割は何ですか』等）。エージェント00はこの種の質問には答えない。" +
+    "代わりに属性・行動・存在様式・状況証拠を尋ね、間接的にORIGIN空間を絞れ。"
   );
 }
 
@@ -1910,7 +1965,8 @@ function isBadInvestigatorQuestion(q) {
     isFormatLeakText(q) ||
     isPlaceholderEchoQuestion(q) ||
     isRepeatHistoryQuestion(q) ||
-    isFragmentGarbageQuestion(q)
+    isFragmentGarbageQuestion(q) ||
+    isDirectOriginAsk(q)
   );
 }
 
@@ -1931,6 +1987,7 @@ function badQuestionReason(q) {
   if (isAgentNameOnlyOrAboutAgentsQuestion(q)) {
     return "エージェント名のみ／同僚への問い（ORIGIN属性ではない）";
   }
+  if (isDirectOriginAsk(q)) return "ORIGIN／正体を直接尋ねている（禁止・間接的に絞れ）";
   if (isMetaFormatQuestion(q)) return "メタ／回答形式の指示を質問にしている";
   if (isHistoryEchoQuestion(q)) return "履歴エコー（過去の質問や答え語の混入）";
   if (isInstructionEchoText(q)) return "指示文のオウム返し";
@@ -2331,6 +2388,11 @@ async function agentAskQuestion(asker) {
           user +=
             "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
         }
+        if (lastRejectReason === "ORIGIN／正体を直接尋ねている（禁止・間接的に絞れ）") {
+          user +=
+            "\n「正体は／役割は／誰か」を直接尋ねるのは禁止。エージェント00は答えない。" +
+            "代わりに属性・行動・場所・道具・関係する人など、具体的な間接質問を1つ発明せよ。";
+        }
       }
       const streamed = await streamIntoPanel(panel, system, user, {
         agent: asker,
@@ -2417,6 +2479,8 @@ async function agent00Answer(question) {
     "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。短い断りだけ。" +
     "質問には自由に・具体的に・詳しく答えよ（短い段落でよい）。はい/いいえや5段階に縛るな。" +
     "性質・属性・行動・理由は正直に述べてよいが、ORIGINの語そのもの（秘密の役割ラベルの字面）は発言に出すな（推測ゲームのため）。" +
+    "質問が『あなたは誰／何者ですか』『正体／役割は何ですか』のように ORIGIN そのものを直接開示させようとするものなら、" +
+    "言い換え・比喩・遠回しな説明であっても中身を明かさず、「それは明かせない」とだけ短く断れ。" +
     "最初に書いた発言がそのまま採用される。「代理人」禁止。" +
     structuredOutRule();
   const user =
@@ -2426,6 +2490,7 @@ async function agent00Answer(question) {
     question +
     "」\n" +
     "これがエージェント00への具体的な質問なら、ORIGINと常識に照らして詳しく具体的に答えよ。" +
+    "ただし質問がORIGINそのものの直接開示要求なら、言い換えでも明かさず「それは明かせない」とだけ断れ。" +
     "ORIGINの字面は言うな。質問でなければ短い断りだけ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
@@ -2985,6 +3050,11 @@ async function wolfAskQuestion(askerId) {
       if (lastRejectReason === "初問定番バイアス") {
         user +=
           "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
+      }
+      if (lastRejectReason === "ORIGIN／正体を直接尋ねている（禁止・間接的に絞れ）") {
+        user +=
+          "\n「正体は／役割は／誰か」を直接尋ねるのは禁止。エージェント00は答えない。" +
+          "代わりに属性・行動・場所・道具・関係する人など、具体的な間接質問を1つ発明せよ。";
       }
     }
     const streamed = await streamIntoPanel(panel, system, user, {
