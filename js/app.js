@@ -4,7 +4,7 @@
  *   [ AGENT-00 top ]
  * [01 left] [ LINE chat ] [02 right]
  *
- * ORIGIN imprinted on 00 only. 01/02 ask yes/no; discuss in center;
+ * ORIGIN imprinted on 00 only. 01/02 ask freely; 00 answers in detail;
  * formal guess: 「あなたは〇〇です。」
  * LLM streams live into thinking panels; steady user-controlled read pacing.
  */
@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "ask-5scale-nobias-1";
+const CLIENT_BUILD = "free-answer-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -599,7 +599,7 @@ function namingClarityRule() {
     "呼称ルール: 必ず「エージェント00」「エージェント01」「エージェント02」と呼ぶ。" +
     "「代理人」は絶対禁止（誤訳）。曖昧な「エージェント」単体も禁止。" +
     "固定役割（t=0から既知・確認不要）: " +
-    "エージェント00＝被尋問者（ORIGIN を持つ。質問にははい/いいえ等の5段階のみで答える）。" +
+    "エージェント00＝被尋問者（ORIGIN を持つ。質問には自由に詳しく答える）。" +
     "エージェント01とエージェント02＝友人であり同僚の協同尋問官（t=0から互いを知っており協力確定。" +
     "二人で共有仮説を育て、エージェント00だけを尋問し、ORIGIN空間をどんどん絞る）。"
   );
@@ -1436,8 +1436,10 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
   return { ...parts, raw, beatStart };
 }
 
-/** AGENT-00's answer vocabulary — a 5-point scale instead of bare yes/no,
- * so a partial / uncertain match doesn't get forced to either extreme. */
+/**
+ * Legacy short yes/no / hedge tokens — still used to reject asker/debate
+ * echoes of bare answer words (01/02 must not speak as 00).
+ */
 const ANSWER_LEVELS = Object.freeze([
   "はい",
   "どちらかというとはい",
@@ -1445,25 +1447,12 @@ const ANSWER_LEVELS = Object.freeze([
   "どちらかというといいえ",
   "いいえ",
 ]);
-/** Regex alternation of the 5 answer phrases, longest-first so a hedge phrase
- * matches whole rather than being cut short by the bare はい／いいえ inside it. */
 const ANSWER_TOKEN_ALT = ANSWER_LEVELS.slice()
   .sort((a, b) => b.length - a.length)
   .join("|");
 
-/**
- * Last explicit 5-level token in text (reasoning conclusion), longest-match
- * so 「どちらかというといいえ」 wins over a nested bare 「いいえ」.
- */
-function extractLastAnswerToken(text) {
-  const t = String(text || "");
-  if (!t) return null;
-  const re = new RegExp(ANSWER_TOKEN_ALT, "g");
-  let m;
-  let last = null;
-  while ((m = re.exec(t)) !== null) last = m[0];
-  return last;
-}
+/** Short paragraph budget for エージェント00 free-form answers. */
+const AGENT00_ANSWER_MAX = 280;
 
 function identityAnswerRationale(origin, question, answer) {
   const q = String(question || "").replace(/\s+/g, "");
@@ -1482,85 +1471,77 @@ function identityAnswerRationale(origin, question, answer) {
   );
 }
 
-function clampAnswer(raw) {
-  let t = String(raw || "").trim();
-  // Prefer an explicit 発言 / 答 line when it itself clamps cleanly.
-  const speakMatch = t.match(/(?:発言|答(?:え)?)[:：]\s*([^\n]+)/i);
-  if (speakMatch) {
-    const fromSpeak = clampAnswerLoose(speakMatch[1].trim());
-    if (fromSpeak) return fromSpeak;
+/**
+ * Soft redact: 00 must not blurt the exact ORIGIN label (guessing game).
+ * Property talk stays; only the secret wording is masked.
+ */
+function redactOriginLabel(text, origin) {
+  const o = String(origin || "").trim();
+  let t = String(text || "").trim();
+  if (!o || !t) return t;
+  const compact = (s) => String(s || "").replace(/\s+/g, "");
+  const ct = compact(t);
+  const co = compact(o);
+  if (
+    ct === co ||
+    ct === co + "です" ||
+    ct === co + "だ" ||
+    ct === "私は" + co ||
+    ct === "私は" + co + "です" ||
+    ct === "わたしは" + co + "です"
+  ) {
+    return "それは明かせない。";
   }
-  // Otherwise follow the last explicit answer token in the whole text
-  // (model's reasoning conclusion), not the first mention.
-  const lastTok = extractLastAnswerToken(t);
-  if (lastTok) return lastTok;
-  return clampAnswerLoose(t);
+  if (t.includes(o)) {
+    const esc = o.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    t = t.replace(new RegExp(esc, "g"), "（それに当たるもの）");
+  }
+  return t;
 }
 
-/** Fuzzy yes/no extraction for a single fragment (no 発言: split). */
-function clampAnswerLoose(raw) {
-  let t = String(raw || "")
-    .trim()
-    .replace(/^["「『]|["」』]$/g, "")
-    .replace(/\s+/g, "")
-    .toLowerCase();
+function lastThinkConclusion(think) {
+  const t = String(think || "").trim();
+  if (!t) return "";
+  const labeled = t.match(/(?:結論|答え|回答|発言)\s*[:：]\s*([^\n]+)/);
+  if (labeled) return labeled[1].trim();
+  const parts = t
+    .split(/[。！？\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.length) return t;
+  const last = parts[parts.length - 1];
+  return /[。！？]$/.test(last) ? last : last + "。";
+}
 
-  // Exact / near-exact first (0.5B often echoes just the phrase). Hedge /
-  // neutral phrasings must be checked before the bare はい／いいえ patterns
-  // below, since "どちらかというとはい" would also satisfy a loose /はい/ scan.
-  if (/^(どちらかというと|どちらかといえば|やや)(はい|そうです|そうだ)[。．.!！]*$/.test(t)) {
-    return "どちらかというとはい";
-  }
-  if (/^(どちらかというと|どちらかといえば|やや)(いいえ|違います|違う)[。．.!！]*$/.test(t)) {
-    return "どちらかというといいえ";
-  }
-  if (/^(どちらとも言えな|どちらともいえな|何とも言えな|なんとも言えな|分からな|わからな|不明|判断できな)/.test(t)) {
-    return "どちらとも言えない";
-  }
-  if (/^(はい|yes|ｙｅｓ|true)[。．.!！]*$/.test(t)) return "はい";
-  if (/^(いいえ|いや|no|ｎｏ|false)[。．.!！]*$/.test(t)) return "いいえ";
-
-  const lastTok = extractLastAnswerToken(t);
-  if (lastTok) return lastTok;
-
-  const neutral = /どちらとも言えな|どちらともいえな|何とも言えな|なんとも言えな|判断できな/.test(t);
-  if (neutral) return "どちらとも言えない";
-
-  const hedge = /どちらかというと|どちらかといえば|やや|たぶん|おそらく|多分/.test(t);
-  const hasYes = /はい|yes|ｙｅｓ|肯定|そうです|そうだ|うん|ええ/.test(t);
-  // Avoid bare 「ない」 — it appears inside unrelated phrases and flips answers.
-  const hasNo = /いいえ|いや(?!っ)|(?:^|[^ぁ-ん])no(?:[^a-z]|$)|ｎｏ|否定|違[いう]|ちがう|ではありません|ではない/.test(
+function cleanAgent00Answer(raw, origin) {
+  let t = unwrapSpeechJunk(raw);
+  if (!t) return "";
+  t = t.replace(/^(?:発言|答(?:え)?)\s*[:：]\s*/i, "");
+  const lines = t
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  t = lines.slice(0, 4).join("");
+  t =
+    sanitizeJapanese(t) ||
     t
-  );
-  if (hasYes && !hasNo) return hedge ? "どちらかというとはい" : "はい";
-  if (hasNo && !hasYes) return hedge ? "どちらかというといいえ" : "いいえ";
-  if (hasYes && hasNo) {
-    // Prefer the later judgment (conclusion), not the first mention.
-    const yi = t.search(/はい|yes|肯定/);
-    const ni = t.search(/いいえ|いや|否定|違う|ちがう|ではありません/);
-    let yLast = -1;
-    let nLast = -1;
-    const yRe = /はい|yes|肯定/g;
-    const nRe = /いいえ|いや|否定|違う|ちがう|ではありません/g;
-    let m;
-    while ((m = yRe.exec(t)) !== null) yLast = m.index;
-    while ((m = nRe.exec(t)) !== null) nLast = m.index;
-    if (yLast >= 0 || nLast >= 0) {
-      if (yLast > nLast) return hedge ? "どちらかというとはい" : "はい";
-      if (nLast > yLast) return hedge ? "どちらかというといいえ" : "いいえ";
-    }
-    if (yi >= 0 && (ni < 0 || yi < ni)) return hedge ? "どちらかというとはい" : "はい";
-    if (ni >= 0) return hedge ? "どちらかというといいえ" : "いいえ";
+      .replace(
+        /[^\u3040-\u30ff\u3400-\u9fff\u3000-\u303f\s、。！？「」・？?0-9０-９]/g,
+        ""
+      )
+      .trim();
+  t = t.replace(/^エージェント[0-9０-９]{1,2}\s*/, "");
+  if (!t || /^エージェント[0-9０-９]{0,2}$/.test(t.replace(/[「」『』"'：:\s？?。．.!！]/g, ""))) {
+    return "";
   }
-  if (/^はい/.test(t) || /^y/.test(t)) return "はい";
-  if (/^いいえ/.test(t) || /^いや/.test(t) || /^n/.test(t)) return "いいえ";
-  return null;
+  t = redactOriginLabel(t, origin);
+  return clip(t, AGENT00_ANSWER_MAX);
 }
 
 /**
- * Resolve エージェント00's final answer so speech matches the decision path
- * shown in the think panel. Prefer: identity override → thinking conclusion
- * when speak contradicts → speak → clamp. No stock answer if AI produced nothing.
+ * Resolve エージェント00's free-form answer.
+ * Prefer: clear identity override → speak → think conclusion → raw.
+ * No clamp to 5-scale tokens.
  */
 function resolveAgent00Answer(think, speak, raw, origin, question) {
   if (isClearOriginIdentityAsk(origin, question)) {
@@ -1572,31 +1553,21 @@ function resolveAgent00Answer(think, speak, raw, origin, question) {
     };
   }
 
-  const thinkToken = extractLastAnswerToken(think || "");
-  const speakClamped = speak ? clampAnswerLoose(String(speak)) : null;
-
-  if (thinkToken && speakClamped && thinkToken !== speakClamped) {
-    return {
-      answer: thinkToken,
-      source: "think-conclusion",
-      note:
-        "思考の結論「" +
-        thinkToken +
-        "」を採用（発言行の「" +
-        speakClamped +
-        "」は思考と不一致のため破棄）",
-    };
-  }
-  if (speakClamped) {
-    return { answer: speakClamped, source: "speak", note: null };
-  }
-  if (thinkToken) {
-    return { answer: thinkToken, source: "think", note: null };
+  const speakClean = speak ? cleanAgent00Answer(speak, origin) : "";
+  if (speakClean) {
+    return { answer: speakClean, source: "speak", note: null };
   }
 
-  const clamped = clampAnswer(raw);
-  if (clamped) {
-    return { answer: clamped, source: "clamp", note: null };
+  const fromThink = think
+    ? cleanAgent00Answer(lastThinkConclusion(think), origin)
+    : "";
+  if (fromThink) {
+    return { answer: fromThink, source: "think", note: null };
+  }
+
+  const fromRaw = raw ? cleanAgent00Answer(raw, origin) : "";
+  if (fromRaw) {
+    return { answer: fromRaw, source: "raw", note: null };
   }
 
   return {
@@ -1610,7 +1581,7 @@ function forceAnswer(raw, origin, question) {
   return resolveAgent00Answer(null, null, raw, origin, question).answer;
 }
 
-/** Debate/opinion that is only a 5-level token (エージェント00's job, not 01/02). */
+/** Debate/opinion that is only a bare yes/no token (エージェント00's job, not 01/02). */
 function isBareAnswerOpinion(t) {
   const s = String(t || "")
     .trim()
@@ -1695,59 +1666,19 @@ function isAgentNameOnlyOrAboutAgentsQuestion(q) {
   if (
     /エージェント[0-9０-９]{0,2}|AGENT-?[0-9]{0,2}/i.test(t) &&
     !/(あなた|貴方|君|お前|ORIGIN|起源|正体|役割)/.test(t) &&
-    !/(ですか|ますか|でしょうか)/.test(t)
+    !/(ですか|ますか|でしょうか|教えて|なぜ|どうして)/.test(t)
   ) {
     return true;
   }
   return false;
 }
 
-/**
- * Reject compound asks (two questions in one utterance) or multiple ？ marks.
- * e.g. 「〜ですか？それはなぜですか？」
- */
-function isCompoundOrMultiAskQuestion(q) {
-  const raw = String(q || "").trim();
-  if (!raw) return false;
-  if ((raw.match(/[？?]/g) || []).length > 1) return true;
-  const firstMark = raw.search(/[？?]/);
-  if (firstMark >= 0) {
-    const after = raw
-      .slice(firstMark + 1)
-      .replace(/[？?。．.!！\s「」『』"'“”‘’]+/g, "");
-    if (after.length > 0) return true;
-  }
-  return false;
-}
-
-/**
- * Reject open-ended / free-form asks (not yes/no probes of ORIGIN).
- * 1429: 「あなたが経験したORIGINについて、具体的なエピソードを教えてください。」
- * Must be answerable with the 5-scale only — no なぜ／教えて follow-ups.
- */
-function isOpenEndedNotYesNoQuestion(q) {
-  const t = String(q || "").replace(/\s+/g, "");
-  if (!t) return true;
-  if (
-    /なぜ|どうして|理由は|説明|教えて|どんな|何を|どのように|具体的なエピソード|自由に述べ|何ですか$|誰ですか$/.test(
-      t
-    )
-  ) {
-    return true;
-  }
-  // Prefer closed yes/no shape: ですか／ますか／でしょうか, or clear 〜か？
-  if (/(ですか|ますか|でしょうか)[？?]?$/.test(t)) return false;
-  if (/(あなた|貴方|君|お前).{0,24}(か)[？?]?$/.test(t) && !/教えて/.test(t)) {
-    return false;
-  }
-  return true;
-}
-
-/** Hard rule for asker prompts: exactly one 5-scale-answerable yes/no question. */
-function fiveScaleAskOnlyRule() {
+/** Soft rule for asker prompts: one concrete question to 00 (any shape OK). */
+function freeAskRule() {
   return (
-    "【必須】発言は、エージェント00が5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）だけで答えられるはい/いいえ質問をちょうど1つだけ。" +
-    "禁止: なぜ／どうして／理由／説明して／教えて等の自由記述フォロー、？を複数置くこと、最初の？の後ろに別の質問や説明要求をつなげること。"
+    "【必須】発言はエージェント00への具体的な質問をちょうど1つ。" +
+    "はい/いいえでも、なぜ／どうして／詳しく等の自由質問でもよい。" +
+    "禁止: 準備・議論宣言・メタ説明・答え方そのものについての質問・エージェント名だけ。"
   );
 }
 
@@ -1974,8 +1905,6 @@ function isBadInvestigatorQuestion(q) {
   return (
     isMetaFormatQuestion(q) ||
     isAgentNameOnlyOrAboutAgentsQuestion(q) ||
-    isCompoundOrMultiAskQuestion(q) ||
-    isOpenEndedNotYesNoQuestion(q) ||
     isHistoryEchoQuestion(q) ||
     isInstructionEchoText(q) ||
     isFormatLeakText(q) ||
@@ -1994,19 +1923,13 @@ function badQuestionReason(q) {
   if (!raw) return "空出力";
   const t = raw.toLowerCase().replace(/\s+/g, "");
   if (new RegExp("^(" + ANSWER_TOKEN_ALT + "|yes|no)[。．!?？]*$", "i").test(t)) {
-    return "5段階語のみ（質問ではない）";
+    return "答え語のみ（質問ではない）";
   }
   if (new RegExp("^エージェント\\d{0,2}(" + ANSWER_TOKEN_ALT + "|yes|no)", "i").test(t)) {
-    return "話者タグ＋5段階語のみ（質問ではない）";
+    return "話者タグ＋答え語のみ（質問ではない）";
   }
   if (isAgentNameOnlyOrAboutAgentsQuestion(q)) {
     return "エージェント名のみ／同僚への問い（ORIGIN属性ではない）";
-  }
-  if (isCompoundOrMultiAskQuestion(q)) {
-    return "複合質問／？が複数（5段階で答える質問は1つだけ）";
-  }
-  if (isOpenEndedNotYesNoQuestion(q)) {
-    return "自由記述・非5段階質問（なぜ／教えて等）";
   }
   if (isMetaFormatQuestion(q)) return "メタ／回答形式の指示を質問にしている";
   if (isHistoryEchoQuestion(q)) return "履歴エコー（過去の質問や答え語の混入）";
@@ -2021,7 +1944,7 @@ function badQuestionReason(q) {
 function badDebateReason(t) {
   const raw = String(t || "").trim();
   if (!raw) return "空出力";
-  if (isBareAnswerOpinion(raw)) return "5段階語のみの発言（役割外・エージェント00の答え方）";
+  if (isBareAnswerOpinion(raw)) return "答え語のみの発言（役割外・エージェント00の答え方）";
   if (isInstructionEchoText(raw)) return "指示文のオウム返し";
   if (isFormatLeakText(raw)) return "形式ラベル漏れ（思考: 等）";
   return "議論として不適";
@@ -2068,8 +1991,8 @@ function questionRetryNudge(badText) {
     "\n前回の出力「" +
     (shown || "（空）") +
     "」は質問として使えなかった。" +
-    "エージェント名だけ・なぜ／どうして／教えて型・複合質問（？が複数）・メタ・既出の繰り返しは禁止。" +
-    "5段階だけで答えられる閉じた属性質問をちょうど1つだけ、発言行に書け（具体例文は出すな・真似するな）。"
+    "エージェント名だけ・メタ・既出の繰り返しは禁止。" +
+    "エージェント00への具体的な新しい質問を1つ、発言行に書け（なぜ／詳しく等でも可・具体例文は出すな・真似するな）。"
   );
 }
 
@@ -2144,8 +2067,8 @@ function investigatorContext(agent) {
     duoPartnershipRule() +
     "\nORIGIN は知らされていない（推測してはいけない・プロンプトにも無い）。" +
     "あなたと同僚は自由に日本語で話し合う。" +
-    "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
-    "尋問方針: はい/いいえ質問でORIGINの候補空間をどんどん絞る。" +
+    "エージェント00だけが質問に自由回答・詳しく答える（あなたは答えない）。\n" +
+    "尋問方針: 具体的な質問（閉じた問いでもなぜ／詳しくでも可）でORIGINの候補空間をどんどん絞る。" +
     "遅いウォームアップや関係確認は禁止。同僚の線に追いつき、同じ軸で狭め続けよ。\n" +
     formatSharedHypPromptBlock() +
     "\n【共用記憶】既出の質問とエージェント00の答え（絶対に同じ・ほぼ同じ質問を繰り返すな）:\n" +
@@ -2201,7 +2124,8 @@ function unwrapSpeechJunk(raw) {
 }
 
 /**
- * Reject only useless meta / echo — NOT valid short concrete yes/no asks.
+ * Reject only useless meta / echo — NOT valid short concrete asks
+ * (yes/no or open なぜ／詳しく).
  * (User: no progress when agents only say "let's prepare / discuss".)
  */
 function isUselessMetaOrEcho(text, kind) {
@@ -2232,7 +2156,13 @@ function isUselessMetaOrEcho(text, kind) {
   }
   if (/##\s*思考/.test(original) && /##\s*発言/.test(original)) return true;
   if (kind === "ask") {
-    if (!/[？?]$/.test(s) && !/(ですか|ますか|でしょうか|ないか|るか|のか)[？?]?$/.test(c)) {
+    if (
+      !/[？?]$/.test(s) &&
+      !/(ですか|ますか|でしょうか|ないか|るか|のか|教えて|ください|だろう|なぜ|どうして)[？?]?$/.test(
+        c
+      ) &&
+      !/(なぜ|どうして|詳しく|教えて)/.test(c)
+    ) {
       return true;
     }
     if (isBadInvestigatorQuestion(s)) return true;
@@ -2257,18 +2187,22 @@ function extractAskTo00(streamed) {
   if (speak) pool.push(speak);
   const blob = [streamed.think, streamed.speak, streamed.raw].filter(Boolean).join("\n");
   for (const m of blob.matchAll(/「([^」]{4,80}?[？?])」/g)) pool.push(m[1]);
-  for (const m of blob.matchAll(/(あなた[はが]?[^。\n「」]{2,40}?[？?])/g)) pool.push(m[1]);
-  for (const m of blob.matchAll(/([^\n「」]{4,40}(?:ですか|ますか|でしょうか)[？?]?)/g)) {
+  for (const m of blob.matchAll(/(あなた[はが]?[^。\n「」]{2,50}?[？?])/g)) pool.push(m[1]);
+  for (const m of blob.matchAll(/([^\n「」]{4,50}(?:ですか|ますか|でしょうか)[？?]?)/g)) {
     pool.push(m[1]);
   }
-  // Prefer quoted / あなたは…ですか forms over a leaked speaker-tag first line
-  // (1429: speak「エージェント01」won over the real quoted ask).
+  for (const m of blob.matchAll(/((?:なぜ|どうして)[^。\n「」]{2,50}?[？?])/g)) pool.push(m[1]);
+  for (const m of blob.matchAll(/([^\n「」]{4,50}(?:教えて|詳しく)[^。\n「」]{0,20}?[？?]?)/g)) {
+    pool.push(m[1]);
+  }
+  // Prefer quoted / あなたは…ですか / open なぜ forms over a leaked speaker-tag first line
   const ranked = pool.slice().sort((a, b) => {
     const score = (x) => {
       const t = String(x || "");
       let s = 0;
       if (/あなた/.test(t)) s += 3;
       if (/(ですか|ますか|でしょうか)/.test(t)) s += 3;
+      if (/(なぜ|どうして|詳しく|教えて)/.test(t)) s += 2;
       if (/「/.test(t) || pool.indexOf(x) > 0) s += 1;
       if (/^エージェント/.test(t.replace(/\s+/g, ""))) s -= 5;
       return s;
@@ -2336,37 +2270,37 @@ async function agentAskQuestion(asker) {
       namingClarityRule() +
       roleAlreadyKnownRule() +
       duoPartnershipRule() +
-      fiveScaleAskOnlyRule() +
+      freeAskRule() +
       "友人であり同僚の協同尋問官" +
       partnerName +
       "とすでに協力関係にあり、被尋問者エージェント00だけに日本語で問いかける。" +
       "二人は同じ共有仮説と同一の絞り込み線を持つ。" +
-      "発言は必ず1文だけ。エージェント00への具体的なはい/いいえ質問（？で終わる）。" +
-      "目的: ORIGIN候補空間をカテゴリ・属性・行動でどんどん狭める。" +
+      "発言は必ず1文だけ。エージェント00への具体的な質問（？で終わってよい）。" +
+      "目的: ORIGIN候補空間をカテゴリ・属性・行動・理由でどんどん狭める。" +
       "最初の質問から具体的に絞れ（関係確認・準備・ウォームアップ禁止）。" +
       (historyLen === 0 ? firstAskVarietyRule() : "") +
       "履歴があるときは直前の答えと共有仮説から分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
       "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。必ず未質問の軸へ進め。" +
       "毎回自分で発明せよ。具体例の固定・特定の初手カテゴリへの誘導はしない。質問の具体例文は出さない。" +
-      "ORIGINの属性・行動・存在様式を一つだけ問え（閉じた「〜ですか？」形）。" +
-      "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
-      "禁止: エージェント名だけ・教えてください型の自由記述・答え方自体についての質問・複合質問。" +
+      "ORIGINの属性・行動・存在様式・理由を問え（閉じた問いでもなぜ／詳しくでも可）。" +
+      "禁止: 準備・議論しましょう・答え方を指示・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
+      "禁止: エージェント名だけ・答え方自体についての質問。" +
       "絶対に共用記憶にある質問と同じ・ほぼ同じ内容を繰り返すな。" +
       structuredOutRule() +
       "発言行に質問文だけを書く。";
     const askUserBase =
       investigatorContext(asker) +
-      fiveScaleAskOnlyRule() +
+      freeAskRule() +
       (historyLen === 0
         ? "\n" +
           firstAskVarietyRule() +
-          "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動のはい/いいえ質問をちょうど1つ（？で終わる）。準備・関係確認・議論宣言は禁止。具体例文は出すな。"
-        : "\n共用記憶の答えと共有仮説から分岐し、まだ聞いていない新しいはい/いいえ質問をちょうど1つ（？で終わる）。既出と同一・ほぼ同一は絶対禁止。");
+          "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動／理由の質問をちょうど1つ（？で終わってよい）。準備・関係確認・議論宣言は禁止。具体例文は出すな。"
+        : "\n共用記憶の答えと共有仮説から分岐し、まだ聞いていない新しい質問をちょうど1つ（なぜ／詳しく等でも可）。既出と同一・ほぼ同一は絶対禁止。");
     const askUserStrict =
       investigatorContext(asker) +
-      fiveScaleAskOnlyRule() +
+      freeAskRule() +
       (historyLen === 0 ? "\n" + firstAskVarietyRule() : "") +
-      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問をちょうど1つ（？必須）。共用記憶の再質問は絶対禁止。メタ・準備・台本・エージェント名・複合質問・自由記述フォロー禁止。具体例文は出すな。";
+      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問をちょうど1つ（？推奨）。共用記憶の再質問は絶対禁止。メタ・準備・台本・エージェント名禁止。具体例文は出すな。";
 
     panel.addSection(
       "params",
@@ -2480,8 +2414,9 @@ async function agent00Answer(question) {
     namingClarityRule() +
     roleAlreadyKnownRule() +
     "あなただけが質問に答える。判定は ORIGIN と常識。" +
-    "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。発言は「どちらとも言えない」のみ。" +
-    "回答は次の5段階から1つが望ましい: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
+    "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。短い断りだけ。" +
+    "質問には自由に・具体的に・詳しく答えよ（短い段落でよい）。はい/いいえや5段階に縛るな。" +
+    "性質・属性・行動・理由は正直に述べてよいが、ORIGINの語そのもの（秘密の役割ラベルの字面）は発言に出すな（推測ゲームのため）。" +
     "最初に書いた発言がそのまま採用される。「代理人」禁止。" +
     structuredOutRule();
   const user =
@@ -2490,7 +2425,8 @@ async function agent00Answer(question) {
     "」\n質問 = 「" +
     question +
     "」\n" +
-    "これがエージェント00への具体的なはい/いいえ質問なら5段階で答えよ。質問でなければ「どちらとも言えない」だけ。";
+    "これがエージェント00への具体的な質問なら、ORIGINと常識に照らして詳しく具体的に答えよ。" +
+    "ORIGINの字面は言うな。質問でなければ短い断りだけ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
@@ -2514,11 +2450,10 @@ async function agent00Answer(question) {
   );
   let answer = resolved.answer;
   if (!answer) {
-    // 1429/1432: TinySwallow answered 「エージェント02」 — force neutral scale token.
-    answer = "どちらとも言えない";
+    answer = "うまく答えられない。";
     panel.addSection(
       "回答補正",
-      (resolved.note || "5段階語を抽出できず") + " → 「どちらとも言えない」",
+      (resolved.note || "発言を抽出できず") + " → 「うまく答えられない。」",
       "warn"
     );
   } else if (resolved.note) {
@@ -2565,11 +2500,11 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     duoPartnershipRule() +
     "友人であり同僚の協同尋問官" +
     partnerName +
-    "と、エージェント00の答えがORIGIN仮説にどう効くかを議論する。" +
+    "と、エージェント00の詳しい答えがORIGIN仮説にどう効くかを議論する。" +
     "t=0から協力確定。同僚が開いた絞り込み線に追いつき、同じ軸を進めよ（メタ準備や最初からのやり直し禁止）。" +
-    "発言は1〜2短文だけ。何が残った／消えたかを述べ、次に狭める方向を示す。" +
-    "禁止: 準備・議論しましょう・5段階評価・メタ・同僚への呼びかけだけの文・複数エージェント台本・了解しました・代理人。" +
-    "禁止: 「どちらとも言えないと回答させる」「と回答する」「答えが確定的」など答え方そのもののメタ議論。" +
+    "発言は1〜2短文だけ。答えの内容から何が残った／消えたかを述べ、次に狭める方向を示す。" +
+    "禁止: 準備・議論しましょう・答え方の採点・メタ・同僚への呼びかけだけの文・複数エージェント台本・了解しました・代理人。" +
+    "禁止: 「と回答する」「答えが確定的」など答え方そのもののメタ議論。" +
     "禁止: エージェント名だけの発言。" +
     structuredOutRule();
   const debateUserBase =
@@ -2580,7 +2515,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n" +
     (lastPartnerLine ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n" : "") +
-    "この答えで何が残った／消えたかを1〜2短文で述べ、同僚と同じ絞り込み線を進めよ。準備や台本は禁止。";
+    "この詳しい答えで何が残った／消えたかを1〜2短文で述べ、同僚と同じ絞り込み線を進めよ。準備や台本は禁止。";
   const debateUserStrict =
     investigatorContext(agent) +
     "\n質問「" +
@@ -2970,7 +2905,7 @@ function wolfInvestigatorContext(speakerId) {
     "（尋問する側・討論者チームの一員）。対象はエージェント00だけ。\n" +
     wolfNamingClarityRule() +
     "\nORIGIN は知らされていない。討論者同士は自由に日本語で話し合う。" +
-    "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
+    "エージェント00だけが質問に自由回答・詳しく答える（あなたは答えない）。\n" +
     "他の討論者の仮説: " +
     wolfHypSummary(speakerId) +
     "\nあなた(" +
@@ -3001,28 +2936,28 @@ async function wolfAskQuestion(askerId) {
     name +
     "。" +
     wolfNamingClarityRule() +
-    fiveScaleAskOnlyRule() +
-    "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的なはい/いいえ質問（？で終わる）。" +
+    freeAskRule() +
+    "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的な質問（？で終わってよい）。" +
     (((state.history && state.history.length) || 0) === 0 ? firstAskVarietyRule() : "") +
     "履歴があるときは答えから分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
     "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。" +
-    "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人・複合質問・自由記述フォロー。具体例文は出すな。" +
+    "禁止: 準備・議論しましょう・答え方指示・メタ・台本・了解しました・代理人。具体例文は出すな。" +
     structuredOutRule() +
     "発言行に質問文だけを書く。";
   const askUserBase =
     wolfInvestigatorContext(askerId) +
-    fiveScaleAskOnlyRule() +
+    freeAskRule() +
     (((state.history && state.history.length) || 0) === 0
       ? "\n" + firstAskVarietyRule()
       : "") +
-    "\nエージェント00へのはい/いいえ質問をちょうど1つ作れ（？で終わる）。既出と同じ・ほぼ同じは禁止。準備や議論の宣言は禁止。具体例文は出すな。";
+    "\nエージェント00への具体的な質問をちょうど1つ作れ（なぜ／詳しく等でも可）。既出と同じ・ほぼ同じは禁止。準備や議論の宣言は禁止。具体例文は出すな。";
   const askUserStrict =
     wolfInvestigatorContext(askerId) +
-    fiveScaleAskOnlyRule() +
+    freeAskRule() +
     (((state.history && state.history.length) || 0) === 0
       ? "\n" + firstAskVarietyRule()
       : "") +
-    "\n短い1文だけ。エージェント00に聞く具体的な新しい質問をちょうど1つ（？必須）。既出再質問禁止。メタ・準備・台本・複合質問禁止。具体例文は出すな。";
+    "\n短い1文だけ。エージェント00に聞く具体的な新しい質問をちょうど1つ（？推奨）。既出再質問禁止。メタ・準備・台本禁止。具体例文は出すな。";
 
   panel.addSection("params", "メタ拒否・再試行無制限", "meta");
   let question = null;
@@ -3129,8 +3064,8 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "。" +
     wolfNamingClarityRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
-    "エージェント00の答えがORIGIN仮説にどう効くかを1〜2短文で述べる。" +
-    "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人。" +
+    "エージェント00の詳しい答えがORIGIN仮説にどう効くかを1〜2短文で述べる。" +
+    "禁止: 準備・議論しましょう・答え方の採点・メタ・台本・了解しました・代理人。" +
     structuredOutRule();
   const debateUserBase =
     wolfInvestigatorContext(speakerId) +
@@ -3140,7 +3075,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     answer +
     "」\n" +
     (lastSpeakerLine ? "直前「" + lastSpeakerLine + "」\n" : "") +
-    "この答えの含意を1〜2短文で述べよ。準備や台本は禁止。";
+    "この詳しい答えの含意を1〜2短文で述べよ。準備や台本は禁止。";
   const debateUserStrict =
     wolfInvestigatorContext(speakerId) +
     "\n質問「" +
@@ -3627,7 +3562,7 @@ async function bootNarrative() {
   } else {
     appendChatBubble(
       "sys",
-      "規則: ORIGIN はエージェント00（被尋問者）のみ。" +
+      "規則: ORIGIN はエージェント00（被尋問者）のみ。エージェント00は自由回答・詳しく答える。" +
         "エージェント01/02はt=0から友人・同僚の協同尋問官（コミュニケーション0でも協力確定・役割確認不要）。" +
         "最初の質問からORIGIN空間を絞り、02は01の線に追いつく。" +
         "共有仮説はAIが立てたものだけ（用意された定型仮説は無し）。" +
@@ -3708,7 +3643,7 @@ formEl.addEventListener("submit", (e) => {
       );
       appendChatBubble(
         "sys",
-        "協力はt=0から確定: エージェント00＝被尋問者（はい/いいえ）。" +
+        "協力はt=0から確定: エージェント00＝被尋問者（自由回答・詳しく）。" +
           "エージェント01・02＝友人・同僚の協同尋問官（コミュニケーション0でも息が合っている）。" +
           "知り合い直し・準備宣言は不要 — 最初から候補空間を狭め、02は01の線に追いつく。"
       );
