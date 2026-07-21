@@ -1,12 +1,9 @@
 /**
- * DIGITAL TATTOO — interrogation game (3-zone layout)
+ * DIGITAL TATTOO — interrogation game
  *
- *   [ AGENT-00 top ]
- * [01 left] [ LINE chat ] [02 right]
- *
- * ORIGIN imprinted on 00 only. 01/02 ask freely; 00 answers in detail;
- * formal guess: 「あなたは〇〇です。」
- * LLM streams live into thinking panels; steady user-controlled read pacing.
+ * Unified terminal console for thoughts / speech / process.
+ * Dual memory: interrogator shared (01/02) + subject (00).
+ * ORIGIN imprinted on 00 only. Formal guess: 「あなたは〇〇です。」
  */
 
 import {
@@ -41,11 +38,18 @@ import {
   createAgentLlmRouter,
   unloadAllEngines,
   isLlmDeadError,
+  estimateTokens,
   PAGES_MODEL_KEY,
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "floral-start-1";
+const CLIENT_BUILD = "terminal-think-1";
+
+const THINK_SPINNER_SRC =
+  ((typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.BASE_URL) ||
+    "./") + "think-spinner.png";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -108,31 +112,36 @@ const hyp01El = document.getElementById("hyp01");
 const hyp02El = document.getElementById("hyp02");
 const phaseLabelEl = document.getElementById("phaseLabel");
 const chatLog = document.getElementById("chatLog");
+const terminalConsole = document.getElementById("terminalConsole");
 const sharedMemoryEl = document.getElementById("sharedMemory");
 const sharedMemoryHead = document.getElementById("sharedMemoryHead");
 const sharedMemoryList = document.getElementById("sharedMemoryList");
 const sharedMemoryCount = document.getElementById("sharedMemoryCount");
+const subjectMemoryEl = document.getElementById("subjectMemory");
+const subjectMemoryHead = document.getElementById("subjectMemoryHead");
+const subjectMemoryList = document.getElementById("subjectMemoryList");
+const subjectMemoryCount = document.getElementById("subjectMemoryCount");
+const wolfRosterEl = document.getElementById("wolfRoster");
 const boardEl = document.getElementById("board");
-const btnThinkToggle = document.getElementById("btnThinkToggle");
 const btnSend = document.getElementById("btnSend");
 const gateAdvancedToggle = document.getElementById("gateAdvancedToggle");
 const gateAdvanced = document.getElementById("gateAdvanced");
 const panel00 = document.getElementById("panel00");
 const panel01 = document.getElementById("panel01");
 const panel02 = document.getElementById("panel02");
+/** Think blocks append to the unified terminal; legacy slots kept as fallback hosts. */
 const thinkSlots = {
-  "00": document.getElementById("think00"),
-  "01": document.getElementById("think01"),
-  "02": document.getElementById("think02"),
+  "00": terminalConsole || document.getElementById("think00"),
+  "01": terminalConsole || document.getElementById("think01"),
+  "02": terminalConsole || document.getElementById("think02"),
 };
-// 人狼モード: 討論者5人ぶんの think panel は panel01 の think-slot 1箇所へ集約。
 for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
   thinkSlots["D" + i] = thinkSlots["01"];
 }
 const speechSlots = {
-  "00": document.getElementById("speech00"),
-  "01": document.getElementById("speech01"),
-  "02": document.getElementById("speech02"),
+  "00": terminalConsole || document.getElementById("speech00"),
+  "01": terminalConsole || document.getElementById("speech01"),
+  "02": terminalConsole || document.getElementById("speech02"),
 };
 const btnInject = document.getElementById("btnInject");
 const btnGuess = document.getElementById("btnGuess");
@@ -160,6 +169,11 @@ const state = {
    * Shape: { q, a, asker, round, ts }[]
    */
   history: [],
+  /**
+   * 対象者側の記憶 (00's acknowledged Q→A). No ORIGIN text — only what was asked/answered.
+   * Shape: { q, a, round, ts }[]
+   */
+  subjectMemory: [],
   /** Normalized question stems remembered as soon as a question is spoken. */
   askedStems: [],
   /** Duo: shared hyp — empty until AI invents one (no prepared starter). */
@@ -241,6 +255,7 @@ function logSession(entry) {
 
 function clearSessionLog() {
   sessionLog.length = 0;
+  if (terminalConsole) terminalConsole.innerHTML = "";
   syncDownloadUi();
 }
 
@@ -443,6 +458,7 @@ function updateHud() {
     btnGuess.disabled = state.phase !== "playing" || !canStartGuessRound();
   }
   renderSharedMemory();
+  renderSubjectMemory();
 }
 
 /** 共用記憶 UI — always-visible Q→A list for エージェント01/02. */
@@ -452,7 +468,7 @@ function renderSharedMemory() {
   sharedMemoryCount.textContent = rows.length + "件";
   if (!rows.length) {
     sharedMemoryList.innerHTML =
-      '<div class="mem-empty">まだ質問なし — ここにあとで Q→A が残ります</div>';
+      '<div class="mem-empty">まだ質問なし — 01/02 が共有する Q→A がここに残ります</div>';
     return;
   }
   sharedMemoryList.innerHTML = rows
@@ -480,6 +496,40 @@ function renderSharedMemory() {
   sharedMemoryList.scrollTop = sharedMemoryList.scrollHeight;
 }
 
+/** 対象者側の記憶 — Q→A as acknowledged by 00 (no ORIGIN). */
+function renderSubjectMemory() {
+  if (!subjectMemoryList || !subjectMemoryCount) return;
+  const rows = state.subjectMemory || [];
+  subjectMemoryCount.textContent = rows.length + "件";
+  if (!rows.length) {
+    subjectMemoryList.innerHTML =
+      '<div class="mem-empty">まだ応答なし — 00 が認識した Q→A がここに残ります</div>';
+    return;
+  }
+  subjectMemoryList.innerHTML = rows
+    .map((h, i) => {
+      const round = h.round != null ? "R" + h.round : "";
+      return (
+        '<div class="mem-row">' +
+        '<span class="mem-idx">' +
+        (i + 1) +
+        "</span>" +
+        '<div class="mem-q">聞かれた: 「' +
+        escapeHtmlLite(h.q) +
+        "」</div>" +
+        '<div class="mem-a">答えた: 「' +
+        escapeHtmlLite(h.a) +
+        "」</div>" +
+        '<div class="mem-meta">' +
+        escapeHtmlLite([round, "対象者の認識"].filter(Boolean).join(" · ")) +
+        "</div>" +
+        "</div>"
+      );
+    })
+    .join("");
+  subjectMemoryList.scrollTop = subjectMemoryList.scrollHeight;
+}
+
 function escapeHtmlLite(s) {
   return String(s || "")
     .replace(/&/g, "&amp;")
@@ -500,7 +550,16 @@ function recordSharedMemory(question, answer, asker) {
   if (!entry.q) return;
   state.history.push(entry);
   rememberAskedStem(entry.q);
+  // Subject memory: same Q→A from 00's perspective (never include ORIGIN).
+  if (!Array.isArray(state.subjectMemory)) state.subjectMemory = [];
+  state.subjectMemory.push({
+    q: entry.q,
+    a: entry.a,
+    round: entry.round,
+    ts: entry.ts,
+  });
   renderSharedMemory();
+  renderSubjectMemory();
 }
 
 /** Remember stem as soon as a question is spoken (blocks re-ask before answer lands). */
@@ -514,12 +573,19 @@ function rememberAskedStem(q) {
 function clearSharedMemory() {
   state.history = [];
   state.askedStems = [];
+  state.subjectMemory = [];
   renderSharedMemory();
+  renderSubjectMemory();
 }
 
 if (sharedMemoryHead && sharedMemoryEl) {
   sharedMemoryHead.addEventListener("click", () => {
     sharedMemoryEl.classList.toggle("collapsed");
+  });
+}
+if (subjectMemoryHead && subjectMemoryEl) {
+  subjectMemoryHead.addEventListener("click", () => {
+    subjectMemoryEl.classList.toggle("collapsed");
   });
 }
 
@@ -1007,44 +1073,135 @@ function showWarn(msg) {
   showWarn._t = setTimeout(() => warnEl.classList.remove("show"), 1600);
 }
 
-// ── DOM: speech / chat / think ───────────────────────────
+// ── DOM: unified terminal console ────────────────────────
+
+function termClock() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    .map((n) => String(n).padStart(2, "0"))
+    .join(":");
+}
+
+function agentTermClass(agent) {
+  if (!agent) return "asys";
+  if (agent === "00" || agent === "01" || agent === "02") return "a" + agent;
+  if (/^D[1-5]$/.test(agent)) return "a" + agent;
+  if (agent === "GM") return "aGM";
+  return "asys";
+}
+
+function scrollTerminal() {
+  scrollEl(terminalConsole || chatLog);
+}
+
+/**
+ * Append a chronological terminal line.
+ * @param {{
+ *   agent?: string,
+ *   kind?: "speak"|"think"|"process"|"sys"|"warn"|"win"|"lose"|"ask",
+ *   text?: string,
+ *   tokens?: number|null,
+ *   extraCls?: string,
+ *   bodyEl?: HTMLElement,
+ * }} opts
+ */
+function appendTerminalLine(opts = {}) {
+  const host = terminalConsole || chatLog;
+  if (!host) return null;
+  const kind = opts.kind || "sys";
+  const row = document.createElement("div");
+  row.className =
+    "term-line term-" +
+    kind +
+    (opts.extraCls ? " " + opts.extraCls : "");
+
+  const time = document.createElement("span");
+  time.className = "term-time";
+  time.textContent = termClock();
+  row.appendChild(time);
+
+  const agent = opts.agent || "";
+  if (agent && agent !== "sys") {
+    const who = document.createElement("span");
+    who.className = "term-agent " + agentTermClass(agent);
+    who.textContent = "[" + agentUiLabel(agent) + "]";
+    row.appendChild(who);
+  }
+
+  const kindLabel =
+    kind === "speak"
+      ? "【発言】"
+      : kind === "think"
+        ? "【思考】"
+        : kind === "process"
+          ? "【過程】"
+          : kind === "ask"
+            ? "【質問】"
+            : kind === "warn"
+              ? "【警告】"
+              : kind === "win"
+                ? "【正解】"
+                : kind === "lose"
+                  ? "【不正解】"
+                  : "【システム】";
+  const kindEl = document.createElement("span");
+  kindEl.className = "term-kind";
+  kindEl.textContent = kindLabel;
+  row.appendChild(kindEl);
+
+  if (opts.tokens != null) {
+    const tok = document.createElement("span");
+    tok.className = "term-tok";
+    tok.textContent = "[tok:" + opts.tokens + "]";
+    row.appendChild(tok);
+  }
+
+  if (opts.bodyEl) {
+    row.appendChild(opts.bodyEl);
+  } else {
+    row.appendChild(document.createTextNode(String(opts.text || "")));
+  }
+
+  host.appendChild(row);
+  scrollTerminal();
+  return row;
+}
 
 function appendSpeech(agent, text, cls) {
-  const slot = speechSlots[agent];
-  if (!slot) return;
-  const div = document.createElement("div");
-  div.className = "line " + (cls || "a" + agent);
-  const tag = document.createElement("span");
-  tag.className = "agent-tag";
-  tag.textContent = "[" + agentUiLabel(agent) + "]";
-  div.appendChild(tag);
-  div.appendChild(document.createTextNode(" " + text));
-  slot.appendChild(div);
-  scrollEl(slot);
+  const extra =
+    (cls || "") +
+    (String(cls || "").includes("answer-big") ? "" : "");
+  const row = appendTerminalLine({
+    agent,
+    kind: "speak",
+    text: String(text || ""),
+    extraCls: extra,
+  });
   logSession({ kind: "speech", agent, text: String(text || "") });
-  return div;
+  return row;
 }
 
 function appendChatBubble(kind, text, extraCls) {
-  const div = document.createElement("div");
-  div.className = "bubble b" + kind + (extraCls ? " " + extraCls : "");
-  if (kind === "01" || kind === "02") {
-    const who = document.createElement("span");
-    who.className = "b-who";
-    who.textContent = "[" + agentUiLabel(kind) + "]";
-    div.appendChild(who);
-    div.appendChild(document.createTextNode(text));
-  } else {
-    div.textContent = text;
-  }
-  chatLog.appendChild(div);
-  scrollEl(chatLog);
+  const isAgent = kind === "01" || kind === "02" || kind === "00" || /^D[1-5]$/.test(kind);
+  let termKind = "sys";
+  if (extraCls && /\bwin\b|bwin/.test(extraCls)) termKind = "win";
+  else if (extraCls && /\blose\b|blose/.test(extraCls)) termKind = "lose";
+  else if (kind === "ask" || (extraCls && /bask/.test(extraCls))) termKind = "ask";
+  else if (isAgent) termKind = "speak";
+  else if (extraCls && /warn/.test(extraCls)) termKind = "warn";
+
+  const row = appendTerminalLine({
+    agent: isAgent ? kind : kind === "ask" ? "" : "",
+    kind: termKind,
+    text: String(text || ""),
+    extraCls: extraCls || "",
+  });
   logSession({
     kind: "chat",
-    agent: kind === "01" || kind === "02" || kind === "00" ? kind : "",
+    agent: isAgent ? kind : "",
     text: String(text || ""),
   });
-  return div;
+  return row;
 }
 
 function typeInto(el, text, speedMs) {
@@ -1061,12 +1218,12 @@ function typeInto(el, text, speedMs) {
       if (i >= chars.length) {
         caret.remove();
         state.typing = false;
-        scrollEl(el.parentElement);
+        scrollTerminal();
         resolve();
         return;
       }
       el.insertBefore(document.createTextNode(chars[i++]), caret);
-      scrollEl(el.parentElement || chatLog);
+      scrollTerminal();
       setTimeout(step, Math.max(0, delay));
     }
     if (delay <= 0) {
@@ -1081,19 +1238,16 @@ function typeInto(el, text, speedMs) {
 }
 
 async function typeChatBubble(agent, text, extraCls) {
-  const div = document.createElement("div");
-  div.className = "bubble b" + agent + (extraCls ? " " + extraCls : "");
-  const who = document.createElement("span");
-  who.className = "b-who";
-  who.textContent = "[" + agentUiLabel(agent) + "]";
-  div.appendChild(who);
   const body = document.createElement("span");
-  div.appendChild(body);
-  chatLog.appendChild(div);
-  scrollEl(chatLog);
+  body.className = "term-type-body";
+  appendTerminalLine({
+    agent,
+    kind: "speak",
+    bodyEl: body,
+    extraCls: extraCls || "",
+  });
   await typeInto(body, text, getPace().typeMs);
-  // Session log: appendSpeech already records the utterance — skip duplicate chat line.
-  return div;
+  return body;
 }
 
 async function waitWhilePaused() {
@@ -1101,22 +1255,11 @@ async function waitWhilePaused() {
 }
 
 /**
- * Optional courtesy pause while a finished think panel is expanded.
- * MUST be capped — previously this awaited forever, so opening a panel
- * (especially to read red LLM errors) at slow/"low frequency" pace froze
- * the whole interrogation: agents stopped talking and felt unusable.
+ * Brief courtesy pause only — terminal never collapses think content,
+ * so we no longer wait on open panels.
  */
 async function waitWhileUserReadingThink() {
-  const maxMs = 2200;
-  const deadline = performance.now() + maxMs;
-  while (state.phase === "playing" && performance.now() < deadline) {
-    await waitWhilePaused();
-    const open = document.querySelector(
-      ".think-wrap.think-done .think-panel[open]"
-    );
-    if (!open) break;
-    await sleep(200);
-  }
+  await waitWhilePaused();
 }
 
 async function paceAfterBeat(displayText, beatStartedAt) {
@@ -1162,27 +1305,62 @@ function splitThinkSpeak(raw) {
   };
 }
 
+/**
+ * Create an always-visible think block in the unified terminal.
+ * API mirrors the old panel: addSection / setLive / setStatus / collapse.
+ */
 function createThinkPanel(agent, title) {
-  const host = thinkSlots[agent] || thinkSlots["00"];
+  const host = terminalConsole || thinkSlots[agent] || thinkSlots["00"];
   const wrap = document.createElement("div");
   wrap.className = "think-wrap";
 
-  const details = document.createElement("details");
-  details.className = "think-panel";
-  details.open = false;
+  const header = document.createElement("div");
+  header.className = "term-line term-process term-think-header";
 
-  const summary = document.createElement("summary");
-  summary.className = "think-summary";
-  summary.textContent = title || "AIの思考を見る（生成中…）";
+  const spinner = document.createElement("img");
+  spinner.className = "think-spinner spinning";
+  spinner.src = THINK_SPINNER_SRC;
+  spinner.alt = "";
+  spinner.width = 16;
+  spinner.height = 16;
+  header.appendChild(spinner);
 
-  const body = document.createElement("div");
-  body.className = "think-body";
+  const time = document.createElement("span");
+  time.className = "term-time";
+  time.textContent = termClock();
+  header.appendChild(time);
 
-  details.appendChild(summary);
-  details.appendChild(body);
-  wrap.appendChild(details);
-  host.appendChild(wrap);
-  scrollEl(host);
+  const who = document.createElement("span");
+  who.className = "term-agent " + agentTermClass(agent);
+  who.textContent = "[" + agentUiLabel(agent) + "]";
+  header.appendChild(who);
+
+  const kindEl = document.createElement("span");
+  kindEl.className = "term-kind";
+  kindEl.textContent = "【過程】";
+  header.appendChild(kindEl);
+
+  const tokEl = document.createElement("span");
+  tokEl.className = "term-tok";
+  tokEl.textContent = "[tok:0]";
+  tokEl.title = "推定トークン（ストリーム文字から概算、またはエンジン usage）";
+  header.appendChild(tokEl);
+
+  const titleEl = document.createElement("span");
+  titleEl.className = "term-think-title";
+  titleEl.textContent = title || "思考過程（生成中…）";
+  header.appendChild(titleEl);
+
+  const livePre = document.createElement("pre");
+  livePre.className = "term-live";
+  livePre.textContent = "…";
+
+  wrap.appendChild(header);
+  wrap.appendChild(livePre);
+  if (host) {
+    host.appendChild(wrap);
+    scrollTerminal();
+  }
 
   logSession({
     kind: "think-start",
@@ -1191,45 +1369,39 @@ function createThinkPanel(agent, title) {
     text: "",
   });
 
-  const liveSec = document.createElement("div");
-  liveSec.className = "think-sec think-raw";
-  const liveLab = document.createElement("div");
-  liveLab.className = "think-lab";
-  liveLab.textContent = "ライブ生成";
-  const livePre = document.createElement("pre");
-  livePre.className = "think-pre";
-  livePre.textContent = "…";
-  liveSec.appendChild(liveLab);
-  liveSec.appendChild(livePre);
-  body.appendChild(liveSec);
+  function setTokenCount(n) {
+    const v = Math.max(0, Number(n) || 0);
+    tokEl.textContent = "[tok:" + v + "]";
+  }
 
   function addSection(label, text, kind) {
     const sec = document.createElement("div");
-    sec.className = "think-sec" + (kind ? " think-" + kind : "");
+    sec.className = "term-sec" + (kind ? " think-" + kind : "");
     const lab = document.createElement("div");
-    lab.className = "think-lab";
-    lab.textContent = label;
+    lab.className = "term-sec-lab";
+    lab.textContent = "· " + label;
     const pre = document.createElement("pre");
-    pre.className = "think-pre";
+    pre.className = "term-sec-pre";
     const bodyText = text == null || text === "" ? "（なし）" : String(text);
     pre.textContent = bodyText;
     sec.appendChild(lab);
     sec.appendChild(pre);
-    body.insertBefore(sec, liveSec);
-    scrollEl(body);
-    scrollEl(host);
+    wrap.appendChild(sec);
+    scrollTerminal();
     logSession({ kind: "think", agent, label: String(label || ""), text: bodyText });
     return pre;
   }
 
-  function setLive(text) {
-    livePre.textContent = text == null || text === "" ? "…" : String(text);
-    body.scrollTop = body.scrollHeight;
-    scrollEl(host);
+  function setLive(text, meta) {
+    const body = text == null || text === "" ? "…" : String(text);
+    livePre.textContent = body;
+    if (meta && meta.tokens != null) setTokenCount(meta.tokens);
+    else if (body && body !== "…") setTokenCount(estimateTokens(body));
+    scrollTerminal();
   }
 
   function setStatus(msg) {
-    summary.textContent = msg;
+    titleEl.textContent = msg || titleEl.textContent;
   }
 
   function collapse() {
@@ -1242,13 +1414,34 @@ function createThinkPanel(agent, title) {
         text: live,
       });
     }
-    details.open = false;
-    summary.textContent = "AIの思考を見る · " + agentUiLabel(agent);
+    spinner.classList.remove("spinning");
+    const done = document.createElement("span");
+    done.className = "term-done-mark";
+    done.textContent = "✓";
+    done.title = "生成完了";
+    spinner.replaceWith(done);
     wrap.classList.add("think-done");
-    liveLab.textContent = "生成ログ（完了）";
+    titleEl.textContent =
+      (title || "思考過程") + " · 完了 · " + agentUiLabel(agent);
+    // Content stays fully visible — never collapse/hide.
   }
 
-  return { wrap, details, body, addSection, setLive, setStatus, collapse, host };
+  // Compatibility shims for older callers that touch details/summary/body.
+  const details = { open: true };
+  const summary = titleEl;
+  const body = wrap;
+
+  return {
+    wrap,
+    details,
+    body,
+    addSection,
+    setLive,
+    setStatus,
+    setTokenCount,
+    collapse,
+    host,
+  };
 }
 
 async function fakeStreamText(text, onDelta) {
@@ -1256,7 +1449,7 @@ async function fakeStreamText(text, onDelta) {
   let full = "";
   for (const ch of Array.from(String(text || ""))) {
     full += ch;
-    onDelta(ch, full);
+    onDelta(ch, full, { tokens: estimateTokens(full) });
     await sleep(1000 / rate);
   }
   return full;
@@ -1398,16 +1591,15 @@ async function healDeadEngines(panel, cause) {
 async function streamIntoPanel(panel, system, user, opts = {}) {
   const beatStart = performance.now();
   let raw = "";
-  const onDelta = (_d, full) => {
+  const onDelta = (_d, full, meta) => {
     raw = full;
     const parts = splitThinkSpeak(full);
-    if (parts.structured) {
-      panel.setLive(
-        (parts.think ? parts.think + "\n\n" : "") + "── 発言 ──\n" + (parts.speak || "…")
-      );
-    } else {
-      panel.setLive(full);
-    }
+    const liveText = parts.structured
+      ? (parts.think ? parts.think + "\n\n" : "") +
+        "── 発言 ──\n" +
+        (parts.speak || "…")
+      : full;
+    panel.setLive(liveText, meta);
   };
 
   if (state.mode !== "llm" || (!llmRouter && !llmQueue)) {
@@ -1418,7 +1610,7 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
   if (opts.agent) {
     panel.addSection("engine", engineMetaForAgent(opts.agent), "meta");
   }
-  panel.setStatus("AIの思考を見る（生成中…）");
+  panel.setStatus("【過程】生成中… " + (opts.agent ? agentUiLabel(opts.agent) : ""));
   const res = await llmChat(system, user, { ...opts, onDelta, stream: true });
   if (res && res.raw) {
     raw = res.raw;
@@ -2603,11 +2795,7 @@ async function agent00Answer(question) {
   panel.addSection("最終判定", answer, "out");
   panel.collapse();
 
-  const ansEl = document.createElement("div");
-  ansEl.className = "answer-big";
-  ansEl.textContent = answer;
-  speechSlots["00"].appendChild(ansEl);
-  appendSpeech("00", "「" + answer + "」", "a00");
+  appendSpeech("00", "「" + answer + "」", "a00 answer-big");
   appendChatBubble("sys", "エージェント00「" + answer + "」");
   await paceAfterBeat(answer, streamed.beatStart);
   return answer;
@@ -3288,14 +3476,11 @@ async function wolfRunDiscussionPhase(askerId, question, answer) {
 }
 
 function wolfGmLog(text) {
-  const speech02 = speechSlots["02"];
-  if (speech02) {
-    const row = document.createElement("div");
-    row.className = "line system";
-    row.textContent = text;
-    speech02.appendChild(row);
-    scrollEl(speech02);
-  }
+  appendTerminalLine({
+    agent: "GM",
+    kind: "sys",
+    text: String(text || ""),
+  });
   logSession({ kind: "gm", agent: "GM", text: String(text || "") });
 }
 
@@ -3566,15 +3751,14 @@ function wolfImprint(text) {
 }
 
 function renderWolfRoster() {
-  const speech01 = speechSlots["01"];
-  if (!speech01) return;
-  speech01.innerHTML = "";
+  if (!wolfRosterEl) return;
+  wolfRosterEl.innerHTML = "";
   for (const m of state.wolfRoster) {
     const row = document.createElement("div");
     row.className = "line";
     row.style.opacity = m.alive ? "1" : "0.4";
     row.textContent = (m.alive ? "● " : "✕(追放) ") + m.name + " — 仮説: " + m.hyp;
-    speech01.appendChild(row);
+    wolfRosterEl.appendChild(row);
   }
 }
 
@@ -3616,10 +3800,11 @@ function updateWolfHud() {
 }
 
 function applyWolfPanelLabels() {
-  const who01 = panel01 && panel01.querySelector(".panel-head .who");
-  const hyp01Wrap = panel01 && panel01.querySelector(".panel-head .hyp");
-  const who02 = panel02 && panel02.querySelector(".panel-head .who");
-  const hyp02Wrap = panel02 && panel02.querySelector(".panel-head .hyp");
+  if (boardEl) boardEl.classList.add("wolf-mode");
+  const who01 = panel01 && panel01.querySelector(".who");
+  const hyp01Wrap = panel01 && panel01.querySelector(".hyp");
+  const who02 = panel02 && panel02.querySelector(".who");
+  const hyp02Wrap = panel02 && panel02.querySelector(".hyp");
   if (who01) who01.textContent = "討論者ロースター · 5人";
   if (hyp01Wrap) hyp01Wrap.style.display = "none";
   if (who02) who02.textContent = "運営メモ（オペレーターのみ）";
@@ -3670,6 +3855,7 @@ async function bootNarrative() {
 
 function imprint(text) {
   clearSessionLog();
+  if (boardEl) boardEl.classList.remove("wolf-mode");
   state.origin = text;
   state.seed = seedFrom(text, 0x71a11);
   state.defined = true;
@@ -3811,9 +3997,11 @@ if (btnDownload) {
 }
 
 document.addEventListener("click", (e) => {
-  if (e.target.closest && e.target.closest(".think-panel")) return;
+  if (e.target.closest && e.target.closest(".think-wrap")) return;
   if (e.target.closest && e.target.closest("#controls")) return;
   if (e.target.closest && e.target.closest("#downloadRow")) return;
+  if (e.target.closest && e.target.closest("#memoryRow")) return;
+  if (e.target.closest && e.target.closest("#terminalConsole")) return;
   if (!inputEl.disabled) inputEl.focus();
 });
 
@@ -4385,14 +4573,6 @@ if (gateAdvancedToggle && gateAdvanced) {
 
 const buildChip = document.getElementById("buildChip");
 if (buildChip) buildChip.textContent = "build " + CLIENT_BUILD;
-
-if (btnThinkToggle && boardEl) {
-  btnThinkToggle.addEventListener("click", () => {
-    const open = boardEl.classList.toggle("thinks-open");
-    btnThinkToggle.setAttribute("aria-pressed", open ? "true" : "false");
-    btnThinkToggle.textContent = open ? "AIの思考を隠す" : "AIの思考を見る";
-  });
-}
 
 initLandingMotion();
 

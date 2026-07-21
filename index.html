@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DIGITAL TATTOO — 尋問ゲーム</title>
-    <meta name="client-build" content="floral-start-1">
+    <meta name="client-build" content="terminal-think-1">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg: #eef4ec;
@@ -27,8 +27,12 @@
             --chat-bg: #f8f2e8;
             --chat-fg: #3a3228;
             --chat-dim: #8a8570;
+            --term-bg: #151c17;
+            --term-fg: #d2ddd2;
+            --term-dim: #6f7f6f;
             --font: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
             --display: "Outfit", "Zen Kaku Gothic New", sans-serif;
+            --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", monospace;
             --sans: var(--font);
             --radius: 12px;
             --content: min(440px, 94vw);
@@ -164,23 +168,6 @@
             color: var(--dim);
         }
         #helpStrip strong { color: var(--fg); font-weight: 500; }
-        #btnThinkToggle {
-            margin-left: auto;
-            background: rgba(255, 255, 255, 0.7);
-            border: 1px solid rgba(79, 157, 110, 0.28);
-            border-radius: 999px;
-            color: var(--accent-deep);
-            font-family: inherit;
-            font-size: 0.62rem;
-            letter-spacing: 0.04em;
-            padding: 4px 10px;
-            cursor: pointer;
-        }
-        #btnThinkToggle[aria-pressed="true"] {
-            background: var(--accent-soft);
-            border-color: var(--accent);
-        }
-
         #originPin {
             flex: 0 0 auto;
             font-size: 0.72rem;
@@ -215,175 +202,30 @@
             overflow: hidden;
         }
 
-        .agent-panel {
+        #memoryRow {
+            flex: 0 1 auto;
+            max-height: min(26vh, 220px);
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            overflow: hidden;
+        }
+
+        .mem-panel {
             display: flex;
             flex-direction: column;
             min-height: 0;
+            overflow: hidden;
             background: var(--panel);
             border: 1px solid var(--panel-edge);
             border-radius: var(--radius);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
-            box-shadow: 0 4px 16px rgba(30, 41, 59, 0.06);
         }
-        .agent-panel.active {
-            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.35), 0 4px 16px rgba(30, 41, 59, 0.06);
-        }
-        .agent-panel.a00 { border-top: 3px solid var(--a00); }
-        .agent-panel.a01 { border-top: 3px solid var(--a01); }
-        .agent-panel.a02 { border-top: 3px solid var(--a02); }
-
-        .panel-head {
-            flex: 0 0 auto;
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 8px;
-            padding: 7px 12px;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.12);
-            font-size: 0.78rem;
-        }
-        .panel-head .who {
-            font-weight: 700;
-            letter-spacing: 0.02em;
-            display: inline-flex;
-            align-items: baseline;
-            gap: 0.45em;
-        }
-        .panel-head .who .agent-id {
-            font-family: var(--display);
-            font-size: 0.58rem;
-            font-weight: 600;
-            letter-spacing: 0.08em;
-            opacity: 0.65;
-        }
-        .a00 .panel-head .who { color: var(--a00); }
-        .a01 .panel-head .who { color: var(--a01); }
-        .a02 .panel-head .who { color: var(--a02); }
-        .panel-head .role {
-            color: var(--dim);
-            font-size: 0.62rem;
-        }
-        .panel-head .hyp {
-            color: var(--fg);
-            opacity: 0.85;
-            font-size: 0.62rem;
-            max-width: 55%;
-            text-align: right;
-            word-break: break-word;
-        }
-
-        .panel-body {
-            flex: 1 1 auto;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .think-slot {
-            display: none;
-            flex: 0 1 auto;
-            max-height: 42%;
-            min-height: 0;
-            overflow-y: auto;
-            overflow-x: hidden;
-            -webkit-overflow-scrolling: touch;
-            overscroll-behavior: contain;
-            padding: 4px 6px;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.1);
-        }
-        #board.thinks-open .think-slot { display: block; }
-
-        .speech-slot {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow-y: auto;
-            overflow-x: hidden;
-            -webkit-overflow-scrolling: touch;
-            overscroll-behavior: contain;
-            padding: 8px 10px;
-            font-size: clamp(0.88rem, 1.4vw, 1rem);
-            line-height: 1.65;
-        }
-
-        #panel00 {
-            flex: 0 0 auto;
-            max-height: 28%;
-            min-height: 110px;
-        }
-        #panel00 .speech-slot {
-            font-size: clamp(0.95rem, 1.6vw, 1.1rem);
-        }
-        #panel00 .answer-big {
-            color: var(--a00);
-            font-size: 1.02em;
-            letter-spacing: 0.02em;
-            line-height: 1.45;
-            margin-top: 0.35em;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-
-        #midRow {
-            flex: 1 1 auto;
-            min-height: 0;
-            display: grid;
-            grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.45fr) minmax(160px, 1fr);
-            gap: 8px;
-            overflow: hidden;
-        }
-
-        #panel01, #panel02 {
-            min-height: 0;
-            overflow: hidden;
-        }
-
-        #chatRoom {
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-            position: relative;
-            isolation: isolate;
-            overflow: hidden;
-            color: var(--chat-fg);
-            background-color: var(--chat-bg);
-            background-image:
-                linear-gradient(
-                    180deg,
-                    rgba(250, 246, 240, 0.88) 0%,
-                    rgba(245, 240, 232, 0.78) 45%,
-                    rgba(250, 246, 240, 0.9) 100%
-                ),
-                url("%BASE_URL%bg-chat-floral.png");
-            background-size: cover, cover;
-            background-position: center, center;
-            background-repeat: no-repeat, no-repeat;
-            border: 1px solid rgba(79, 157, 110, 0.2);
-            border-radius: var(--radius);
-            box-shadow: 0 4px 16px rgba(30, 41, 59, 0.06);
-        }
-        #chatRoom .panel-head {
-            position: relative;
-            z-index: 1;
-            background: rgba(255, 252, 247, 0.92);
-            border-bottom-color: rgba(79, 157, 110, 0.12);
-        }
-        #chatRoom .panel-head .who { color: var(--accent-deep); }
-        #chatRoom .panel-head .role { color: var(--chat-dim); }
-
-        #sharedMemory {
-            position: relative;
-            z-index: 1;
-            flex: 0 0 auto;
-            max-height: 34%;
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.12);
-            background: rgba(255, 252, 247, 0.92);
-        }
-        #sharedMemory .mem-head {
+        .mem-panel.mem-interrogator { border-top: 3px solid var(--a01); }
+        .mem-panel.mem-subject { border-top: 3px solid var(--a00); }
+        .mem-panel .mem-head {
             flex: 0 0 auto;
             display: flex;
             align-items: baseline;
@@ -395,17 +237,18 @@
             font-size: 0.7rem;
             letter-spacing: 0.04em;
             color: var(--accent-deep);
+            border-bottom: 1px solid rgba(79, 157, 110, 0.12);
         }
-        #sharedMemory .mem-head:hover { color: var(--accent); }
-        #sharedMemory .mem-title { font-weight: 700; }
-        #sharedMemory .mem-count {
-            color: var(--chat-dim);
+        .mem-panel .mem-head:hover { color: var(--accent); }
+        .mem-panel .mem-title { font-weight: 700; }
+        .mem-panel .mem-count {
+            color: var(--dim);
             font-size: 0.62rem;
         }
-        #sharedMemory .mem-toggle::before { content: "▾ "; color: var(--amber); }
-        #sharedMemory.collapsed .mem-toggle::before { content: "▸ "; }
-        #sharedMemory.collapsed #sharedMemoryList { display: none; }
-        #sharedMemoryList {
+        .mem-panel .mem-toggle::before { content: "▾ "; color: var(--amber); }
+        .mem-panel.collapsed .mem-toggle::before { content: "▸ "; }
+        .mem-panel.collapsed .mem-list { display: none; }
+        .mem-list {
             flex: 1 1 auto;
             min-height: 0;
             overflow-y: auto;
@@ -415,218 +258,277 @@
             padding: 2px 12px 8px;
             font-size: 0.72rem;
             line-height: 1.45;
-            color: var(--chat-fg);
+            color: var(--fg);
         }
-        #sharedMemoryList .mem-empty {
-            color: var(--chat-dim);
+        .mem-list .mem-empty {
+            color: var(--dim);
             font-size: 0.68rem;
-            padding: 2px 0 4px;
+            padding: 4px 0;
         }
-        #sharedMemoryList .mem-row {
+        .mem-list .mem-row {
             display: grid;
             grid-template-columns: 1.6em 1fr;
             gap: 2px 6px;
             padding: 4px 0;
             border-top: 1px solid rgba(79, 157, 110, 0.08);
         }
-        #sharedMemoryList .mem-row:first-of-type { border-top: none; }
-        #sharedMemoryList .mem-idx {
-            color: var(--chat-dim);
+        .mem-list .mem-row:first-of-type { border-top: none; }
+        .mem-list .mem-idx {
+            color: var(--dim);
             font-size: 0.58rem;
             padding-top: 0.15em;
         }
-        #sharedMemoryList .mem-q {
-            color: var(--chat-fg);
-            word-break: break-word;
-        }
-        #sharedMemoryList .mem-a {
+        .mem-list .mem-q { color: var(--fg); word-break: break-word; }
+        .mem-list .mem-a {
             grid-column: 2;
             color: var(--a00);
             font-size: 0.68rem;
         }
-        #sharedMemoryList .mem-meta {
+        .mem-list .mem-meta {
             grid-column: 2;
-            color: var(--chat-dim);
+            color: var(--dim);
             font-size: 0.55rem;
         }
 
-        #chatLog {
+        #agentStrip {
+            flex: 0 0 auto;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 6px;
+        }
+        .agent-chip {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            padding: 6px 10px;
+            background: var(--panel);
+            border: 1px solid var(--panel-edge);
+            border-radius: 10px;
+            border-top-width: 3px;
+            font-size: 0.68rem;
+            transition: box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .agent-chip.a00 { border-top-color: var(--a00); }
+        .agent-chip.a01 { border-top-color: var(--a01); }
+        .agent-chip.a02 { border-top-color: var(--a02); }
+        .agent-chip.active {
+            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.4);
+            border-color: rgba(79, 157, 110, 0.45);
+        }
+        .agent-chip .who {
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.4em;
+        }
+        .agent-chip .who .agent-id {
+            font-family: var(--display);
+            font-size: 0.55rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            opacity: 0.65;
+        }
+        .agent-chip.a00 .who { color: var(--a00); }
+        .agent-chip.a01 .who { color: var(--a01); }
+        .agent-chip.a02 .who { color: var(--a02); }
+        .agent-chip .role,
+        .agent-chip .hyp {
+            color: var(--dim);
+            font-size: 0.58rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .agent-chip .hyp { color: var(--fg); opacity: 0.85; }
+        #wolfRoster {
+            flex: 0 0 auto;
+            max-height: 72px;
+            overflow-y: auto;
+            display: none;
+            padding: 4px 8px;
+            font-family: var(--mono);
+            font-size: 0.62rem;
+            line-height: 1.4;
+            color: var(--fg);
+            background: rgba(255, 255, 255, 0.55);
+            border: 1px solid var(--panel-edge);
+            border-radius: 8px;
+        }
+        #board.wolf-mode #wolfRoster { display: block; }
+        #wolfRoster .line { margin: 0 0 0.2em; }
+
+        #terminalConsole {
             flex: 1 1 auto;
             min-height: 0;
             overflow-y: auto;
             overflow-x: hidden;
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
-            padding: 10px 12px 14px;
-            font-family: var(--sans);
-            font-size: clamp(0.88rem, 1.4vw, 0.98rem);
-            line-height: 1.55;
-            color: var(--chat-fg);
             position: relative;
-            z-index: 1;
+            padding: 10px 12px 14px;
+            font-family: var(--mono);
+            font-size: clamp(0.72rem, 1.15vw, 0.82rem);
+            line-height: 1.55;
+            color: var(--term-fg);
+            background:
+                linear-gradient(180deg, rgba(21, 28, 23, 0.97) 0%, rgba(18, 24, 20, 0.98) 100%),
+                radial-gradient(ellipse at 50% 0%, rgba(79, 157, 110, 0.12), transparent 55%);
+            border: 1px solid rgba(79, 157, 110, 0.38);
+            border-radius: var(--radius);
+            box-shadow:
+                inset 0 0 0 1px rgba(255, 255, 255, 0.03),
+                inset 0 0 48px rgba(0, 0, 0, 0.35),
+                0 8px 24px rgba(40, 60, 45, 0.18);
         }
-        #chatLog::-webkit-scrollbar,
-        #sharedMemoryList::-webkit-scrollbar,
-        .think-slot::-webkit-scrollbar,
-        .speech-slot::-webkit-scrollbar { width: 5px; }
-        #chatLog::-webkit-scrollbar-thumb,
-        #sharedMemoryList::-webkit-scrollbar-thumb,
-        .think-slot::-webkit-scrollbar-thumb,
-        .speech-slot::-webkit-scrollbar-thumb {
+        #terminalConsole::before {
+            content: "";
+            pointer-events: none;
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0, 0, 0, 0.045) 2px,
+                rgba(0, 0, 0, 0.045) 3px
+            );
+            opacity: 0.55;
+            z-index: 0;
+        }
+        #terminalConsole > * { position: relative; z-index: 1; }
+
+        #terminalConsole::-webkit-scrollbar,
+        .mem-list::-webkit-scrollbar,
+        #wolfRoster::-webkit-scrollbar { width: 5px; }
+        #terminalConsole::-webkit-scrollbar-thumb {
+            background: rgba(79, 157, 110, 0.45);
+            border-radius: 4px;
+        }
+        .mem-list::-webkit-scrollbar-thumb,
+        #wolfRoster::-webkit-scrollbar-thumb {
             background: rgba(79, 157, 110, 0.35);
             border-radius: 4px;
         }
 
-        .bubble {
-            max-width: 92%;
-            margin: 0 0 10px;
-            padding: 8px 11px;
-            border-radius: 14px;
-            word-break: break-word;
+        .term-line {
+            margin: 0 0 0.4em;
             white-space: pre-wrap;
-            position: relative;
-            box-shadow: 0 1px 3px rgba(80, 60, 30, 0.06);
-            animation: bubbleIn 0.28s ease-out;
+            word-break: break-word;
+            animation: termIn 0.18s ease-out;
         }
-        @keyframes bubbleIn {
-            from { opacity: 0; transform: translateY(6px); }
+        @keyframes termIn {
+            from { opacity: 0; transform: translateY(3px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        .bubble .b-who {
-            display: block;
-            font-size: 0.68rem;
-            letter-spacing: 0.04em;
-            font-family: var(--font);
-            margin-bottom: 3px;
-            font-weight: 700;
-        }
-        .bubble.b01 {
-            margin-right: auto;
-            background: #fff4e8;
-            border: 1px solid rgba(249, 115, 22, 0.4);
-            border-bottom-left-radius: 4px;
-            color: var(--chat-fg);
-        }
-        .bubble.b01 .b-who { color: #c2410c; }
-        .bubble.b02 {
-            margin-left: auto;
-            background: #f3eefc;
-            border: 1px solid rgba(124, 58, 237, 0.35);
-            border-bottom-right-radius: 4px;
-            text-align: left;
-            color: var(--chat-fg);
-        }
-        .bubble.b02 .b-who { color: #6d28d9; }
-        .bubble.bD1 { margin-right: auto; background: #fff4e8; border: 1px solid rgba(249, 115, 22, 0.4); border-bottom-left-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD1 .b-who { color: #c2410c; }
-        .bubble.bD2 { margin-left: auto; background: #f3eefc; border: 1px solid rgba(124, 58, 237, 0.35); border-bottom-right-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD2 .b-who { color: #6d28d9; }
-        .bubble.bD3 { margin-right: auto; background: #e8f4f0; border: 1px solid rgba(70, 150, 130, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD3 .b-who { color: #2d7a63; }
-        .bubble.bD4 { margin-left: auto; background: #f4ece8; border: 1px solid rgba(180, 110, 80, 0.5); border-bottom-right-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD4 .b-who { color: #a5603a; }
-        .bubble.bD5 { margin-right: auto; background: #eaeef7; border: 1px solid rgba(79, 157, 110, 0.4); border-bottom-left-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD5 .b-who { color: #3f7a54; }
-        .bubble.bsys {
-            margin: 0 auto 10px;
-            max-width: 100%;
-            background: rgba(255, 252, 247, 0.72);
-            border: none;
-            color: var(--chat-dim);
-            font-size: 0.75rem;
-            text-align: center;
-            font-family: var(--font);
-            padding: 4px 8px;
-            border-radius: 8px;
-        }
-        .bubble.bask {
-            margin: 0 auto 10px;
-            background: #e8f3ec;
-            border: 1px solid rgba(79, 157, 110, 0.35);
-            color: var(--chat-fg);
-            font-size: 0.82rem;
-            text-align: center;
-            font-family: var(--font);
-        }
-        .bubble.bguess {
-            border-color: var(--accent);
-            background: #e8f3ec;
-        }
-        .bubble.bwin { border-color: #16a34a; color: #166534; }
-        .bubble.blose { border-color: var(--warn); color: #a04040; }
-
-        .line {
-            margin: 0 0 0.45em;
-            white-space: pre-wrap;
-            word-break: break-word;
-            animation: bubbleIn 0.22s ease-out;
-        }
-        .line.system { color: var(--dim); font-size: 0.85em; }
-        .line.user { color: var(--amber); }
-        .line.a00 { color: var(--a00); }
-        .line.a01 { color: var(--a01); }
-        .line.a02 { color: var(--a02); }
-        .line .agent-tag {
-            font-weight: 700;
-            letter-spacing: 0.02em;
-            margin-right: 0.3em;
-        }
-
-        .think-wrap { margin: 0.35em 0; }
-        .think-wrap.think-done { opacity: 0.92; }
-        .think-panel {
-            border: 1px solid rgba(79, 157, 110, 0.22);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.55);
-            font-size: 0.82rem;
-            line-height: 1.5;
-            overflow: hidden;
-        }
-        .think-summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 0.45em 0.65em;
-            color: #4b628a;
-            user-select: none;
-            font-size: 0.78rem;
-        }
-        .think-summary::-webkit-details-marker { display: none; }
-        .think-summary::before { content: "▸ "; color: var(--accent); }
-        .think-panel[open] > .think-summary::before { content: "▾ "; }
-        .think-panel[open] > .think-summary {
-            border-bottom: 1px solid rgba(79, 157, 110, 0.18);
-            color: var(--accent-deep);
-        }
-        .think-body {
-            padding: 0.5em 0.65em 0.7em;
-            max-height: min(28vh, 220px);
-            overflow-y: auto;
-            -webkit-overflow-scrolling: touch;
-            overscroll-behavior: contain;
-            background: rgba(255, 255, 255, 0.25);
-        }
-        .think-sec { margin: 0 0 0.65em; }
-        .think-lab {
-            color: var(--accent);
-            font-size: 0.68rem;
+        .term-time { color: var(--term-dim); margin-right: 0.45em; }
+        .term-agent {
             font-weight: 600;
-            margin-bottom: 0.25em;
+            margin-right: 0.35em;
         }
-        .think-pre {
-            margin: 0;
+        .term-agent.a00 { color: #8fc4e0; }
+        .term-agent.a01 { color: #e0b06a; }
+        .term-agent.a02 { color: #c4a8e0; }
+        .term-agent.aGM,
+        .term-agent.asys { color: #8aaa8a; }
+        .term-agent.aD1,
+        .term-agent.aD2,
+        .term-agent.aD3,
+        .term-agent.aD4,
+        .term-agent.aD5 { color: #9dc4b0; }
+        .term-kind {
+            color: #7fbf8e;
+            margin-right: 0.4em;
+            font-weight: 500;
+        }
+        .term-tok {
+            color: var(--amber);
+            margin-right: 0.4em;
+            font-variant-numeric: tabular-nums;
+        }
+        .term-line.term-speak .term-kind { color: #9fd0aa; }
+        .term-line.term-think .term-kind { color: #c9b07a; }
+        .term-line.term-process .term-kind { color: #7fbf8e; }
+        .term-line.term-sys { color: var(--term-dim); }
+        .term-line.term-warn { color: #e0a090; }
+        .term-line.term-win { color: #8fd49a; }
+        .term-line.term-lose { color: #e0a090; }
+        .term-line.answer-big {
+            color: #8fc4e0;
+            font-size: 1.05em;
+            font-weight: 500;
+        }
+
+        .think-wrap {
+            margin: 0.55em 0 0.85em;
+            padding: 0.45em 0.55em 0.55em;
+            border-left: 2px solid rgba(79, 157, 110, 0.45);
+            background: rgba(79, 157, 110, 0.06);
+            border-radius: 0 6px 6px 0;
+        }
+        .think-wrap.think-done {
+            border-left-color: rgba(79, 157, 110, 0.28);
+            background: rgba(79, 157, 110, 0.03);
+        }
+        .think-wrap .term-think-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.2em 0.15em;
+            margin-bottom: 0.35em;
+        }
+        .think-spinner {
+            width: 1.15em;
+            height: 1.15em;
+            vertical-align: middle;
+            margin-right: 0.35em;
+            flex: 0 0 auto;
+            image-rendering: pixelated;
+            filter: brightness(1.15) contrast(1.05);
+        }
+        .think-spinner.spinning {
+            animation: spinThink 1.15s linear infinite;
+        }
+        @keyframes spinThink {
+            to { transform: rotate(360deg); }
+        }
+        .term-done-mark {
+            display: inline-block;
+            width: 1.15em;
+            text-align: center;
+            color: var(--accent);
+            margin-right: 0.35em;
+            font-weight: 700;
+        }
+        .term-live,
+        .term-sec-pre {
+            margin: 0.15em 0 0.45em;
+            padding-left: 0.2em;
             white-space: pre-wrap;
             word-break: break-word;
-            color: #334155;
+            color: #e8dcc8;
             font-family: inherit;
-            font-size: 0.8rem;
-            line-height: 1.5;
+            font-size: inherit;
+            line-height: 1.55;
         }
-        .think-raw .think-pre { color: #c2410c; }
-        .think-out .think-pre { color: #3f7a54; }
-        .think-warn .think-pre { color: #a5473c; }
-        .think-origin .think-pre { color: #b57a2e; }
-        .think-mem .think-pre { color: #64748b; }
-        .think-meta .think-pre { color: #64748b; }
+        .term-sec {
+            margin: 0.25em 0 0.4em;
+            padding-left: 0.15em;
+        }
+        .term-sec-lab {
+            color: #7fbf8e;
+            font-size: 0.92em;
+            margin-bottom: 0.1em;
+        }
+        .term-sec.think-warn .term-sec-pre,
+        .term-sec.think-warn .term-sec-lab { color: #e0a090; }
+        .term-sec.think-out .term-sec-pre { color: #9fd0aa; }
+        .term-sec.think-origin .term-sec-pre { color: #e0b06a; }
+        .term-sec.think-raw .term-sec-pre { color: #e0b08a; }
+        .term-sec.think-meta .term-sec-pre,
+        .term-sec.think-mem .term-sec-pre { color: #9aab9a; }
 
         .caret {
             display: inline-block;
@@ -637,6 +539,9 @@
             margin-left: 1px;
             opacity: 0.7;
         }
+
+        /* Legacy hosts kept for JS refs; never shown */
+        #legacyHosts { display: none !important; }
 
         /* Kill legacy shake/jitter only — allow bubble / reveal motion */
         #app.shake-low,
@@ -1189,16 +1094,15 @@
                 max-height: calc(100dvh - 8px);
                 padding: 6px 6px 0;
             }
-            #midRow {
+            #memoryRow {
                 grid-template-columns: 1fr;
-                grid-template-rows: minmax(140px, 1.2fr) minmax(100px, 0.7fr) minmax(100px, 0.7fr);
+                max-height: min(34vh, 260px);
             }
-            #chatRoom { order: 0; }
-            #panel01 { order: 1; }
-            #panel02 { order: 2; }
-            #panel00 { max-height: 22%; min-height: 90px; }
+            #agentStrip {
+                grid-template-columns: 1fr;
+            }
             #engineBadge { display: none; }
-            .panel-head .hyp { max-width: 48%; font-size: 0.55rem; }
+            .agent-chip .hyp { font-size: 0.55rem; }
             #gateAgentAssign {
                 grid-template-columns: 1fr;
                 max-height: min(48vh, 380px);
@@ -1215,14 +1119,13 @@
         }
 
         @media (prefers-reduced-transparency: reduce) {
-            #app, .agent-panel {
+            #app, .mem-panel, .agent-chip {
                 background: #f7f4ee;
                 backdrop-filter: none;
                 -webkit-backdrop-filter: none;
             }
-            #chatRoom {
-                background-color: #f3eee6;
-                background-image: none;
+            #terminalConsole {
+                background: #151c17;
             }
             #modelGate {
                 background-color: #eef4ec;
@@ -1242,7 +1145,7 @@
     <div id="atmosphere" aria-hidden="true"></div>
 
     <div id="modelGate" role="status" aria-live="polite">
-        <p class="build-chip" id="buildChip">build floral-start-1</p>
+        <p class="build-chip" id="buildChip">build terminal-think-1</p>
         <div class="gate-brand">DIGITAL TATTOO</div>
 
         <section class="landing-start" id="gateStart" data-reveal>
@@ -1302,12 +1205,11 @@
                 <div id="coherenceBar" title="議論の進み"><i id="coherenceFill"></i></div>
                 <span id="phaseLabel">準備しています…</span>
                 <span id="engineBadge">LLM …</span>
-                <button type="button" id="btnThinkToggle" aria-pressed="false" title="思考パネルの表示切替">AIの思考を見る</button>
                 <div id="helpStrip">
                     <strong>遊び方:</strong>
                     ORIGIN を対象者に刻印 →
                     <span style="color:var(--a01)">尋問官A</span>/<span style="color:var(--a02)">尋問官B</span>
-                    が質問 → 中央で相談 → 「あなたは〇〇です。」で正式推測
+                    が質問 → コンソールで思考と発言を追う → 「あなたは〇〇です。」で正式推測
                 </div>
             </div>
         </div>
@@ -1318,56 +1220,54 @@
         </div>
 
         <div id="board">
-            <section id="panel00" class="agent-panel a00" aria-label="対象者 AGENT-00">
-                <div class="panel-head">
+            <div id="memoryRow">
+                <section id="sharedMemory" class="mem-panel mem-interrogator" aria-label="尋問側の記憶">
+                    <div class="mem-head" id="sharedMemoryHead" title="開閉">
+                        <span class="mem-title mem-toggle">尋問側の記憶</span>
+                        <span class="mem-count" id="sharedMemoryCount">0件</span>
+                    </div>
+                    <div class="mem-list" id="sharedMemoryList" aria-live="polite">
+                        <div class="mem-empty">まだ質問なし — 01/02 が共有する Q→A がここに残ります</div>
+                    </div>
+                </section>
+                <section id="subjectMemory" class="mem-panel mem-subject" aria-label="対象者側の記憶">
+                    <div class="mem-head" id="subjectMemoryHead" title="開閉">
+                        <span class="mem-title mem-toggle">対象者側の記憶</span>
+                        <span class="mem-count" id="subjectMemoryCount">0件</span>
+                    </div>
+                    <div class="mem-list" id="subjectMemoryList" aria-live="polite">
+                        <div class="mem-empty">まだ応答なし — 00 が認識した Q→A がここに残ります</div>
+                    </div>
+                </section>
+            </div>
+
+            <div id="agentStrip" aria-label="エージェント">
+                <div id="panel00" class="agent-chip a00">
                     <span class="who">対象者 <span class="agent-id">AGENT-00</span></span>
                     <span class="role">秘密の役割 · 自由回答</span>
                 </div>
-                <div class="panel-body">
-                    <div class="think-slot" id="think00"></div>
-                    <div class="speech-slot" id="speech00" aria-live="polite"></div>
+                <div id="panel01" class="agent-chip a01">
+                    <span class="who">尋問官A <span class="agent-id">AGENT-01</span></span>
+                    <span class="hyp">共有仮説: <span id="hyp01">（まだAIが立てていない）</span></span>
                 </div>
-            </section>
+                <div id="panel02" class="agent-chip a02">
+                    <span class="who">尋問官B <span class="agent-id">AGENT-02</span></span>
+                    <span class="hyp">共有仮説: <span id="hyp02">（まだAIが立てていない）</span></span>
+                </div>
+            </div>
 
-            <div id="midRow">
-                <section id="panel01" class="agent-panel a01" aria-label="尋問官A AGENT-01">
-                    <div class="panel-head">
-                        <span class="who">尋問官A <span class="agent-id">AGENT-01</span></span>
-                        <span class="hyp">共有仮説: <span id="hyp01">（まだAIが立てていない）</span></span>
-                    </div>
-                    <div class="panel-body">
-                        <div class="think-slot" id="think01"></div>
-                        <div class="speech-slot" id="speech01" aria-live="polite"></div>
-                    </div>
-                </section>
+            <div id="wolfRoster" aria-label="討論者ロースター"></div>
 
-                <section id="chatRoom" aria-label="AI相談中">
-                    <div class="panel-head">
-                        <span class="who">AI相談中</span>
-                        <span class="role">尋問官どうしの推理チャット</span>
-                    </div>
-                    <div id="sharedMemory" aria-label="AIが覚えていること">
-                        <div class="mem-head" id="sharedMemoryHead" title="開閉">
-                            <span class="mem-title mem-toggle">AIが覚えていること</span>
-                            <span class="mem-count" id="sharedMemoryCount">0件</span>
-                        </div>
-                        <div id="sharedMemoryList" aria-live="polite">
-                            <div class="mem-empty">まだ質問なし — ここにあとで Q→A が残ります</div>
-                        </div>
-                    </div>
-                    <div id="chatLog" aria-live="polite"></div>
-                </section>
+            <section id="terminalConsole" aria-label="尋問コンソール" aria-live="polite"></section>
 
-                <section id="panel02" class="agent-panel a02" aria-label="尋問官B AGENT-02">
-                    <div class="panel-head">
-                        <span class="who">尋問官B <span class="agent-id">AGENT-02</span></span>
-                        <span class="hyp">共有仮説: <span id="hyp02">（まだAIが立てていない）</span></span>
-                    </div>
-                    <div class="panel-body">
-                        <div class="think-slot" id="think02"></div>
-                        <div class="speech-slot" id="speech02" aria-live="polite"></div>
-                    </div>
-                </section>
+            <div id="legacyHosts" aria-hidden="true">
+                <div id="think00"></div>
+                <div id="think01"></div>
+                <div id="think02"></div>
+                <div id="speech00"></div>
+                <div id="speech01"></div>
+                <div id="speech02"></div>
+                <div id="chatLog"></div>
             </div>
         </div>
 
@@ -1393,6 +1293,6 @@
         </form>
     </div>
 
-    <script type="module" src="./js/app.js?v=floral-start-1"></script>
+    <script type="module" src="./js/app.js?v=terminal-think-1"></script>
 </body>
 </html>

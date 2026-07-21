@@ -1467,6 +1467,22 @@ export async function unloadAllEngines(engines) {
 }
 
 /**
+ * Rough token estimate for streamed text (no local tokenizer).
+ * CJK code points ≈ 1 tok; Latin/other ≈ 0.35. Label UI as [tok:N] estimate.
+ * @param {string} text
+ * @returns {number}
+ */
+export function estimateTokens(text) {
+  let n = 0;
+  for (const ch of String(text || "")) {
+    const cp = ch.codePointAt(0) || 0;
+    // CJK / fullwidth / kana / hangul blocks
+    n += cp >= 0x2e80 ? 1 : 0.35;
+  }
+  return Math.max(0, Math.ceil(n));
+}
+
+/**
  * Streaming (or non-streaming) completion against one engine.
  *
  * @param {import("@mlc-ai/web-llm").MLCEngineInterface} engine
@@ -1476,7 +1492,7 @@ export async function unloadAllEngines(engines) {
  *   max_tokens?: number,
  *   top_p?: number,
  *   stream?: boolean,
- *   onDelta?: (delta: string, full: string) => void,
+ *   onDelta?: (delta: string, full: string, meta?: { tokens: number, usage?: object }) => void,
  * }} [opts]
  * @returns {Promise<string>}
  */
@@ -1503,16 +1519,31 @@ export async function generateWithEngine(engine, messages, opts = {}) {
     return String(text || "").trim();
   }
 
-  const chunks = await engine.chat.completions.create({
-    ...base,
-    stream: true,
-  });
+  let chunks;
+  try {
+    chunks = await engine.chat.completions.create({
+      ...base,
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+  } catch (_) {
+    chunks = await engine.chat.completions.create({
+      ...base,
+      stream: true,
+    });
+  }
   let full = "";
+  let lastUsage = null;
   for await (const chunk of chunks) {
+    if (chunk && chunk.usage) lastUsage = chunk.usage;
     const delta = chunk?.choices?.[0]?.delta?.content;
     if (delta) {
       full += delta;
-      opts.onDelta(delta, full);
+      const tokens =
+        (lastUsage &&
+          (lastUsage.completion_tokens || lastUsage.total_tokens)) ||
+        estimateTokens(full);
+      opts.onDelta(delta, full, { tokens, usage: lastUsage || undefined });
     }
   }
   return String(full || "").trim();
