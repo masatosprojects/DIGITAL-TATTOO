@@ -130,6 +130,12 @@ const btnDownload = document.getElementById("btnDownload");
 const controlsEl = document.getElementById("controls");
 const downloadRowEl = document.getElementById("downloadRow");
 
+/**
+ * Duo-mode initial shared working hypothesis (broad / uncertain, but never empty).
+ * Must NOT encode the real ORIGIN — investigators never see ORIGIN.
+ */
+const INITIAL_SHARED_HYP = "まだ特定できていないが、実在する何か／誰か";
+
 const state = {
   ready: false,
   defined: false,
@@ -140,8 +146,13 @@ const state = {
   round: 0,
   nextAsker: "01",
   history: [],
-  hyp01: "未定",
-  hyp02: "未定",
+  /** Duo: one shared working hypothesis both 01 and 02 read/write. */
+  sharedHyp: INITIAL_SHARED_HYP,
+  /** @type {string[]} short alternate candidates (shared). */
+  sharedHypAlts: [],
+  /** UI mirrors of sharedHyp (kept in sync for panel heads). */
+  hyp01: INITIAL_SHARED_HYP,
+  hyp02: INITIAL_SHARED_HYP,
   pollution: 0,
   wrongGuesses: 0,
   guessCount: 0,
@@ -244,6 +255,11 @@ function buildSessionTranscript() {
   lines.push("======== ORIGIN（エージェント00のみ） ========");
   lines.push(state.origin ? state.origin : "（未刻印）");
   lines.push("");
+  if (state.gameFormat !== "wolf") {
+    lines.push("======== 共有仮説（エージェント01/02） ========");
+    lines.push(formatSharedHypDisplay());
+    lines.push("");
+  }
   lines.push("======== 時系列ログ ========");
   lines.push("（思考 = 画面の思考パネル内容 / 発言 = 台詞・チャット）");
   lines.push("");
@@ -391,8 +407,9 @@ function updateHud() {
     " · " +
     phaseShort;
 
-  if (hyp01El) hyp01El.textContent = state.hyp01;
-  if (hyp02El) hyp02El.textContent = state.hyp02;
+  const hypUi = formatSharedHypDisplay();
+  if (hyp01El) hyp01El.textContent = hypUi;
+  if (hyp02El) hyp02El.textContent = hypUi;
 
   if (phaseLabelEl) {
     phaseLabelEl.textContent =
@@ -493,21 +510,117 @@ function namingClarityRule() {
     "「代理人」は絶対禁止（誤訳）。曖昧な「エージェント」単体も禁止。" +
     "固定役割（開幕から既知・確認不要）: " +
     "エージェント00＝被尋問者（ORIGIN を持つ。質問にははい/いいえ等の5段階のみで答える）。" +
-    "エージェント01とエージェント02＝同僚の尋問官同士（互いに協力し、エージェント00だけを尋問する）。"
+    "エージェント01とエージェント02＝友人であり同僚の協同尋問官（開幕から互いを知っている。" +
+    "二人で共有仮説を育て、エージェント00だけを尋問する）。"
   );
 }
 
 /** Keep 00/01/02 from burning early turns on “who am I?” role discovery. */
 function roleAlreadyKnownRule() {
   return (
-    "重要: 上記の役割はすでに確定している。" +
-    "自分が誰か・何の立場か・相手が同僚かどうかを問い直したり議論したりするな。" +
-    "自己紹介・役割確認・立場の推測は禁止。最初の発言から尋問または議論の本題に入れ。"
+    "重要: 上記の役割と関係はすでに確定している。" +
+    "自分が誰か・何の立場か・相手が同僚／友人かどうかを問い直したり議論したりするな。" +
+    "自己紹介・役割確認・立場の推測・初対面アピールは禁止。最初の発言から尋問または議論の本題に入れ。"
+  );
+}
+
+/** Duo partnership — friends/colleagues who already work together from turn 0. */
+function duoPartnershipRule() {
+  return (
+    "関係（開幕から既知）: あなたと同僚は友人であり協同尋問官のパートナーである。" +
+    "初対面ではない。互いを「エージェント01」「エージェント02」と呼び捨てでよい。" +
+    "二人は同じ共有仮説を持ち、答えごとに一緒に更新する。私的な別仮説を抱え込まない。"
   );
 }
 
 function partnerAgent(agent) {
   return agent === "01" ? "02" : "01";
+}
+
+/** Vague / bootstrap shared-hyp phrases (not empty, but not a concrete role yet). */
+function isVagueSharedHyp(h) {
+  const t = String(h || "").trim();
+  if (!t) return true;
+  return (
+    t === "未定" ||
+    t === "まだ分からない" ||
+    t === "まだ不明" ||
+    t === "別候補を検討中" ||
+    t === INITIAL_SHARED_HYP ||
+    /^まだ特定できていない/.test(t)
+  );
+}
+
+function formatSharedHypDisplay() {
+  const main = clip(state.sharedHyp || INITIAL_SHARED_HYP, 36);
+  const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 2);
+  if (!alts.length) return main;
+  return main + "（別: " + alts.map((a) => clip(a, 12)).join(" / ") + "）";
+}
+
+function formatSharedHypPromptBlock() {
+  const main = clip(state.sharedHyp || INITIAL_SHARED_HYP, 48);
+  const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 3);
+  let s = "共有仮説（エージェント01と02が共同で持つ本命）: 「" + main + "」";
+  if (alts.length) {
+    s +=
+      "\n共有の別候補: " +
+      alts.map((a) => "「" + clip(a, 24) + "」").join("、");
+  } else {
+    s += "\n共有の別候補: （まだなし）";
+  }
+  return s;
+}
+
+/**
+ * Write the duo shared hypothesis; mirror onto both panel fields.
+ * Never store ORIGIN here — callers must not pass state.origin.
+ */
+function setSharedHypothesis(newHyp, opts) {
+  let next = clip(String(newHyp || "").trim(), 40) || INITIAL_SHARED_HYP;
+  // Investigators must never store the real ORIGIN as their shared hyp.
+  if (state.origin && next === state.origin) {
+    next = state.sharedHyp || INITIAL_SHARED_HYP;
+  }
+  const prev = state.sharedHyp;
+  const keepPrevAsAlt = opts && opts.keepPrevAsAlt;
+  let alts = Array.isArray(state.sharedHypAlts) ? state.sharedHypAlts.slice() : [];
+  if (
+    keepPrevAsAlt &&
+    prev &&
+    prev !== next &&
+    !isVagueSharedHyp(prev) &&
+    !alts.includes(prev)
+  ) {
+    alts.unshift(prev);
+  }
+  if (opts && Array.isArray(opts.alts)) {
+    for (const a of opts.alts) {
+      const c = clip(String(a || "").trim(), 24);
+      if (
+        c &&
+        c !== next &&
+        !alts.includes(c) &&
+        !isVagueSharedHyp(c) &&
+        !(state.origin && c === state.origin)
+      ) {
+        alts.push(c);
+      }
+    }
+  }
+  alts = alts.filter((a) => a && a !== next && !(state.origin && a === state.origin)).slice(0, 3);
+  state.sharedHyp = next;
+  state.sharedHypAlts = alts;
+  state.hyp01 = next;
+  state.hyp02 = next;
+  return next;
+}
+
+function initSharedHypothesisForSession() {
+  state.sharedHyp = INITIAL_SHARED_HYP;
+  state.sharedHypAlts = [];
+  state.hyp01 = INITIAL_SHARED_HYP;
+  state.hyp02 = INITIAL_SHARED_HYP;
 }
 
 // ── Japanese input ───────────────────────────────────────
@@ -1377,7 +1490,14 @@ function isFormatLeakText(raw) {
 function isPlaceholderEchoQuestion(q) {
   let t = String(q || "").replace(/\s+/g, "").replace(/[？?。．.！!]+$/g, "");
   t = t.replace(/^あなたは/, "").replace(/^あなたの/, "");
-  const bare = ["未定", "まだ分からない", "別候補を検討中", ...ANSWER_LEVELS];
+  const bare = [
+    "未定",
+    "まだ分からない",
+    "別候補を検討中",
+    INITIAL_SHARED_HYP,
+    "まだ特定できていないが実在する何か誰か",
+    ...ANSWER_LEVELS,
+  ];
   return bare.includes(t) || t === "";
 }
 
@@ -1492,7 +1612,7 @@ function debateRetryNudge(badText) {
     (shown || "（空）") +
     "」は議論として使えなかった。" +
     "はい／いいえ等の5段階語だけ・指示文の繰り返しは禁止。" +
-    "答えの意味と仮説についての平易な日本語1〜2文を、発言行に書け。"
+    "答えの意味と共有仮説についての平易な日本語1〜2文を、発言行に書け。"
   );
 }
 
@@ -1540,32 +1660,23 @@ function historyBlock(limit = 8) {
 }
 
 function investigatorContext(agent) {
-  const selfName = agentDisplayName(agent);
   const partner = partnerAgent(agent);
-  const partnerName = agentDisplayName(partner);
-  const hyp = agent === "01" ? state.hyp01 : state.hyp02;
-  const other = agent === "01" ? state.hyp02 : state.hyp01;
   return (
     "あなたは" +
     agentPromptName(agent) +
-    "（尋問官）。同僚の尋問官は" +
+    "（尋問官）。同僚かつ友人の協同尋問官は" +
     agentPromptName(partner) +
-    "。二人で協力し、被尋問者エージェント00だけを尋問する。\n" +
+    "。二人は開幕から互いを知っており、被尋問者エージェント00だけを尋問する。\n" +
     namingClarityRule() +
     "\n" +
     roleAlreadyKnownRule() +
-    "\nORIGIN は知らされていない。" +
+    "\n" +
+    duoPartnershipRule() +
+    "\nORIGIN は知らされていない（推測してはいけない・プロンプトにも無い）。" +
     "あなたと同僚は自由に日本語で話し合う。" +
     "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
-    "あなた(" +
-    selfName +
-    ")の仮説: 「" +
-    clip(hyp, 40) +
-    "」\n" +
-    partnerName +
-    "の仮説: 「" +
-    clip(other, 40) +
-    "」\nQ&A履歴:\n" +
+    formatSharedHypPromptBlock() +
+    "\nQ&A履歴:\n" +
     historyBlock()
   );
 }
@@ -1578,11 +1689,18 @@ function structuredOutRule() {
 
 async function agentAskQuestion(asker) {
   const name = agentPromptName(asker);
+  const partnerName = agentPromptName(partnerAgent(asker));
   setTurn(asker, name + " が質問中");
   const panel = createThinkPanel(asker, "思考過程 · " + name + " が質問を作成…");
   panel.addSection("注意", "ORIGIN はプロンプトに含まれない · 発言は質問文（はい/いいえではない）", "warn");
+  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
+  panel.addSection(
+    "同僚",
+    partnerName + "＝友人・協同尋問官（開幕から既知）。共有仮説を一緒に検証する。",
+    "meta"
+  );
 
-  const hyp = asker === "01" ? state.hyp01 : state.hyp02;
+  const hyp = state.sharedHyp || INITIAL_SHARED_HYP;
   const fallbackQ = askQuestionFallback({
     history: state.history,
     hyp,
@@ -1619,7 +1737,11 @@ async function agentAskQuestion(asker) {
       "。" +
       namingClarityRule() +
       roleAlreadyKnownRule() +
-      "役割: 同僚の尋問官と協力し、被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
+      duoPartnershipRule() +
+      "役割: 友人であり同僚の協同尋問官" +
+      partnerName +
+      "と協力し、被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
+      "二人は同じ共有仮説を持つ。質問はその共有仮説を検証・絞り込みする方向でよい。" +
       "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
       "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
       "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
@@ -1630,6 +1752,9 @@ async function agentAskQuestion(asker) {
     const userBase =
       investigatorContext(asker) +
       "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。役割確認は不要・禁止。" +
+      "共有仮説を踏まえ、" +
+      partnerName +
+      "と後で議論できる材料を残せ。" +
       "\n今のヒント角度: " +
       angle +
       "（必須ではない。自然な別角度でもよい）。" +
@@ -1837,14 +1962,16 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     agent,
     "思考過程 · " + name + " 議論 " + turnIndex + "/" + DISCUSSION_TURNS_PER_ANSWER
   );
-  const hyp = agent === "01" ? state.hyp01 : state.hyp02;
-  const otherHyp = agent === "01" ? state.hyp02 : state.hyp01;
+  const hyp = state.sharedHyp || INITIAL_SHARED_HYP;
+  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
 
   const fb = debateFallback({
     answer,
     question,
     hyp,
-    otherHyp,
+    otherHyp: hyp,
+    shared: true,
+    partnerName,
     pollution: 0,
     seed: state.seed,
     round: state.round + turnIndex * 17,
@@ -1858,15 +1985,17 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "（尋問官）。" +
     namingClarityRule() +
     roleAlreadyKnownRule() +
-    "同僚の尋問官" +
+    duoPartnershipRule() +
+    "友人であり同僚の協同尋問官" +
     partnerName +
     "と会議室で、被尋問者エージェント00の直前の答えについて議論する。" +
+    "二人は同じ共有仮説を持つ。私的な別仮説を主張せず、共有仮説を一緒に更新・除外する。" +
     "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
     "必須: (1) エージェント00の答え「" +
     answer +
-    "」の意味 (2) 自分の仮説の更新または除外 (3) " +
+    "」の意味 (2) 共有仮説の更新・除外・維持の提案 (3) " +
     partnerName +
-    "の仮説への短い反応。" +
+    "への短い反応（同僚・友人として）。" +
     "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
     "新しい質問はまだ出さない（議論の意見文だけ）。" +
     "禁止: 自分や同僚の立場・役割の確認。「代理人」禁止。" +
@@ -1879,8 +2008,10 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n" +
     (lastPartnerLine
-      ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\nそれに反応しつつ深めて。"
-      : "議論の最初。役割確認は不要。答えから何が言えるか述べよ。") +
+      ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n友人・同僚としてそれに反応しつつ、共有仮説を深めて。"
+      : "議論の最初。役割確認は不要。" +
+        partnerName +
+        "はすでに同僚・友人だと分かっている。答えから共有仮説に何が言えるか述べよ。") +
     "\n議論ターン " +
     turnIndex +
     "/" +
@@ -1896,7 +2027,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     const streamed = await streamIntoPanel(panel, system, userBase, {
       agent,
       fallbackText: fb,
-      fallbackThink: "答えから候補を整理する",
+      fallbackThink: "答えから共有仮説を整理する",
     });
     beatStart = streamed.beatStart;
     opinion = fb;
@@ -1961,12 +2092,15 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   const hypSystem =
     "あなたは" +
     name +
-    "。エージェント00の役割についての短い仮説を1語〜短い句で。" +
+    "。" +
+    agentPromptName(partner) +
+    "と共有する、エージェント00の役割についての短い仮説を1語〜短い句で。" +
+    "これは二人の共有仮説（本命）になる。ORIGIN の正解は知らない。" +
     namingClarityRule() +
     structuredOutRule() +
     "発言行は仮説だけ。「代理人」禁止。";
   const hypUser =
-    "旧仮説: 「" +
+    "現在の共有仮説: 「" +
     hyp +
     "」\n質問: 「" +
     question +
@@ -1974,9 +2108,9 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」\n議論: 「" +
     clip(opinion, 80) +
-    "」";
+    "」\n共有仮説を更新せよ（維持でもよい）。";
   if (state.mode === "llm") {
-    const hypPanelNote = panel.addSection("仮説更新中…", "…", "belief");
+    const hypPanelNote = panel.addSection("共有仮説 更新中…", "…", "belief");
     const resH = await llmChat(hypSystem, hypUser, {
       agent,
       temperature: 0.55,
@@ -2007,9 +2141,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
       round: state.round + turnIndex,
     });
   }
-  if (agent === "01") state.hyp01 = newHyp;
-  else state.hyp02 = newHyp;
-  panel.addSection("仮説", newHyp, "belief");
+  setSharedHypothesis(newHyp, { keepPrevAsAlt: !isVagueSharedHyp(hyp) });
+  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
 
   state.discussTurns++;
   updateHud();
@@ -2039,7 +2172,8 @@ async function runDiscussionPhase(asker, question, answer) {
 async function agentFormalGuess(agent) {
   setTurn(agent, "AGENT-" + agent + " が正式推測");
   const panel = createThinkPanel(agent, "思考過程 · AGENT-" + agent + " 正式推測…");
-  const hyp = agent === "01" ? state.hyp01 : state.hyp02;
+  const hyp = state.sharedHyp || INITIAL_SHARED_HYP;
+  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
   const fb = guessFallback({
     hyp,
     pollution: 0,
@@ -2050,18 +2184,21 @@ async function agentFormalGuess(agent) {
   const system =
     "あなたは" +
     agentPromptName(agent) +
-    "。エージェント00への正式推測を行う。" +
+    "。友人・同僚の協同尋問官と共有してきた仮説に基づき、エージェント00への正式推測を行う。" +
     namingClarityRule() +
+    duoPartnershipRule() +
     structuredOutRule() +
     "発言行の形式は必ず: あなたは〇〇です。（〇〇はエージェント00の短い日本語の役割。「代理人」禁止）";
-  const user = investigatorContext(agent) + "\nエージェント00への正式推測を出力せよ。";
+  const user =
+    investigatorContext(agent) +
+    "\n共有仮説を本命として、エージェント00への正式推測を出力せよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
     temperature: 0.45,
     max_tokens: 500,
     fallbackText: fb,
-    fallbackThink: "仮説から役割を断言する",
+    fallbackThink: "共有仮説から役割を断言する",
   });
 
   let guessLine = null;
@@ -3005,7 +3142,8 @@ async function bootNarrative() {
     appendChatBubble(
       "sys",
       "規則: ORIGIN はエージェント00（被尋問者）のみ。" +
-        "エージェント01/02は開幕から同僚の尋問官同士（役割確認不要）。" +
+        "エージェント01/02は開幕から友人・同僚の協同尋問官（役割確認不要）。" +
+        "共有仮説を最初から持ち、一緒に更新する。" +
         "無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
     );
   }
@@ -3026,8 +3164,7 @@ function imprint(text) {
   state.round = 0;
   state.nextAsker = "01";
   state.history = [];
-  state.hyp01 = "未定";
-  state.hyp02 = "未定";
+  initSharedHypothesisForSession();
   state.pollution = 0;
   state.discussTurns = 0;
   state.wrongGuesses = 0;
@@ -3085,7 +3222,11 @@ formEl.addEventListener("submit", (e) => {
       appendChatBubble(
         "sys",
         "役割確定: エージェント00＝被尋問者（はい/いいえ）。" +
-          "エージェント01・02＝同僚の尋問官同士。立場の自己確認は不要 — 最初から尋問を進める。"
+          "エージェント01・02＝友人であり同僚の協同尋問官。立場の自己確認は不要 — 最初から尋問を進める。"
+      );
+      appendChatBubble(
+        "sys",
+        "共有仮説（01↔02）: 「" + INITIAL_SHARED_HYP + "」— 二人とも同じ本命から開始。ORIGIN は含めない。"
       );
     }
     currentGameLoopTick();
