@@ -29,7 +29,12 @@
  *   Full multi-model same-origin pack → Netlify / local fetch-model.
  */
 
-import { CreateMLCEngine } from "@mlc-ai/web-llm";
+import {
+  CreateMLCEngine,
+  prebuiltAppConfig,
+  modelLibURLPrefix,
+  modelVersion,
+} from "@mlc-ai/web-llm";
 
 export const STORAGE_KEY = "digital-tattoo-model";
 export const ENGINE_MODE_KEY = "digital-tattoo-engine-mode";
@@ -105,6 +110,7 @@ export const MODEL_HF_COMPAT_PREFIX = "resolve/main/";
  *   label: string,
  *   shortLabel: string,
  *   id: string,
+ *   idAliases?: string[],
  *   hfRepo: string,
  *   wasm: string,
  *   sizeMB: number,
@@ -175,9 +181,13 @@ export const MODEL_CATALOG = [
     rank: 3,
     label: "TinySwallow 1.5B（JP特化）",
     shortLabel: "Swallow",
+    // WebLLM model_id (custom appConfig). Sakana ChatUI uses short "TinySwallow-1.5B";
+    // we keep the MLC repo suffix so IndexedDB keys match the HF artifact name.
     id: "TinySwallow-1.5B-Instruct-q4f32_1-MLC",
+    /** @type {string[]} alternate ids accepted by resolveModel / appConfig aliases */
+    idAliases: ["TinySwallow-1.5B", "tinyswallow"],
     hfRepo: "SakanaAI/TinySwallow-1.5B-Instruct-q4f32_1-MLC",
-    // Same arch as Qwen2 1.5B q4f32 — official ChatUI reuses this WASM (v0_2_84 name).
+    // Same arch as Qwen2 1.5B q4f32 — Sakana ChatUI reuses this WASM family (v0_2_84 name).
     wasm: "Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm",
     sizeMB: 830,
     vramMB: 1889,
@@ -251,9 +261,8 @@ export const PAGES_MODEL_KEY = "lite";
  */
 export const PAGES_MAX_SHARD_BYTES = 100 * 1024 * 1024;
 
-/** WASM libs CDN (web-llm 0.2.84) — used when weights load from Hugging Face. */
-export const MODEL_LIB_CDN_BASE =
-  "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/";
+/** WASM libs CDN — always derived from the installed web-llm package version. */
+export const MODEL_LIB_CDN_BASE = modelLibURLPrefix + modelVersion + "/";
 
 /** @deprecated old dual-catalog alias — was 1.5B “plus”; now equals default */
 MODELS.plus = MODELS.default;
@@ -266,6 +275,8 @@ export const MODEL_WASM = MODELS[DEFAULT_MODEL_KEY].wasm;
 /** Legacy storage values → current keys. */
 const LEGACY_KEY_MAP = {
   plus: "default", // old “日本語プラス” was 1.5B
+  tinyswallow: "swallow",
+  "TinySwallow-1.5B": "swallow",
 };
 
 /**
@@ -306,7 +317,7 @@ export function getDefaultModelKey() {
 }
 
 /**
- * Resolve by short key (`default`|`lite`|`hq`|legacy `plus`) or full WebLLM model_id.
+ * Resolve by short key (`default`|`lite`|`hq`|`swallow`|legacy `plus`) or full WebLLM model_id.
  * @param {string} [idOrKey]
  * @returns {ModelInfo | null}
  */
@@ -317,6 +328,8 @@ export function resolveModel(idOrKey) {
   if (mapped === "plus") return MODELS.default;
   for (const m of MODEL_CATALOG) {
     if (m.id === idOrKey) return m;
+    if (m.idAliases && m.idAliases.includes(idOrKey)) return m;
+    if (m.hfRepo === idOrKey || m.hfRepo.endsWith("/" + idOrKey)) return m;
   }
   return null;
 }
@@ -635,10 +648,10 @@ export function modelWeightsBase(model = getActiveModel()) {
   return modelsBase() + m.id + "/" + MODEL_HF_COMPAT_PREFIX;
 }
 
-/** Hugging Face repo root (WebLLM appends resolve/main/ when missing). */
+/** Hugging Face weights base with resolve/main/ (WebLLM will not double-append). */
 export function remoteWeightsBase(model = getActiveModel()) {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
-  return "https://huggingface.co/" + m.hfRepo + "/";
+  return "https://huggingface.co/" + m.hfRepo + "/" + MODEL_HF_COMPAT_PREFIX;
 }
 
 export function remoteWasmUrl(model = getActiveModel()) {
@@ -680,6 +693,7 @@ export function buildAppConfig(model = getActiveModel(), source = "local") {
   const useRemote = source === "remote";
   /** @type {Record<string, unknown>} */
   const entry = {
+    // remoteWeightsBase already includes resolve/main/
     model: useRemote ? remoteWeightsBase(m) : modelWeightsBase(m),
     model_id: m.id,
     model_lib: useRemote ? remoteWasmUrl(m) : modelsBase() + "libs/" + m.wasm,
@@ -693,9 +707,25 @@ export function buildAppConfig(model = getActiveModel(), source = "local") {
   if (m.requiresF16 !== false) {
     entry.required_features = ["shader-f16"];
   }
+
+  // Merge into prebuilt list so findModelRecord never falls back to an empty
+  // custom-only config if anything internal expects the registry shape.
+  const aliasIds = Array.isArray(m.idAliases) ? m.idAliases : [];
+  const ourIds = new Set([m.id, ...aliasIds]);
+  const baseList = (prebuiltAppConfig.model_list || []).filter(
+    (r) => !ourIds.has(r.model_id)
+  );
+  /** @type {Record<string, unknown>[]} */
+  const ours = [entry];
+  for (const alias of aliasIds) {
+    if (!alias || alias === m.id) continue;
+    ours.push({ ...entry, model_id: alias });
+  }
+
   return {
+    ...prebuiltAppConfig,
     cacheBackend: preferredCacheBackend(),
-    model_list: [entry],
+    model_list: [...baseList, ...ours],
   };
 }
 
@@ -777,7 +807,9 @@ function missingReason(model, configUrl) {
   if (model.key === "swallow" || model.key === "gemma-jpn") {
     return (
       model.shortLabel +
-      " の同一オリジン配置がありません（≈" +
+      "（" +
+      model.hfRepo +
+      "）の同一オリジン配置がありません（≈" +
       model.sizeMB +
       " MB）。" +
       remoteHint +
@@ -801,6 +833,19 @@ export function explainLoadError(err) {
       ? String(err.message)
       : String(err || "error");
   const lower = raw.toLowerCase();
+  if (
+    lower.includes("cannot find model record") ||
+    lower.includes("modelnotfound") ||
+    (lower.includes("model_list") && lower.includes("model id"))
+  ) {
+    return (
+      "選択したモデル ID が WebLLM の設定に見つかりませんでした。" +
+      "ページを再読み込みしてから、もう一度 TinySwallow / 標準 1.5B などを選んでください。" +
+      "（" +
+      raw +
+      "）"
+    );
+  }
   if (
     lower.includes("cache.add") ||
     lower.includes("encountered a network error") ||
@@ -857,6 +902,118 @@ async function probeWasm(wasmUrl) {
 }
 
 /**
+ * Probe mlc-chat-config.json. Distinguishes hard 404 from CORS/network ambiguity.
+ * @param {string} configUrl
+ * @returns {Promise<{ ok: boolean, hardMiss?: boolean, reason?: string }>}
+ */
+async function probeConfigJson(configUrl) {
+  try {
+    const c = await fetch(configUrl, { method: "GET", cache: "no-cache" });
+    if (c.status === 404 || c.status === 401 || c.status === 403) {
+      return {
+        ok: false,
+        hardMiss: true,
+        reason: "設定ファイルがありません（HTTP " + c.status + "）。",
+      };
+    }
+    if (!c.ok) {
+      return {
+        ok: false,
+        hardMiss: false,
+        reason: "設定の確認に失敗（HTTP " + c.status + "）。",
+      };
+    }
+    const ct = (c.headers.get("content-type") || "").toLowerCase();
+    const body = await c.text();
+    if (ct.includes("text/html") || !body.includes("model_type")) {
+      return {
+        ok: false,
+        hardMiss: true,
+        reason: "モデル設定が JSON ではありません（404 HTML の可能性）。",
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    // CORS / offline / transient — do not treat as "model missing"
+    return {
+      ok: false,
+      hardMiss: false,
+      reason: e && e.message ? e.message : String(e),
+    };
+  }
+}
+
+/**
+ * @param {ModelInfo} model
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   model: ModelInfo,
+ *   source?: ModelSource,
+ *   reason?: string,
+ *   configUrl?: string,
+ *   wasmUrl?: string,
+ * }>}
+ */
+async function probeRemoteModel(model) {
+  const configUrl = remoteWeightsBase(model) + "mlc-chat-config.json";
+  const wasmUrl = remoteWasmUrl(model);
+  const [cfg, wasm] = await Promise.all([
+    probeConfigJson(configUrl),
+    probeWasm(wasmUrl),
+  ]);
+
+  // Definitive missing config on HF → unavailable with accurate JP reason
+  if (cfg.hardMiss) {
+    return {
+      ok: false,
+      model,
+      source: "remote",
+      configUrl,
+      wasmUrl,
+      reason:
+        model.shortLabel +
+        " は Hugging Face（" +
+        model.hfRepo +
+        "）で見つかりません。" +
+        (cfg.reason || "") +
+        " 別モデルを選ぶか「テンプレートで続行」を使ってください。",
+    };
+  }
+
+  // Config OK (or ambiguous network) + remoteOk → allow load attempt.
+  // Do not grey out solely because HEAD/CORS failed on wasm CDN.
+  if (cfg.ok || allowsRemoteFallback(model)) {
+    const notes = [];
+    if (!cfg.ok) notes.push("HF設定の事前確認は不完全（読み込み時に再試行）");
+    if (!wasm.ok) notes.push("WASM CDN の事前確認は不完全");
+    return {
+      ok: true,
+      model,
+      source: "remote",
+      configUrl,
+      wasmUrl,
+      reason:
+        model.shortLabel +
+        " は同一オリジンに無いため Hugging Face から取得します（初回 ≈" +
+        model.sizeMB +
+        " MB · IndexedDB にキャッシュ · VRAM 目安 ≈" +
+        Math.round(model.vramMB / 100) / 10 +
+        " GB）" +
+        (notes.length ? " · " + notes.join(" · ") : "") +
+        "。",
+    };
+  }
+
+  return {
+    ok: false,
+    model,
+    configUrl,
+    wasmUrl,
+    reason: missingReason(model, configUrl),
+  };
+}
+
+/**
  * @param {ModelInfo | string} modelOrKey
  * @returns {Promise<{
  *   ok: boolean,
@@ -881,38 +1038,14 @@ export async function probeModel(modelOrKey) {
   const wasmUrl = modelsBase() + "libs/" + model.wasm;
   try {
     const [c, w] = await Promise.all([
-      fetch(configUrl, { method: "GET", cache: "no-cache" }),
+      probeConfigJson(configUrl),
       probeWasm(wasmUrl),
     ]);
     if (c.ok && w.ok) {
-      const ct = (c.headers.get("content-type") || "").toLowerCase();
-      const body = await c.text();
-      if (!ct.includes("text/html") && body.includes("model_type")) {
-        // IndexedDB handles large shards — no ≥100 MB reject on Pages.
-        return {
-          ok: true,
-          model,
-          source: "local",
-          configUrl,
-          wasmUrl,
-        };
-      }
-      if (!allowsRemoteFallback(model)) {
-        return {
-          ok: false,
-          model,
-          reason:
-            "モデル設定が JSON ではありません（404 の HTML フォールバックの可能性）。" +
-            "「テンプレートで続行」で遊べます。配置: models/…/resolve/main/",
-          configUrl,
-          wasmUrl,
-        };
-      }
-    } else if (!allowsRemoteFallback(model)) {
       return {
-        ok: false,
+        ok: true,
         model,
-        reason: missingReason(model, configUrl),
+        source: "local",
         configUrl,
         wasmUrl,
       };
@@ -920,42 +1053,19 @@ export async function probeModel(modelOrKey) {
 
     // Missing / incomplete same-origin → Hugging Face + IndexedDB
     if (allowsRemoteFallback(model)) {
-      return {
-        ok: true,
-        model,
-        source: "remote",
-        configUrl: remoteWeightsBase(model) + MODEL_HF_COMPAT_PREFIX + "mlc-chat-config.json",
-        wasmUrl: remoteWasmUrl(model),
-        reason:
-          model.shortLabel +
-          " は同一オリジンに無いため Hugging Face から取得します（初回 ≈" +
-          model.sizeMB +
-          " MB · IndexedDB にキャッシュ · VRAM 目安 ≈" +
-          Math.round(model.vramMB / 100) / 10 +
-          " GB）。",
-      };
+      return probeRemoteModel(model);
     }
 
     return {
       ok: false,
       model,
-      reason: missingReason(model, configUrl),
+      reason: c.reason || missingReason(model, configUrl),
       configUrl,
       wasmUrl,
     };
   } catch (e) {
     if (allowsRemoteFallback(model)) {
-      return {
-        ok: true,
-        model,
-        source: "remote",
-        configUrl: remoteWeightsBase(model) + MODEL_HF_COMPAT_PREFIX + "mlc-chat-config.json",
-        wasmUrl: remoteWasmUrl(model),
-        reason:
-          "ローカル確認に失敗したため Hugging Face 経由で試せます（" +
-          (e && e.message ? e.message : String(e)) +
-          "）。",
-      };
+      return probeRemoteModel(model);
     }
     return {
       ok: false,
@@ -1043,8 +1153,15 @@ export async function createLocalEngine(
   if (!m) throw new Error("Unknown model: " + String(model));
   await unloadEngine(prevEngine);
   const src = source === "remote" ? "remote" : "local";
+  const appConfig = buildAppConfig(m, src);
+  const listed = (appConfig.model_list || []).some((r) => r.model_id === m.id);
+  if (!listed) {
+    throw new Error(
+      "appConfig.model_list に " + m.id + " がありません（内部設定エラー）。"
+    );
+  }
   return CreateMLCEngine(m.id, {
-    appConfig: buildAppConfig(m, src),
+    appConfig,
     initProgressCallback: (report) => {
       const progress = typeof report.progress === "number" ? report.progress : 0;
       let text = report.text || "モデルを読み込み中…";
@@ -1690,6 +1807,13 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
       if (!skipReload) {
         try {
           if (old && typeof old.reload === "function") {
+            // Ensure custom models (e.g. TinySwallow) stay in appConfig after
+            // any internal reset; ModelNotFoundError otherwise.
+            const srcProbe = await probeModel(model);
+            const src = srcProbe.source || "local";
+            if (typeof old.setAppConfig === "function") {
+              old.setAppConfig(buildAppConfig(model, src));
+            }
             await old.reload(model.id);
             rebindEngine(engineId, old);
             return old;

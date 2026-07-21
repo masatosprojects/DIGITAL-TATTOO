@@ -3181,6 +3181,10 @@ function usableTag(usable) {
 
 function shortMissReason(reason) {
   const r = String(reason || "このホストにファイルがありません");
+  // Keep HF / TinySwallow identity visible when truncated
+  if (/Hugging Face|hfRepo|SakanaAI|見つかりません/.test(r)) {
+    return r.length > 96 ? r.slice(0, 94) + "…" : r;
+  }
   return r.length > 72 ? r.slice(0, 70) + "…" : r;
 }
 
