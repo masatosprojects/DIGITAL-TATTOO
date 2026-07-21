@@ -1032,6 +1032,16 @@ export function explainLoadError(err) {
       ? String(err.message)
       : String(err || "error");
   const lower = raw.toLowerCase();
+  if (lower.includes("tensor-cache.json")) {
+    return (
+      "このモデルの配布元に tensor-cache.json が無く、リモート（Hugging Face）からは読み込めません。" +
+      "TinySwallow は次回サイト更新で同一オリジン配置に切り替わります。" +
+      "今は標準 Qwen 1.5B や Qwen3 系など他モデルを選んでください。" +
+      "（" +
+      raw +
+      "）"
+    );
+  }
   if (
     lower.includes("cannot find model record") ||
     lower.includes("modelnotfound") ||

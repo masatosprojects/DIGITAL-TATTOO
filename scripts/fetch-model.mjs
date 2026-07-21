@@ -4,7 +4,7 @@
  *
  * Usage (needs network once):
  *   npm run fetch-model            # default Qwen 1.5B (~840 MB)
- *   npm run fetch-model:pages      # lite 0.5B + remote WASM libs (Pages CI)
+ *   npm run fetch-model:pages      # lite 0.5B + swallow 1.5B full weights + remote WASM libs (Pages CI)
  *   npm run fetch-model:hq         # 3B
  *   npm run fetch-model:swallow    # TinySwallow JP (optional local pack)
  *   npm run fetch-model:gemma-jpn  # Gemma2-JPN (optional)
@@ -367,6 +367,22 @@ async function fetchOne(model) {
     );
   }
 
+  // web-llm 0.2.84 unconditionally fetches tensor-cache.json during load —
+  // older community compiles (e.g. SakanaAI/TinySwallow, built with an older
+  // mlc_llm toolchain) only shipped the equivalent ndarray-cache.json under
+  // the old filename. Both files use the identical raw-shard record schema
+  // (verified byte-identical against mlc-ai's own Qwen2.5-1.5B-q4f32 build,
+  // which ships both names with matching content) — so mirroring the file
+  // under the new name is a safe, mechanical fix, not a data guess.
+  const ndarrayCachePath = path.join(weightsDir, "ndarray-cache.json");
+  const tensorCachePath = path.join(weightsDir, "tensor-cache.json");
+  if (fs.existsSync(ndarrayCachePath) && !fs.existsSync(tensorCachePath)) {
+    await fs.promises.copyFile(ndarrayCachePath, tensorCachePath);
+    console.log(
+      `  patched: tensor-cache.json missing upstream — mirrored from ndarray-cache.json`
+    );
+  }
+
   console.log("");
   return { model, bytes };
 }
@@ -438,7 +454,14 @@ function parseTargets(argv) {
     if (!keys.includes(k)) keys.push(k);
   }
   if (pages) {
-    const full = keys.includes("lite") ? keys.slice() : ["lite", ...keys];
+    // "swallow" ships full weights same-origin too (not wasm-only): its HF
+    // repo lacks tensor-cache.json, which web-llm 0.2.84 requires to load —
+    // remote HF+IndexedDB loading is permanently broken for it, so Pages
+    // must serve its own (patched) copy same-origin.
+    const full = keys.slice();
+    for (const need of ["lite", "swallow"]) {
+      if (!full.includes(need)) full.push(need);
+    }
     const wasmOnly = PAGES_WASM_KEYS.filter((k) => !full.includes(k));
     return { full, wasmOnly };
   }
@@ -535,9 +558,12 @@ async function main() {
     approx_size_MB: Math.round(dirSizeBytes(OUT_ROOT) / (1024 * 1024)),
     note:
       "Runtime prefers same-origin …/resolve/main/; missing weights may use HF+IndexedDB. " +
-      "Pages CI ships lite + WASM libs for remote models (TinySwallow/1.5B/…).",
+      "Pages CI ships lite + swallow (recommended default) full weights same-origin; " +
+      "other models load via HF+IndexedDB on first use.",
     deploy_size_note:
-      "lite≈280MB + remote WASM libs≈20MB. Full weights for 1.5B/Swallow via HF on first load.",
+      "lite≈280MB + swallow≈830MB + remote WASM libs≈20MB same-origin (≈1.1GB). " +
+      "swallow ships full weights because its HF repo lacks tensor-cache.json " +
+      "(web-llm 0.2.84 requires it; remote HF loading is broken for it otherwise).",
   };
   await fs.promises.writeFile(
     path.join(OUT_ROOT, "manifest.json"),
