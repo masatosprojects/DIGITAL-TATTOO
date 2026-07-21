@@ -1399,11 +1399,11 @@ async function agentAskQuestion(asker) {
       "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
       "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
 
-    panel.addSection("params", "stream · max_tokens=100", "meta");
+    panel.addSection("params", "stream · max_tokens=500", "meta");
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: asker,
       temperature: 0.5,
-      max_tokens: 100,
+      max_tokens: 500,
       fallbackText: fallbackQ,
       fallbackThink: "身分やカテゴリを確認する質問をする",
     });
@@ -1507,7 +1507,7 @@ async function agent00Answer(question) {
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
     temperature: 0,
-    max_tokens: 130,
+    max_tokens: 500,
     top_p: 0.5,
     fallbackText: fb,
     fallbackThink: "ORIGIN と常識で判定（テンプレート時は文言一致のみ）",
@@ -1598,7 +1598,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
     temperature: 0.55,
-    max_tokens: 140,
+    max_tokens: 500,
     fallbackText: fb,
     fallbackThink: "答えから候補を整理する",
   });
@@ -1647,7 +1647,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     const resH = await llmChat(hypSystem, hypUser, {
       agent,
       temperature: 0.55,
-      max_tokens: 40,
+      max_tokens: 500,
       onDelta: (_d, full) => {
         hypPanelNote.textContent = full;
       },
@@ -1726,7 +1726,7 @@ async function agentFormalGuess(agent) {
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
     temperature: 0.45,
-    max_tokens: 80,
+    max_tokens: 500,
     fallbackText: fb,
     fallbackThink: "仮説から役割を断言する",
   });
@@ -2013,11 +2013,11 @@ async function wolfAskQuestion(askerId) {
       "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
       "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
 
-    panel.addSection("params", "stream · max_tokens=100", "meta");
+    panel.addSection("params", "stream · max_tokens=500", "meta");
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: askerId,
       temperature: 0.5,
-      max_tokens: 100,
+      max_tokens: 500,
       fallbackText: fallbackQ,
       fallbackThink: "身分やカテゴリを確認する質問をする",
     });
@@ -2100,7 +2100,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: speakerId,
     temperature: 0.55,
-    max_tokens: 140,
+    max_tokens: 500,
     fallbackText: fb,
     fallbackThink: "答えから候補を整理する",
   });
@@ -2149,7 +2149,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     const resH = await llmChat(hypSystem, hypUser, {
       agent: speakerId,
       temperature: 0.55,
-      max_tokens: 40,
+      max_tokens: 500,
       onDelta: (_d, full) => {
         hypPanelNote.textContent = full;
       },
@@ -2258,7 +2258,7 @@ async function wolfVotePhase() {
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: voter.id,
       temperature: 0.6,
-      max_tokens: 40,
+      max_tokens: 500,
       fallbackText: fb,
       fallbackThink: "議論を振り返って怪しい相手を選ぶ",
     });
@@ -2330,7 +2330,7 @@ async function wolfFormalGuess() {
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: guesser.id,
     temperature: 0.45,
-    max_tokens: 80,
+    max_tokens: 500,
     fallbackText: fb,
     fallbackThink: "仮説から役割を断言する",
   });

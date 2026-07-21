@@ -1119,7 +1119,7 @@ export async function generateWithEngine(engine, messages, opts = {}) {
   const base = {
     messages: adapted,
     temperature: opts.temperature ?? 0.7,
-    max_tokens: opts.max_tokens ?? 120,
+    max_tokens: opts.max_tokens ?? 500,
     top_p: opts.top_p ?? 0.9,
   };
 
