@@ -267,6 +267,27 @@ export const MODEL_CATALOG = [
       "軽量 Qwen 0.5B の新世代版。多言語対応が改善。≈335 MB · VRAM ≈1.4 GB。初回は HF から取得。",
   },
   {
+    key: "ministral3b",
+    rank: 1.2,
+    label: "Ministral 3 3B Instruct（新世代・多言語）",
+    shortLabel: "Ministral3B",
+    id: "Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Ministral-3-3B-Instruct-2512-BF16-q4f16_1-MLC",
+    wasm: "Ministral-3-3B-Instruct-2512-BF16-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 1856,
+    vramMB: 2864,
+    minVramHint: 3100,
+    usable: "maybe",
+    jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Apache-2.0",
+    hint:
+      "Mistral AI の新世代小型モデル（2025年12月・エッジ向け）。日本語を含む公式対応言語リストあり。" +
+      "≈1.9 GB · VRAM ≈2.9 GB（要VRAM）。初回は HF から取得。",
+  },
+  {
     key: "llama32-3b",
     rank: 1.5,
     label: "Llama 3.2 3B Instruct（日本語は弱め）",
@@ -286,6 +307,48 @@ export const MODEL_CATALOG = [
     hint:
       "Meta公式・多言語だが公式サポート言語に日本語は含まれず、日本語品質は他候補より劣る。" +
       "≈1.7 GB · VRAM ≈2.3 GB。初回は HF から取得。",
+  },
+  {
+    key: "qwen35-2b",
+    rank: 4.7,
+    label: "Qwen3.5 2B（最新世代・多言語強化）",
+    shortLabel: "Qwen3.5-2B",
+    id: "Qwen3.5-2B-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen3.5-2B-q4f16_1-MLC",
+    wasm: "Qwen3.5-2B-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 1032,
+    vramMB: 2245,
+    minVramHint: 2400,
+    usable: "yes",
+    jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Apache-2.0",
+    hint:
+      "Qwen3 のさらに後継（2026年3月）。201言語対応で多言語エンコード効率が改善。" +
+      "≈1.0 GB · VRAM ≈2.2 GB。初回は HF から取得。",
+  },
+  {
+    key: "qwen35-0.8b",
+    rank: 5.7,
+    label: "Qwen3.5 0.8B（最新世代・軽量）",
+    shortLabel: "Qwen3.5-0.8B",
+    id: "Qwen3.5-0.8B-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen3.5-0.8B-q4f16_1-MLC",
+    wasm: "Qwen3.5-0.8B-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 426,
+    vramMB: 1629,
+    minVramHint: 1800,
+    usable: "yes",
+    jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Apache-2.0",
+    hint:
+      "Qwen3.5 系の最軽量。Qwen2.5/Qwen3 の軽量枠より新しい世代。" +
+      "≈426 MB · VRAM ≈1.6 GB。初回は HF から取得。",
   },
   {
     key: "llama32-1b",
