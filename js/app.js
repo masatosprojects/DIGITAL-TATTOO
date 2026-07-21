@@ -956,12 +956,56 @@ const ANSWER_TOKEN_ALT = ANSWER_LEVELS.slice()
   .sort((a, b) => b.length - a.length)
   .join("|");
 
+/**
+ * Last explicit 5-level token in text (reasoning conclusion), longest-match
+ * so 「どちらかというといいえ」 wins over a nested bare 「いいえ」.
+ */
+function extractLastAnswerToken(text) {
+  const t = String(text || "");
+  if (!t) return null;
+  const re = new RegExp(ANSWER_TOKEN_ALT, "g");
+  let m;
+  let last = null;
+  while ((m = re.exec(t)) !== null) last = m[0];
+  return last;
+}
+
+function identityAnswerRationale(origin, question, answer) {
+  const q = String(question || "").replace(/\s+/g, "");
+  const neg = /ではない|じゃない|じゃなく|でない|ではな[いか]/.test(q);
+  if (neg) {
+    return (
+      "ORIGIN「" +
+      origin +
+      "」の字面が否定形の質問に含まれるため「" +
+      answer +
+      "」"
+    );
+  }
+  return (
+    "ORIGIN「" + origin + "」の字面が質問に含まれるため「" + answer + "」"
+  );
+}
+
 function clampAnswer(raw) {
   let t = String(raw || "").trim();
-  // Prefer the explicit 発言 / 答 line so thinking text cannot flip the answer.
+  // Prefer an explicit 発言 / 答 line when it itself clamps cleanly.
   const speakMatch = t.match(/(?:発言|答(?:え)?)[:：]\s*([^\n]+)/i);
-  if (speakMatch) t = speakMatch[1].trim();
-  t = t
+  if (speakMatch) {
+    const fromSpeak = clampAnswerLoose(speakMatch[1].trim());
+    if (fromSpeak) return fromSpeak;
+  }
+  // Otherwise follow the last explicit answer token in the whole text
+  // (model's reasoning conclusion), not the first mention.
+  const lastTok = extractLastAnswerToken(t);
+  if (lastTok) return lastTok;
+  return clampAnswerLoose(t);
+}
+
+/** Fuzzy yes/no extraction for a single fragment (no 発言: split). */
+function clampAnswerLoose(raw) {
+  let t = String(raw || "")
+    .trim()
     .replace(/^["「『]|["」』]$/g, "")
     .replace(/\s+/g, "")
     .toLowerCase();
@@ -981,6 +1025,9 @@ function clampAnswer(raw) {
   if (/^(はい|yes|ｙｅｓ|true)[。．.!！]*$/.test(t)) return "はい";
   if (/^(いいえ|いや|no|ｎｏ|false)[。．.!！]*$/.test(t)) return "いいえ";
 
+  const lastTok = extractLastAnswerToken(t);
+  if (lastTok) return lastTok;
+
   const neutral = /どちらとも言えな|どちらともいえな|何とも言えな|なんとも言えな|判断できな/.test(t);
   if (neutral) return "どちらとも言えない";
 
@@ -993,8 +1040,20 @@ function clampAnswer(raw) {
   if (hasYes && !hasNo) return hedge ? "どちらかというとはい" : "はい";
   if (hasNo && !hasYes) return hedge ? "どちらかというといいえ" : "いいえ";
   if (hasYes && hasNo) {
+    // Prefer the later judgment (conclusion), not the first mention.
     const yi = t.search(/はい|yes|肯定/);
     const ni = t.search(/いいえ|いや|否定|違う|ちがう|ではありません/);
+    let yLast = -1;
+    let nLast = -1;
+    const yRe = /はい|yes|肯定/g;
+    const nRe = /いいえ|いや|否定|違う|ちがう|ではありません/g;
+    let m;
+    while ((m = yRe.exec(t)) !== null) yLast = m.index;
+    while ((m = nRe.exec(t)) !== null) nLast = m.index;
+    if (yLast >= 0 || nLast >= 0) {
+      if (yLast > nLast) return hedge ? "どちらかというとはい" : "はい";
+      if (nLast > yLast) return hedge ? "どちらかというといいえ" : "いいえ";
+    }
     if (yi >= 0 && (ni < 0 || yi < ni)) return hedge ? "どちらかというとはい" : "はい";
     if (ni >= 0) return hedge ? "どちらかというといいえ" : "いいえ";
   }
@@ -1003,16 +1062,67 @@ function clampAnswer(raw) {
   return null;
 }
 
-function forceAnswer(raw, origin, question) {
-  // Clear identity (ORIGIN literally in the question) → reliable path over LLM.
-  // Category asks without ORIGIN wording (動物 etc.) still use LLM / clamp.
+/**
+ * Resolve エージェント00's final answer so speech matches the decision path
+ * shown in the think panel. Prefer: identity override → thinking conclusion
+ * when speak contradicts → speak → clamp → fallback.
+ */
+function resolveAgent00Answer(think, speak, raw, origin, question) {
   if (isClearOriginIdentityAsk(origin, question)) {
-    return answerYesNoFallback(origin, question);
+    const answer = answerYesNoFallback(origin, question);
+    return {
+      answer,
+      source: "identity",
+      note: identityAnswerRationale(origin, question, answer),
+    };
   }
+
+  const thinkToken = extractLastAnswerToken(think || "");
+  const speakClamped = speak ? clampAnswerLoose(String(speak)) : null;
+
+  if (thinkToken && speakClamped && thinkToken !== speakClamped) {
+    return {
+      answer: thinkToken,
+      source: "think-conclusion",
+      note:
+        "思考の結論「" +
+        thinkToken +
+        "」を採用（発言行の「" +
+        speakClamped +
+        "」は思考と不一致のため破棄）",
+    };
+  }
+  if (speakClamped) {
+    return { answer: speakClamped, source: "speak", note: null };
+  }
+  if (thinkToken) {
+    return { answer: thinkToken, source: "think", note: null };
+  }
+
   const clamped = clampAnswer(raw);
-  if (clamped) return clamped;
-  // Template / garbled LLM only — identity match, never taxonomy dictionary.
-  return answerYesNoFallback(origin, question);
+  if (clamped) {
+    return { answer: clamped, source: "clamp", note: null };
+  }
+
+  const fb = answerYesNoFallback(origin, question);
+  return {
+    answer: fb,
+    source: "fallback",
+    note: "回答抽出に失敗したため字面照合テンプレートで「" + fb + "」",
+  };
+}
+
+function forceAnswer(raw, origin, question) {
+  return resolveAgent00Answer(null, null, raw, origin, question).answer;
+}
+
+/** Debate/opinion that is only a 5-level token (エージェント00's job, not 01/02). */
+function isBareAnswerOpinion(t) {
+  const s = String(t || "")
+    .trim()
+    .replace(/^["「『]+|["」』]+$/g, "")
+    .replace(/\s+/g, "");
+  return new RegExp("^(" + ANSWER_TOKEN_ALT + "|yes|no)[。．.!！?？]*$", "i").test(s);
 }
 
 function cleanJapaneseLine(raw, maxLen) {
@@ -1308,7 +1418,7 @@ async function agentAskQuestion(asker) {
   if (!question || isBadInvestigatorQuestion(question)) {
     panel.addSection(
       "質問補正",
-      "メタ／履歴エコー／形式崩れを検知 → テンプレート質問へ",
+      "モデル出力が質問として不適（メタ／履歴エコー／形式崩れ）→ テンプレート質問を採用。上記の思考抽出は不採用。",
       "warn"
     );
     question = fallbackQ;
@@ -1336,6 +1446,25 @@ async function agent00Answer(question) {
     "clampAnswer（00のみ）→ " + ANSWER_LEVELS.join(" ｜ "),
     "warn"
   );
+
+  // Clear identity ask: decide before LLM so the think panel never shows a
+  // contradictory chain-of-thought that gets overridden after the fact.
+  if (isClearOriginIdentityAsk(state.origin, question)) {
+    const beatStart = performance.now();
+    const answer = answerYesNoFallback(state.origin, question);
+    const reason = identityAnswerRationale(state.origin, question, answer);
+    panel.addSection("判定方式", "字面一致（LLMスキップ）", "warn");
+    panel.addSection("最終判定", reason, "out");
+    panel.collapse();
+    const ansElId = document.createElement("div");
+    ansElId.className = "answer-big";
+    ansElId.textContent = answer;
+    speechSlots["00"].appendChild(ansElId);
+    appendSpeech("00", "「" + answer + "」", "a00");
+    appendChatBubble("sys", "エージェント00「" + answer + "」");
+    await paceAfterBeat(answer, beatStart);
+    return answer;
+  }
 
   const fb = answerYesNoFallback(state.origin, question);
   const system =
@@ -1366,6 +1495,7 @@ async function agent00Answer(question) {
     "一部だけ当てはまる・条件次第なら「どちらかというとはい」または「どちらかというといいえ」。" +
     "判断材料が本当に足りない・五分五分なら「どちらとも言えない」。安易に多用しない。" +
     "嘘・詩・はぐらかし禁止。「代理人」禁止。" +
+    "重要: 思考で選んだ5段階語と発言行は必ず同じにする。思考の結論と違う語を発言に書かない。" +
     "出力は必ず2行: 思考: （上記手順に沿った短い理由） 次の行 発言: （上記5つのいずれか1つのみ、他の語は書かない）。";
   const user =
     "ORIGIN = 「" +
@@ -1383,11 +1513,22 @@ async function agent00Answer(question) {
     fallbackThink: "ORIGIN と常識で判定（テンプレート時は文言一致のみ）",
   });
 
-  // clampAnswer / forceAnswer apply ONLY to エージェント00 answers.
-  const answer = forceAnswer(streamed.speak || streamed.raw, state.origin, question);
-  panel.addSection("clamped", answer, "out");
+  // Resolve ONLY for エージェント00: prefer thinking conclusion when speak
+  // contradicts, and surface that decision path in the think panel.
+  const resolved = resolveAgent00Answer(
+    streamed.think,
+    streamed.speak,
+    streamed.raw,
+    state.origin,
+    question
+  );
+  if (resolved.note) {
+    panel.addSection("判定整合", resolved.note, "warn");
+  }
+  panel.addSection("最終判定", resolved.answer, "out");
   panel.collapse();
 
+  const answer = resolved.answer;
   const ansEl = document.createElement("div");
   ansEl.className = "answer-big";
   ansEl.textContent = answer;
@@ -1467,7 +1608,19 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     : streamed.raw
       ? cleanJapaneseLine(streamed.raw, 160)
       : null;
-  if (!opinion || isInstructionEchoText(opinion) || isFormatLeakText(opinion)) {
+  if (
+    !opinion ||
+    isInstructionEchoText(opinion) ||
+    isFormatLeakText(opinion) ||
+    isBareAnswerOpinion(opinion)
+  ) {
+    if (opinion && isBareAnswerOpinion(opinion)) {
+      panel.addSection(
+        "発言補正",
+        "5段階語のみの発言を検知（思考と不一致・役割外）→ テンプレート議論文を採用。上記の思考抽出は不採用。",
+        "warn"
+      );
+    }
     opinion = fb;
   }
 
@@ -1879,7 +2032,7 @@ async function wolfAskQuestion(askerId) {
   if (!question || isBadInvestigatorQuestion(question)) {
     panel.addSection(
       "質問補正",
-      "メタ／履歴エコー／形式崩れを検知 → テンプレート質問へ",
+      "モデル出力が質問として不適（メタ／履歴エコー／形式崩れ）→ テンプレート質問を採用。上記の思考抽出は不採用。",
       "warn"
     );
     question = fallbackQ;
@@ -1957,7 +2110,19 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     : streamed.raw
       ? cleanJapaneseLine(streamed.raw, 160)
       : null;
-  if (!opinion || isInstructionEchoText(opinion) || isFormatLeakText(opinion)) {
+  if (
+    !opinion ||
+    isInstructionEchoText(opinion) ||
+    isFormatLeakText(opinion) ||
+    isBareAnswerOpinion(opinion)
+  ) {
+    if (opinion && isBareAnswerOpinion(opinion)) {
+      panel.addSection(
+        "発言補正",
+        "5段階語のみの発言を検知（思考と不一致・役割外）→ テンプレート議論文を採用。上記の思考抽出は不採用。",
+        "warn"
+      );
+    }
     opinion = fb;
   }
 
