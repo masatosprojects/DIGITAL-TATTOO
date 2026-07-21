@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "free-answer-1";
+const CLIENT_BUILD = "ux-product-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -112,6 +112,13 @@ const sharedMemoryEl = document.getElementById("sharedMemory");
 const sharedMemoryHead = document.getElementById("sharedMemoryHead");
 const sharedMemoryList = document.getElementById("sharedMemoryList");
 const sharedMemoryCount = document.getElementById("sharedMemoryCount");
+const boardEl = document.getElementById("board");
+const btnThinkToggle = document.getElementById("btnThinkToggle");
+const btnSend = document.getElementById("btnSend");
+const gateAdvancedToggle = document.getElementById("gateAdvancedToggle");
+const gateAdvanced = document.getElementById("gateAdvanced");
+const topicCards = document.getElementById("topicCards");
+const topicEcho = document.getElementById("topicEcho");
 const panel00 = document.getElementById("panel00");
 const panel01 = document.getElementById("panel01");
 const panel02 = document.getElementById("panel02");
@@ -413,17 +420,7 @@ function updateHud() {
           ? "刻印待機"
           : "準備";
 
-  cohLabel.textContent =
-    "R" +
-    state.round +
-    " · G" +
-    state.guessCount +
-    " · 議論" +
-    state.discussTurns +
-    "/" +
-    MIN_DISCUSS_BEFORE_GUESS +
-    " · " +
-    phaseShort;
+  cohLabel.textContent = "Round " + state.round;
 
   const hypUi = formatSharedHypDisplay();
   if (hyp01El) hyp01El.textContent = hypUi;
@@ -433,11 +430,11 @@ function updateHud() {
     phaseLabelEl.textContent =
       state.phase === "ended"
         ? state.won
-          ? "フェーズ: 解明完了"
-          : "フェーズ: 未解明で終了"
+          ? "正体が解明されました"
+          : "未解明のまま終了しました"
         : state.phase === "imprint"
-          ? "フェーズ: ORIGIN 刻印待機"
-          : "フェーズ: " + (state.turnPhase || phaseShort);
+          ? "秘密の役割（ORIGIN）を入力してください"
+          : humanPhaseLabel(state.turnPhase || phaseShort);
   }
 
   panel00.classList.toggle("active", state.activeAgent === "00");
@@ -457,12 +454,12 @@ function renderSharedMemory() {
   sharedMemoryCount.textContent = rows.length + "件";
   if (!rows.length) {
     sharedMemoryList.innerHTML =
-      '<div class="mem-empty">まだ質問なし — エージェント01/02の共用Q→Aがここに残る</div>';
+      '<div class="mem-empty">まだ質問なし — ここにあとで Q→A が残ります</div>';
     return;
   }
   sharedMemoryList.innerHTML = rows
     .map((h, i) => {
-      const asker = agentDisplayName(h.asker || "");
+      const asker = agentUiLabel(h.asker || "");
       const round = h.round != null ? "R" + h.round : "";
       return (
         '<div class="mem-row">' +
@@ -596,9 +593,45 @@ function agentDisplayName(agent) {
   return "エージェント" + agent;
 }
 
-/** Prompt / UI label — always エージェントNN (never 代理人). */
+/** Prompt label — always エージェントNN (never change for LLM rules). */
 function agentPromptName(agent) {
   return agentDisplayName(agent);
+}
+
+/** Visible UI role name only (display). */
+function agentUiName(agent) {
+  if (agent === "00") return "対象者";
+  if (agent === "01") return "尋問官A";
+  if (agent === "02") return "尋問官B";
+  if (agent === "GM") return "運営";
+  const wolf = /^D([1-5])$/.exec(agent || "");
+  if (wolf) return "討論者" + wolf[1];
+  return agentDisplayName(agent);
+}
+
+/** Visible UI tag: 対象者 · AGENT-00 */
+function agentUiLabel(agent) {
+  if (agent === "00" || agent === "01" || agent === "02") {
+    return agentUiName(agent) + " · AGENT-" + agent;
+  }
+  return agentUiName(agent);
+}
+
+/** Human-readable phase line for the quiet status row. */
+function humanPhaseLabel(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return "準備しています…";
+  if (/質問中/.test(t)) return "AIが質問を考えています…";
+  if (/回答中/.test(t)) return "対象者が答えています…";
+  if (/議論中/.test(t)) return "尋問官が相談しています…";
+  if (/正式推測/.test(t)) return "正式な推測を出しています…";
+  if (/刻印/.test(t)) return "秘密の役割（ORIGIN）を入力してください";
+  if (/尋問開始|討論者たちの尋問/.test(t)) return "シミュレーション進行中…";
+  if (/次は/.test(t)) return t.replace(/エージェント0([12])/g, (_, n) => (n === "1" ? "尋問官A" : "尋問官B"));
+  if (t === "準備" || t === "尋問中" || t === "人狼尋問中") return "シミュレーション進行中…";
+  if (t === "解明") return "正体が解明されました";
+  if (t === "未解明") return "未解明のまま終了しました";
+  return t;
 }
 
 function namingClarityRule() {
@@ -837,7 +870,7 @@ async function offerModelReload(reason) {
   }
   if (modelGate) modelGate.classList.remove("hidden");
   gateMsg.textContent =
-    "【GPU切断】モデルを選び直して「読み込む」を押してください。VRAM 節約のためいったん 軽量(0.5B) を選択済みです。Swallow は重いので再発しやすいです。" +
+    "【GPU切断】モデルを選び直して「▶ 開始」を押してください。VRAM 節約のためいったん 軽量(0.5B) を選択済みです。Swallow は重いので再発しやすいです。" +
     (gpuDeathCount >= 2
       ? " ⚠ GPU切断" + gpuDeathCount + "回目 — このタブ内での再選択では直らない可能性が高いです。ブラウザで Ctrl+Shift+R（強制再読み込み）してから改めて開始してください。"
       : "");
@@ -845,7 +878,7 @@ async function offerModelReload(reason) {
   gatePct.textContent = "—";
   gateLoad.disabled = false;
   gateLoad.hidden = false;
-  gateLoad.textContent = "読み込む";
+  gateLoad.textContent = "▶ 開始";
   gateHint.innerHTML =
     "推奨: <strong>軽量 0.5B</strong> または <strong>標準 Qwen 1.5B</strong> を全エージェントで共有。<br>" +
     "ORIGIN と会話履歴は保持したまま続行できます。Ctrl+Shift+R で最新版か確認してください。";
@@ -859,6 +892,7 @@ async function offerModelReload(reason) {
   if (btnPause) btnPause.disabled = true;
   inputEl.disabled = true;
   inputEl.placeholder = "モデル再読み込み待ち…";
+  if (btnSend) btnSend.disabled = true;
   currentUpdateHud();
 }
 
@@ -882,7 +916,8 @@ function resumeAfterModelReload() {
       btnPause.textContent = "一時停止";
     }
     inputEl.disabled = false;
-    inputEl.placeholder = "質問を提案（任意・Enter）…";
+    inputEl.placeholder = "質問を入力…";
+    if (btnSend) btnSend.disabled = false;
     updateHud();
     currentGameLoopTick();
   } else {
@@ -983,7 +1018,7 @@ function appendSpeech(agent, text, cls) {
   div.className = "line " + (cls || "a" + agent);
   const tag = document.createElement("span");
   tag.className = "agent-tag";
-  tag.textContent = "[" + agentDisplayName(agent) + "]";
+  tag.textContent = "[" + agentUiLabel(agent) + "]";
   div.appendChild(tag);
   div.appendChild(document.createTextNode(" " + text));
   slot.appendChild(div);
@@ -998,7 +1033,7 @@ function appendChatBubble(kind, text, extraCls) {
   if (kind === "01" || kind === "02") {
     const who = document.createElement("span");
     who.className = "b-who";
-    who.textContent = "[" + agentDisplayName(kind) + "]";
+    who.textContent = "[" + agentUiLabel(kind) + "]";
     div.appendChild(who);
     div.appendChild(document.createTextNode(text));
   } else {
@@ -1052,7 +1087,7 @@ async function typeChatBubble(agent, text, extraCls) {
   div.className = "bubble b" + agent + (extraCls ? " " + extraCls : "");
   const who = document.createElement("span");
   who.className = "b-who";
-  who.textContent = "[" + agentDisplayName(agent) + "]";
+  who.textContent = "[" + agentUiLabel(agent) + "]";
   div.appendChild(who);
   const body = document.createElement("span");
   div.appendChild(body);
@@ -1136,11 +1171,11 @@ function createThinkPanel(agent, title) {
 
   const details = document.createElement("details");
   details.className = "think-panel";
-  details.open = true;
+  details.open = false;
 
   const summary = document.createElement("summary");
   summary.className = "think-summary";
-  summary.textContent = title || "思考過程 — 生成中…";
+  summary.textContent = title || "AIの思考を見る（生成中…）";
 
   const body = document.createElement("div");
   body.className = "think-body";
@@ -1210,8 +1245,7 @@ function createThinkPanel(agent, title) {
       });
     }
     details.open = false;
-    summary.textContent =
-      "思考過程 · " + agentDisplayName(agent) + " — クリックで展開";
+    summary.textContent = "AIの思考を見る · " + agentUiLabel(agent);
     wrap.classList.add("think-done");
     liveLab.textContent = "生成ログ（完了）";
   }
@@ -1386,7 +1420,7 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
   if (opts.agent) {
     panel.addSection("engine", engineMetaForAgent(opts.agent), "meta");
   }
-  panel.setStatus("思考過程 · ライブ推論中…");
+  panel.setStatus("AIの思考を見る（生成中…）");
   const res = await llmChat(system, user, { ...opts, onDelta, stream: true });
   if (res && res.raw) {
     raw = res.raw;
@@ -3528,7 +3562,7 @@ function wolfImprint(text) {
     "ORIGIN をエージェント00に刻印。人狼モード開始 — 討論者5人のうち1人がハルシネーター。"
   );
   setTurn(null, "討論者たちの尋問開始");
-  inputEl.placeholder = "質問を提案（任意・Enter）…";
+  inputEl.placeholder = "質問を入力…";
   renderWolfRoster();
   updateWolfHud();
 }
@@ -3552,17 +3586,7 @@ function updateWolfHud() {
   const qPct = Math.min(100, Math.round((state.wolfQInCours / WOLF_QUESTIONS_PER_COURS) * 100));
   cohFill.style.width = qPct + "%";
   cohFill.style.background = "var(--green)";
-  cohLabel.textContent =
-    "クール" +
-    state.wolfCours +
-    " · 質問" +
-    state.wolfQInCours +
-    "/" +
-    WOLF_QUESTIONS_PER_COURS +
-    " · 生存" +
-    alive +
-    "/" +
-    total;
+  cohLabel.textContent = "Round " + state.wolfCours;
 
   const phaseShort =
     state.phase === "ended"
@@ -3579,11 +3603,11 @@ function updateWolfHud() {
     phaseLabelEl.textContent =
       state.phase === "ended"
         ? state.won
-          ? "フェーズ: 解明完了"
-          : "フェーズ: 未解明で終了"
+          ? "正体が解明されました"
+          : "未解明のまま終了しました"
         : state.phase === "imprint"
-          ? "フェーズ: ORIGIN 刻印待機"
-          : "フェーズ: " + (state.turnPhase || phaseShort);
+          ? "秘密の役割（ORIGIN）を入力してください"
+          : humanPhaseLabel(state.turnPhase || phaseShort);
   }
 
   panel00.classList.toggle("active", state.activeAgent === "00");
@@ -3640,7 +3664,8 @@ async function bootNarrative() {
   state.phase = "imprint";
   setTurn("00", "ORIGIN 刻印待機");
   inputEl.disabled = false;
-  inputEl.placeholder = "エージェント00 の秘密の役割（ORIGIN）を刻む…";
+  inputEl.placeholder = "対象者の秘密の役割（ORIGIN）を入力…";
+  if (btnSend) btnSend.disabled = false;
   inputEl.focus();
   currentUpdateHud();
 }
@@ -3667,7 +3692,7 @@ function imprint(text) {
   syncPaceButton();
   logSession({ kind: "origin", agent: "00", text: state.origin });
   setTurn("01", "尋問開始 · エージェント01 が最初の質問");
-  inputEl.placeholder = "質問を提案（任意・Enter）…";
+  inputEl.placeholder = "質問を入力…";
   updateHud();
 }
 
@@ -3804,7 +3829,7 @@ function enterFallback(reason) {
   gatePct.textContent = "—";
   gateLoad.disabled = false;
   gateLoad.hidden = false;
-  gateLoad.textContent = "読み込む";
+  gateLoad.textContent = "▶ 開始";
   gateHint.innerHTML =
     "モデルの読み込みが必要です。定型文でのプレイはありません。<br>" +
     "推奨は TinySwallow 1.5B。別モデルや再読み込みを試してください。";
@@ -3840,7 +3865,7 @@ function buildAssignPicker() {
 
     const title = document.createElement("div");
     title.className = "agent-col-title";
-    title.textContent = "エージェント" + agent;
+    title.textContent = ({ "00": "対象者 · AGENT-00", "01": "尋問官A · AGENT-01", "02": "尋問官B · AGENT-02" }[agent] || ("エージェント" + agent));
     col.appendChild(title);
 
     for (const m of listModels()) {
@@ -4048,7 +4073,7 @@ async function syncAssignPickerUI() {
   const check = await areAssignmentsAvailable(assignments, catalogAvail || undefined);
   gateLoad.disabled = loadingModel || !check.ok;
   gateLoad.hidden = false;
-  gateLoad.textContent = "読み込む";
+  gateLoad.textContent = "▶ 開始";
 }
 
 function applyAgentModelChoice(agent, modelKey) {
@@ -4095,7 +4120,7 @@ if (gateWolfModelPick) {
     applyWolfModelChoice(btn.dataset.model);
     const m = resolveModel(btn.dataset.model);
     gateMsg.textContent =
-      "討論5人＋AGENT-00 → " + (m ? m.label : btn.dataset.model) + "。「読み込む」を押してください。";
+      "討論5人＋AGENT-00 → " + (m ? m.label : btn.dataset.model) + "。「▶ 開始」を押してください。";
   });
 }
 
@@ -4194,12 +4219,14 @@ if (gateAgentAssign) {
     if (!btn || btn.disabled || loadingModel || state.ready) return;
     applyAgentModelChoice(btn.dataset.agent, btn.dataset.model);
     const m = resolveModel(btn.dataset.model);
+    const ui =
+      ({ "00": "対象者", "01": "尋問官A", "02": "尋問官B" }[btn.dataset.agent]) ||
+      ("エージェント" + btn.dataset.agent);
     gateMsg.textContent =
-      "エージェント" +
-      btn.dataset.agent +
+      ui +
       " → " +
       (m ? m.label : btn.dataset.model) +
-      "。「読み込む」を押してください。";
+      "。「▶ 開始」を押してください。";
   });
 }
 
@@ -4217,7 +4244,7 @@ gateLoad.addEventListener("click", async () => {
   } catch (e) {
     console.error(e);
     loadingModel = false;
-    gateLoad.textContent = "読み込む";
+    gateLoad.textContent = "▶ 開始";
     if (loadedEngines.length) {
       await unloadAllEngines(loadedEngines);
       loadedEngines = [];
@@ -4262,10 +4289,10 @@ gateLoad.addEventListener("click", async () => {
         msg +
         " → 全エージェントを " +
         label +
-        " に揃えました。もう一度「読み込む」を試してください。" +
+        " に揃えました。もう一度「▶ 開始」を試してください。" +
         repeatWarn;
       gateLoad.disabled = false;
-      gateLoad.textContent = "読み込む";
+      gateLoad.textContent = "▶ 開始";
       gateActions.classList.add("show");
       if (gateSkip) gateSkip.hidden = true;
       return;
@@ -4315,16 +4342,75 @@ async function init() {
 
   setAgentAssignments(coerceAssignmentsToAvailable(getAgentAssignments(), catalogAvail));
   await syncAssignPickerUI();
-  setGateProgress("エージェントごとに LLM を選んで読み込んでください", 0);
+  setGateProgress("準備完了 — 開始できます", 0);
   gatePct.textContent = "—";
   const defLabel = resolveModel(getDefaultModelKey())?.label || "モデル";
   gateMsg.textContent =
-    "エージェント00 / 01 / 02 にモデルを割り当て、「読み込む」を押してください（既定: " +
-    defLabel +
-    "）。";
+    "通常モード（" + defLabel + "）で開始できます。詳細設定でモデル変更も可能です。";
   gateLoad.disabled = false;
-  gateLoad.textContent = "読み込む";
+  gateLoad.textContent = "▶ 開始";
   gateActions.classList.add("show");
 }
+
+
+// ── UX-only: landing / advanced / think toggle ───────────
+function initLandingMotion() {
+  const els = document.querySelectorAll("[data-reveal]");
+  if (!els.length) return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    els.forEach((el) => el.classList.add("is-visible"));
+    return;
+  }
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        e.target.classList.add("is-visible");
+        io.unobserve(e.target);
+      }
+    },
+    { threshold: 0.12, root: document.getElementById("modelGate") }
+  );
+  els.forEach((el, i) => {
+    el.style.setProperty("--reveal-delay", (i % 5) * 70 + "ms");
+    io.observe(el);
+  });
+}
+
+if (gateAdvancedToggle && gateAdvanced) {
+  gateAdvancedToggle.addEventListener("click", () => {
+    const open = gateAdvanced.classList.toggle("open");
+    gateAdvancedToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    gateAdvancedToggle.textContent = open ? "詳細設定を閉じる" : "詳細設定";
+  });
+}
+
+if (btnThinkToggle && boardEl) {
+  btnThinkToggle.addEventListener("click", () => {
+    const open = boardEl.classList.toggle("thinks-open");
+    btnThinkToggle.setAttribute("aria-pressed", open ? "true" : "false");
+    btnThinkToggle.textContent = open ? "AIの思考を隠す" : "AIの思考を見る";
+  });
+}
+
+if (topicCards) {
+  const tips = {
+    job: "就活 — 検索結果に残る印象を、尋問体験で先取りする。",
+    sns: "SNS — 軽い投稿が、あとから文脈を失って残ることがある。",
+    ai: "AI — 断片からプロフィールを推測される感覚を体験する。",
+    privacy: "個人情報 — 小さな手がかりがつながり、人物像になる。",
+  };
+  topicCards.addEventListener("click", (e) => {
+    const btn = e.target.closest(".topic-card");
+    if (!btn) return;
+    for (const c of topicCards.querySelectorAll(".topic-card")) {
+      c.classList.toggle("selected", c === btn);
+    }
+    if (topicEcho) topicEcho.textContent = tips[btn.dataset.topic] || "";
+  });
+}
+
+initLandingMotion();
+
 
 init();

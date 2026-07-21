@@ -4,25 +4,33 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DIGITAL TATTOO — 尋問ゲーム</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #eef4ec;
-            --fg: #3a4a3c;
-            --dim: #83937f;
-            --green: #4f9d6e;
-            --amber: #d99a4e;
-            --warn: #c1685a;
-            --a00: #5e9cc4;
-            --a01: #d99a4e;
-            --a02: #a98fc4;
-            --panel: rgba(255, 255, 255, 0.68);
-            --panel-edge: rgba(79, 157, 110, 0.32);
+            --bg: #f3efe6;
+            --fg: #1e293b;
+            --dim: #64748b;
+            --accent: #2563EB;
+            --accent-deep: #1d4ed8;
+            --accent-soft: rgba(37, 99, 235, 0.12);
+            --green: #2563EB;
+            --amber: #F97316;
+            --warn: #dc2626;
+            --a00: #2563EB;
+            --a01: #F97316;
+            --a02: #7c3aed;
+            --panel: rgba(255, 255, 255, 0.78);
+            --panel-edge: rgba(37, 99, 235, 0.18);
             --chat-bg: #f8f2e8;
-            --chat-fg: #3a3228;
-            --chat-dim: #8a8570;
-            --font: "Yu Gothic", "Hiragino Sans", "Segoe UI", sans-serif;
-            --sans: "Yu Gothic", "Hiragino Sans", "Segoe UI", sans-serif;
-            --radius: 10px;
+            --chat-fg: #2a241c;
+            --chat-dim: #7a7468;
+            --font: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
+            --display: "Outfit", "Zen Kaku Gothic New", sans-serif;
+            --sans: var(--font);
+            --radius: 12px;
+            --content: min(720px, 100%);
         }
 
         * { box-sizing: border-box; }
@@ -36,6 +44,8 @@
             background: var(--bg);
             color: var(--fg);
             font-family: var(--font);
+            font-size: 18px;
+            line-height: 1.65;
             overflow: hidden;
             -webkit-font-smoothing: antialiased;
         }
@@ -47,18 +57,9 @@
             pointer-events: none;
             background-color: var(--bg);
             background-image:
-                radial-gradient(
-                    ellipse at 50% 35%,
-                    rgba(255, 255, 255, 0.15) 0%,
-                    rgba(255, 255, 255, 0.05) 55%,
-                    rgba(238, 244, 236, 0.35) 100%
-                ),
-                linear-gradient(
-                    180deg,
-                    rgba(255, 255, 255, 0.3) 0%,
-                    rgba(255, 255, 255, 0.05) 45%,
-                    rgba(238, 244, 236, 0.4) 100%
-                ),
+                radial-gradient(ellipse at 70% 10%, rgba(37, 99, 235, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse at 20% 80%, rgba(249, 115, 22, 0.08) 0%, transparent 45%),
+                linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(243, 239, 230, 0.5) 100%),
                 url("%BASE_URL%bg-floral.png");
             background-size: cover;
             background-position: center;
@@ -78,64 +79,101 @@
             padding: 8px 10px 0;
             min-height: 0;
             overflow: hidden;
-            background: rgba(255, 255, 255, 0.5);
+            background: rgba(255, 255, 255, 0.62);
             backdrop-filter: blur(14px) saturate(1.05);
             -webkit-backdrop-filter: blur(14px) saturate(1.05);
             border: 1px solid var(--panel-edge);
             border-radius: var(--radius);
-            box-shadow: 0 16px 40px rgba(80, 100, 80, 0.18);
+            box-shadow: 0 16px 40px rgba(30, 41, 59, 0.12);
         }
 
         #status {
             flex: 0 0 auto;
             display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 8px 14px;
-            font-size: 0.62rem;
-            letter-spacing: 0.1em;
-            color: var(--dim);
+            flex-direction: column;
+            gap: 4px;
             padding: 2px 2px 8px;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.2);
+            border-bottom: 1px solid rgba(37, 99, 235, 0.14);
             user-select: none;
         }
-        #status .brand { color: var(--green); opacity: 0.85; }
+        .status-top {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        #status .brand {
+            font-family: var(--display);
+            font-weight: 800;
+            font-size: 0.95rem;
+            letter-spacing: 0.06em;
+            color: var(--accent);
+        }
+        #coherenceLabel {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 0.85rem;
+            letter-spacing: 0.04em;
+            color: var(--fg);
+        }
+        .status-meta {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 12px;
+            font-size: 0.68rem;
+            color: var(--dim);
+            letter-spacing: 0.02em;
+        }
         #coherenceBar {
             flex: 1;
-            max-width: 140px;
+            max-width: 120px;
             height: 3px;
             border-radius: 2px;
-            background: rgba(79, 157, 110, 0.18);
+            background: rgba(37, 99, 235, 0.14);
             overflow: hidden;
         }
         #coherenceBar > i {
             display: block;
             height: 100%;
             width: 100%;
-            background: var(--green);
+            background: var(--accent);
             transition: width 0.4s ease, background 0.6s ease;
         }
-        #engineBadge { font-size: 0.55rem; white-space: nowrap; }
-        #engineBadge.llm { color: var(--green); opacity: 0.7; }
-        #engineBadge.fallback { color: var(--amber); opacity: 0.85; }
+        #engineBadge { font-size: 0.58rem; white-space: nowrap; opacity: 0.75; }
+        #engineBadge.llm { color: var(--accent); }
+        #engineBadge.fallback { color: var(--amber); }
         #phaseLabel {
-            color: var(--green);
-            letter-spacing: 0.04em;
-            opacity: 0.95;
-            font-size: 0.68rem;
-        }
-        #helpStrip {
-            flex: 1 1 100%;
-            font-size: 0.58rem;
-            line-height: 1.4;
             color: var(--dim);
+            font-size: 0.72rem;
             letter-spacing: 0.02em;
         }
-        #helpStrip strong { color: var(--fg); font-weight: 500; opacity: 0.9; }
+        #helpStrip {
+            font-size: 0.62rem;
+            line-height: 1.4;
+            color: var(--dim);
+        }
+        #helpStrip strong { color: var(--fg); font-weight: 500; }
+        #btnThinkToggle {
+            margin-left: auto;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(37, 99, 235, 0.28);
+            border-radius: 999px;
+            color: var(--accent-deep);
+            font-family: inherit;
+            font-size: 0.62rem;
+            letter-spacing: 0.04em;
+            padding: 4px 10px;
+            cursor: pointer;
+        }
+        #btnThinkToggle[aria-pressed="true"] {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+        }
 
         #originPin {
             flex: 0 0 auto;
-            font-size: 0.68rem;
+            font-size: 0.72rem;
             line-height: 1.4;
             color: var(--amber);
             opacity: 0;
@@ -148,16 +186,15 @@
             opacity: 0.95;
             max-height: 3.5em;
             padding: 6px 2px 8px;
-            border-bottom: 1px solid rgba(217, 154, 78, 0.28);
+            border-bottom: 1px solid rgba(249, 115, 22, 0.28);
         }
         #originPin .tag {
             color: var(--dim);
-            letter-spacing: 0.1em;
+            letter-spacing: 0.08em;
             font-size: 0.58rem;
             margin-right: 0.5em;
         }
 
-        /* ── 3-zone board ── */
         #board {
             flex: 1 1 auto;
             min-height: 0;
@@ -177,10 +214,10 @@
             border-radius: var(--radius);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
-            box-shadow: 0 4px 16px rgba(80, 100, 80, 0.08);
+            box-shadow: 0 4px 16px rgba(30, 41, 59, 0.06);
         }
         .agent-panel.active {
-            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.35), 0 4px 16px rgba(80, 100, 80, 0.08);
+            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35), 0 4px 16px rgba(30, 41, 59, 0.06);
         }
         .agent-panel.a00 { border-top: 3px solid var(--a00); }
         .agent-panel.a01 { border-top: 3px solid var(--a01); }
@@ -192,18 +229,30 @@
             align-items: baseline;
             justify-content: space-between;
             gap: 8px;
-            padding: 6px 10px;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.2);
-            font-size: 0.72rem;
+            padding: 7px 12px;
+            border-bottom: 1px solid rgba(37, 99, 235, 0.12);
+            font-size: 0.78rem;
         }
-        .panel-head .who { font-weight: 700; letter-spacing: 0.06em; }
+        .panel-head .who {
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.45em;
+        }
+        .panel-head .who .agent-id {
+            font-family: var(--display);
+            font-size: 0.58rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            opacity: 0.65;
+        }
         .a00 .panel-head .who { color: var(--a00); }
         .a01 .panel-head .who { color: var(--a01); }
         .a02 .panel-head .who { color: var(--a02); }
         .panel-head .role {
             color: var(--dim);
-            font-size: 0.58rem;
-            letter-spacing: 0.02em;
+            font-size: 0.62rem;
         }
         .panel-head .hyp {
             color: var(--fg);
@@ -223,6 +272,7 @@
         }
 
         .think-slot {
+            display: none;
             flex: 0 1 auto;
             max-height: 42%;
             min-height: 0;
@@ -231,8 +281,10 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
             padding: 4px 6px;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.12);
+            border-bottom: 1px solid rgba(37, 99, 235, 0.1);
         }
+        #board.thinks-open .think-slot { display: block; }
+
         .speech-slot {
             flex: 1 1 auto;
             min-height: 0;
@@ -241,7 +293,7 @@
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
             padding: 8px 10px;
-            font-size: clamp(0.8rem, 1.4vw, 0.92rem);
+            font-size: clamp(0.88rem, 1.4vw, 1rem);
             line-height: 1.65;
         }
 
@@ -251,7 +303,7 @@
             min-height: 110px;
         }
         #panel00 .speech-slot {
-            font-size: clamp(0.88rem, 1.6vw, 1.05rem);
+            font-size: clamp(0.95rem, 1.6vw, 1.1rem);
         }
         #panel00 .answer-big {
             color: var(--a00);
@@ -277,7 +329,6 @@
             overflow: hidden;
         }
 
-        /* LINE-like center chat — cream panel, floral is decoration only */
         #chatRoom {
             display: flex;
             flex-direction: column;
@@ -290,28 +341,27 @@
             background-image:
                 linear-gradient(
                     180deg,
-                    rgba(250, 246, 240, 0.82) 0%,
-                    rgba(245, 240, 232, 0.72) 45%,
-                    rgba(250, 246, 240, 0.85) 100%
+                    rgba(250, 246, 240, 0.88) 0%,
+                    rgba(245, 240, 232, 0.78) 45%,
+                    rgba(250, 246, 240, 0.9) 100%
                 ),
                 url("%BASE_URL%bg-chat-floral.png");
             background-size: cover, cover;
             background-position: center, center;
             background-repeat: no-repeat, no-repeat;
-            border: 1px solid rgba(79, 157, 110, 0.3);
+            border: 1px solid rgba(37, 99, 235, 0.2);
             border-radius: var(--radius);
-            box-shadow: 0 4px 16px rgba(80, 100, 80, 0.08);
+            box-shadow: 0 4px 16px rgba(30, 41, 59, 0.06);
         }
         #chatRoom .panel-head {
             position: relative;
             z-index: 1;
-            background: rgba(255, 252, 247, 0.88);
-            border-bottom-color: rgba(79, 157, 110, 0.18);
+            background: rgba(255, 252, 247, 0.92);
+            border-bottom-color: rgba(37, 99, 235, 0.12);
         }
-        #chatRoom .panel-head .who { color: #2d6b2d; }
+        #chatRoom .panel-head .who { color: var(--accent-deep); }
         #chatRoom .panel-head .role { color: var(--chat-dim); }
 
-        /* 共用記憶 — 01/02 shared Q→A surface (cream, not a purple dashboard) */
         #sharedMemory {
             position: relative;
             z-index: 1;
@@ -320,8 +370,8 @@
             min-height: 0;
             display: flex;
             flex-direction: column;
-            border-bottom: 1px solid rgba(79, 157, 110, 0.18);
-            background: rgba(255, 252, 247, 0.9);
+            border-bottom: 1px solid rgba(37, 99, 235, 0.12);
+            background: rgba(255, 252, 247, 0.92);
         }
         #sharedMemory .mem-head {
             flex: 0 0 auto;
@@ -329,19 +379,18 @@
             align-items: baseline;
             justify-content: space-between;
             gap: 8px;
-            padding: 5px 10px;
+            padding: 6px 12px;
             cursor: pointer;
             user-select: none;
-            font-size: 0.62rem;
-            letter-spacing: 0.08em;
-            color: #5a7a58;
+            font-size: 0.7rem;
+            letter-spacing: 0.04em;
+            color: var(--accent-deep);
         }
-        #sharedMemory .mem-head:hover { color: #3a5a3c; }
+        #sharedMemory .mem-head:hover { color: var(--accent); }
         #sharedMemory .mem-title { font-weight: 700; }
         #sharedMemory .mem-count {
             color: var(--chat-dim);
-            letter-spacing: 0.04em;
-            font-size: 0.58rem;
+            font-size: 0.62rem;
         }
         #sharedMemory .mem-toggle::before { content: "▾ "; color: var(--amber); }
         #sharedMemory.collapsed .mem-toggle::before { content: "▸ "; }
@@ -353,19 +402,14 @@
             overflow-x: hidden;
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
-            padding: 2px 10px 8px;
-            font-size: 0.68rem;
+            padding: 2px 12px 8px;
+            font-size: 0.72rem;
             line-height: 1.45;
             color: var(--chat-fg);
         }
-        #sharedMemoryList::-webkit-scrollbar { width: 5px; }
-        #sharedMemoryList::-webkit-scrollbar-thumb {
-            background: rgba(79, 157, 110, 0.4);
-            border-radius: 4px;
-        }
         #sharedMemoryList .mem-empty {
             color: var(--chat-dim);
-            font-size: 0.62rem;
+            font-size: 0.68rem;
             padding: 2px 0 4px;
         }
         #sharedMemoryList .mem-row {
@@ -373,7 +417,7 @@
             grid-template-columns: 1.6em 1fr;
             gap: 2px 6px;
             padding: 4px 0;
-            border-top: 1px solid rgba(79, 157, 110, 0.1);
+            border-top: 1px solid rgba(37, 99, 235, 0.08);
         }
         #sharedMemoryList .mem-row:first-of-type { border-top: none; }
         #sharedMemoryList .mem-idx {
@@ -388,14 +432,12 @@
         #sharedMemoryList .mem-a {
             grid-column: 2;
             color: var(--a00);
-            letter-spacing: 0.04em;
-            font-size: 0.66rem;
+            font-size: 0.68rem;
         }
         #sharedMemoryList .mem-meta {
             grid-column: 2;
             color: var(--chat-dim);
             font-size: 0.55rem;
-            letter-spacing: 0.04em;
         }
 
         #chatLog {
@@ -407,7 +449,7 @@
             overscroll-behavior: contain;
             padding: 10px 12px 14px;
             font-family: var(--sans);
-            font-size: clamp(0.8rem, 1.4vw, 0.9rem);
+            font-size: clamp(0.88rem, 1.4vw, 0.98rem);
             line-height: 1.55;
             color: var(--chat-fg);
             position: relative;
@@ -421,7 +463,7 @@
         #sharedMemoryList::-webkit-scrollbar-thumb,
         .think-slot::-webkit-scrollbar-thumb,
         .speech-slot::-webkit-scrollbar-thumb {
-            background: rgba(79, 157, 110, 0.4);
+            background: rgba(37, 99, 235, 0.35);
             border-radius: 4px;
         }
 
@@ -434,52 +476,54 @@
             white-space: pre-wrap;
             position: relative;
             box-shadow: 0 1px 3px rgba(80, 60, 30, 0.06);
+            animation: bubbleIn 0.28s ease-out;
+        }
+        @keyframes bubbleIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         .bubble .b-who {
             display: block;
-            font-size: 0.65rem;
-            letter-spacing: 0.06em;
+            font-size: 0.68rem;
+            letter-spacing: 0.04em;
             font-family: var(--font);
             margin-bottom: 3px;
             font-weight: 700;
         }
         .bubble.b01 {
             margin-right: auto;
-            background: #fff6e4;
-            border: 1px solid rgba(180, 140, 60, 0.5);
+            background: #fff4e8;
+            border: 1px solid rgba(249, 115, 22, 0.4);
             border-bottom-left-radius: 4px;
             color: var(--chat-fg);
-            box-shadow: 0 1px 2px rgba(40, 30, 10, 0.08);
         }
-        .bubble.b01 .b-who { color: #9a7a28; }
+        .bubble.b01 .b-who { color: #c2410c; }
         .bubble.b02 {
             margin-left: auto;
-            background: #f0eaf6;
-            border: 1px solid rgba(140, 110, 170, 0.45);
+            background: #f3eefc;
+            border: 1px solid rgba(124, 58, 237, 0.35);
             border-bottom-right-radius: 4px;
             text-align: left;
             color: var(--chat-fg);
-            box-shadow: 0 1px 2px rgba(40, 20, 50, 0.08);
         }
-        .bubble.b02 .b-who { color: #7a5a98; }
-        /* 人狼モード: 討論者5人ぶんの吹き出し色（左右交互） */
-        .bubble.bD1 { margin-right: auto; background: #fff6e4; border: 1px solid rgba(180, 140, 60, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD1 .b-who { color: #9a7a28; }
-        .bubble.bD2 { margin-left: auto; background: #f0eaf6; border: 1px solid rgba(140, 110, 170, 0.45); border-bottom-right-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD2 .b-who { color: #7a5a98; }
+        .bubble.b02 .b-who { color: #6d28d9; }
+        .bubble.bD1 { margin-right: auto; background: #fff4e8; border: 1px solid rgba(249, 115, 22, 0.4); border-bottom-left-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD1 .b-who { color: #c2410c; }
+        .bubble.bD2 { margin-left: auto; background: #f3eefc; border: 1px solid rgba(124, 58, 237, 0.35); border-bottom-right-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD2 .b-who { color: #6d28d9; }
         .bubble.bD3 { margin-right: auto; background: #e8f4f0; border: 1px solid rgba(70, 150, 130, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
         .bubble.bD3 .b-who { color: #2d7a63; }
         .bubble.bD4 { margin-left: auto; background: #f4ece8; border: 1px solid rgba(180, 110, 80, 0.5); border-bottom-right-radius: 4px; color: var(--chat-fg); }
         .bubble.bD4 .b-who { color: #a5603a; }
-        .bubble.bD5 { margin-right: auto; background: #eaeef7; border: 1px solid rgba(90, 120, 190, 0.5); border-bottom-left-radius: 4px; color: var(--chat-fg); }
-        .bubble.bD5 .b-who { color: #4a63a8; }
+        .bubble.bD5 { margin-right: auto; background: #eaeef7; border: 1px solid rgba(37, 99, 235, 0.4); border-bottom-left-radius: 4px; color: var(--chat-fg); }
+        .bubble.bD5 .b-who { color: #1d4ed8; }
         .bubble.bsys {
             margin: 0 auto 10px;
             max-width: 100%;
             background: rgba(255, 252, 247, 0.72);
             border: none;
             color: var(--chat-dim);
-            font-size: 0.72rem;
+            font-size: 0.75rem;
             text-align: center;
             font-family: var(--font);
             padding: 4px 8px;
@@ -487,24 +531,25 @@
         }
         .bubble.bask {
             margin: 0 auto 10px;
-            background: #e8f4f8;
-            border: 1px solid rgba(100, 160, 190, 0.45);
+            background: #e8f0fe;
+            border: 1px solid rgba(37, 99, 235, 0.35);
             color: var(--chat-fg);
-            font-size: 0.78rem;
+            font-size: 0.82rem;
             text-align: center;
             font-family: var(--font);
         }
         .bubble.bguess {
-            border-color: #2d8a2d;
-            background: #eaf6ea;
+            border-color: var(--accent);
+            background: #e8f0fe;
         }
-        .bubble.bwin { border-color: #2d8a2d; color: #1e6b1e; }
+        .bubble.bwin { border-color: #16a34a; color: #166534; }
         .bubble.blose { border-color: var(--warn); color: #a04040; }
 
         .line {
             margin: 0 0 0.45em;
             white-space: pre-wrap;
             word-break: break-word;
+            animation: bubbleIn 0.22s ease-out;
         }
         .line.system { color: var(--dim); font-size: 0.85em; }
         .line.user { color: var(--amber); }
@@ -513,17 +558,16 @@
         .line.a02 { color: var(--a02); }
         .line .agent-tag {
             font-weight: 700;
-            letter-spacing: 0.04em;
+            letter-spacing: 0.02em;
             margin-right: 0.3em;
         }
 
-        /* Thinking panels — soft notebook-margin look, not a hacker console */
         .think-wrap { margin: 0.35em 0; }
         .think-wrap.think-done { opacity: 0.92; }
         .think-panel {
-            border: 1px solid rgba(79, 157, 110, 0.28);
+            border: 1px solid rgba(37, 99, 235, 0.22);
             border-radius: 8px;
-            background: rgba(255, 255, 255, 0.5);
+            background: rgba(255, 255, 255, 0.55);
             font-size: 0.82rem;
             line-height: 1.5;
             overflow: hidden;
@@ -532,16 +576,16 @@
             cursor: pointer;
             list-style: none;
             padding: 0.45em 0.65em;
-            color: #6d8a6f;
+            color: #4b628a;
             user-select: none;
             font-size: 0.78rem;
         }
         .think-summary::-webkit-details-marker { display: none; }
-        .think-summary::before { content: "▸ "; color: var(--amber); }
+        .think-summary::before { content: "▸ "; color: var(--accent); }
         .think-panel[open] > .think-summary::before { content: "▾ "; }
         .think-panel[open] > .think-summary {
-            border-bottom: 1px solid rgba(79, 157, 110, 0.22);
-            color: var(--amber);
+            border-bottom: 1px solid rgba(37, 99, 235, 0.18);
+            color: var(--accent-deep);
         }
         .think-body {
             padding: 0.5em 0.65em 0.7em;
@@ -553,7 +597,7 @@
         }
         .think-sec { margin: 0 0 0.65em; }
         .think-lab {
-            color: var(--amber);
+            color: var(--accent);
             font-size: 0.68rem;
             font-weight: 600;
             margin-bottom: 0.25em;
@@ -562,36 +606,32 @@
             margin: 0;
             white-space: pre-wrap;
             word-break: break-word;
-            color: #47593f;
+            color: #334155;
             font-family: inherit;
             font-size: 0.8rem;
             line-height: 1.5;
         }
-        .think-raw .think-pre { color: #a3792f; }
-        .think-out .think-pre { color: #3f7a54; }
+        .think-raw .think-pre { color: #c2410c; }
+        .think-out .think-pre { color: #1d4ed8; }
         .think-warn .think-pre { color: #a5473c; }
         .think-origin .think-pre { color: #b57a2e; }
-        .think-mem .think-pre { color: #6d7d68; }
-        .think-meta .think-pre { color: #7c8a76; }
+        .think-mem .think-pre { color: #64748b; }
+        .think-meta .think-pre { color: #64748b; }
 
         .caret {
             display: inline-block;
             width: 0.45em;
             height: 1em;
-            background: var(--green);
+            background: var(--accent);
             vertical-align: text-bottom;
             margin-left: 1px;
-            /* Static caret — no blink/flicker (user: no vibration/anxiety FX) */
             opacity: 0.7;
         }
 
-        /* Hard kill: never shake/jitter the shell (legacy classes must stay inert). */
-        #app,
+        /* Kill legacy shake/jitter only — allow bubble / reveal motion */
         #app.shake-low,
         #app.shake-mid,
-        #app.shake-high,
-        body,
-        .agent-panel {
+        #app.shake-high {
             animation: none !important;
             transform: none !important;
         }
@@ -612,26 +652,27 @@
             gap: 8px;
             flex-wrap: wrap;
             padding: 8px 2px 0;
-            border-top: 1px solid rgba(79, 157, 110, 0.2);
+            border-top: 1px solid rgba(37, 99, 235, 0.14);
         }
         #controls.show { display: flex; }
         #controls button,
         #downloadRow button {
-            background: rgba(255, 255, 255, 0.55);
-            border: 1px solid rgba(79, 157, 110, 0.4);
+            background: rgba(255, 255, 255, 0.65);
+            border: 1px solid rgba(37, 99, 235, 0.3);
             border-radius: 999px;
             color: var(--fg);
             font-family: inherit;
-            font-size: 0.68rem;
-            letter-spacing: 0.06em;
-            padding: 6px 14px;
+            font-size: 0.72rem;
+            letter-spacing: 0.04em;
+            padding: 8px 14px;
+            min-height: 40px;
             cursor: pointer;
         }
         #controls button:hover,
         #downloadRow button:hover {
-            border-color: var(--green);
-            color: #2f6a45;
-            background: rgba(79, 157, 110, 0.12);
+            border-color: var(--accent);
+            color: var(--accent-deep);
+            background: var(--accent-soft);
         }
         #controls button:disabled,
         #downloadRow button:disabled {
@@ -639,7 +680,6 @@
             cursor: not-allowed;
         }
 
-        /* Separate from #controls so download stays findable even if other controls hide */
         #downloadRow {
             display: none;
             flex: 0 0 auto;
@@ -647,29 +687,28 @@
             flex-wrap: wrap;
             align-items: center;
             padding: 8px 2px 0;
-            border-top: 1px solid rgba(79, 157, 110, 0.2);
+            border-top: 1px solid rgba(37, 99, 235, 0.14);
         }
         #downloadRow.show { display: flex; }
         #downloadRow #btnDownload {
-            border-color: rgba(79, 157, 110, 0.65);
-            background: rgba(79, 157, 110, 0.14);
-            color: #2f6a45;
+            border-color: rgba(37, 99, 235, 0.55);
+            background: var(--accent-soft);
+            color: var(--accent-deep);
             font-weight: 600;
         }
         #downloadRow .download-hint {
             font-size: 0.62rem;
             color: var(--dim);
-            letter-spacing: 0.04em;
         }
 
         #warn {
             position: absolute;
-            bottom: 52px;
+            bottom: 64px;
             left: 50%;
             transform: translateX(-50%);
-            font-size: 0.65rem;
+            font-size: 0.7rem;
             color: var(--warn);
-            letter-spacing: 0.1em;
+            letter-spacing: 0.06em;
             opacity: 0;
             transition: opacity 0.25s;
             pointer-events: none;
@@ -682,48 +721,75 @@
             flex: 0 0 auto;
             display: flex;
             align-items: center;
-            gap: 0;
-            padding: 10px 2px 12px;
-            border-top: 1px solid rgba(79, 157, 110, 0.25);
-            background: rgba(255, 255, 255, 0.35);
+            gap: 8px;
+            padding: 10px 8px 12px;
+            border-top: 1px solid rgba(37, 99, 235, 0.18);
+            background: rgba(255, 255, 255, 0.45);
             border-radius: 0 0 var(--radius) var(--radius);
         }
         #promptMark {
-            color: var(--green);
+            color: var(--accent);
             font-size: 0.95rem;
             user-select: none;
-            padding-right: 6px;
+            padding-right: 2px;
         }
         #userInput {
             flex: 1;
-            background: transparent;
-            border: none;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            border-radius: 10px;
             outline: none;
             color: var(--fg);
             font-family: inherit;
-            font-size: clamp(0.82rem, 1.6vw, 0.95rem);
-            caret-color: var(--green);
+            font-size: clamp(0.95rem, 1.6vw, 1.05rem);
+            caret-color: var(--accent);
             min-width: 0;
+            min-height: 48px;
+            padding: 10px 12px;
         }
-        #userInput::placeholder { color: var(--dim); opacity: 0.7; }
+        #userInput::placeholder { color: var(--dim); opacity: 0.75; }
         #userInput:disabled { opacity: 0.45; cursor: wait; }
+        #btnSend {
+            flex: 0 0 auto;
+            min-width: 72px;
+            min-height: 48px;
+            padding: 0 16px;
+            border: none;
+            border-radius: 10px;
+            background: var(--accent);
+            color: #fff;
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28);
+        }
+        #btnSend:hover:not(:disabled) { background: var(--accent-deep); }
+        #btnSend:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
 
-        /* Model gate */
+        /* ── Landing / model gate ── */
         #modelGate {
             position: fixed;
             inset: 0;
             z-index: 40;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 14px;
-            padding: 24px;
+            display: block;
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
             background-color: var(--bg);
-            background-image: url("%BASE_URL%bg-gate.png");
+            background-image:
+                radial-gradient(ellipse at 60% 0%, rgba(37, 99, 235, 0.14) 0%, transparent 55%),
+                linear-gradient(180deg, rgba(255, 252, 247, 0.75) 0%, rgba(243, 239, 230, 0.88) 100%),
+                url("%BASE_URL%bg-floral.png");
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
+            background-attachment: fixed;
             transition: opacity 0.45s, visibility 0.45s;
         }
         #modelGate.hidden {
@@ -731,67 +797,258 @@
             visibility: hidden;
             pointer-events: none;
         }
-        #modelGate .gate-brand {
-            /* Wordmark is baked into bg-gate.png — kept for screen readers only. */
-            position: absolute;
-            width: 1px;
-            height: 1px;
-            overflow: hidden;
-            clip: rect(0 0 0 0);
-            white-space: nowrap;
+
+        .landing {
+            width: var(--content);
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 28px 20px 48px;
         }
-        #modelGate .gate-sub {
+
+        .landing-hero {
+            text-align: center;
+            padding: 28px 0 20px;
+        }
+        .gate-brand {
+            font-family: var(--display);
+            font-weight: 800;
+            font-size: clamp(2.1rem, 9vw, 3.2rem);
+            letter-spacing: 0.04em;
+            line-height: 1.05;
+            color: var(--accent);
+            margin: 0 0 10px;
+            text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+        }
+        .gate-sub {
+            display: none;
+        }
+        .hero-lead {
+            margin: 0 auto 10px;
+            max-width: 22em;
+            font-size: clamp(1.05rem, 3.5vw, 1.25rem);
+            font-weight: 700;
+            line-height: 1.45;
             color: var(--fg);
-            font-size: 0.68rem;
-            letter-spacing: 0.16em;
-            text-shadow: 0 1px 6px rgba(255, 255, 255, 0.75), 0 1px 2px rgba(255, 255, 255, 0.9);
         }
+        .hero-sub {
+            margin: 0 auto 22px;
+            max-width: 26em;
+            font-size: 1rem;
+            line-height: 1.6;
+            color: var(--dim);
+        }
+        .hero-cta {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 52px;
+            padding: 12px 28px;
+            border-radius: 999px;
+            background: var(--accent);
+            color: #fff;
+            font-family: inherit;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 8px 22px rgba(37, 99, 235, 0.32);
+        }
+        .hero-cta:hover { background: var(--accent-deep); }
+
+        .landing-section {
+            margin: 36px 0;
+            padding-top: 8px;
+            border-top: 1px solid rgba(37, 99, 235, 0.14);
+        }
+        .landing-section h2 {
+            margin: 0 0 8px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+        .landing-section h3 {
+            margin: 0 0 8px;
+            font-size: 1.2rem;
+            font-weight: 700;
+            line-height: 1.35;
+            color: var(--fg);
+        }
+        .landing-section p {
+            margin: 0;
+            font-size: 1rem;
+            line-height: 1.65;
+            color: var(--dim);
+        }
+
+        .flow-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .flow-step {
+            text-align: center;
+            padding: 12px 6px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(37, 99, 235, 0.12);
+        }
+        .flow-icon {
+            display: block;
+            width: 40px;
+            height: 40px;
+            margin: 0 auto 8px;
+            color: var(--accent);
+        }
+        .flow-label {
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--fg);
+        }
+        .flow-arrow {
+            display: none;
+        }
+
+        .topic-cards {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 14px;
+        }
+        .topic-card {
+            text-align: left;
+            padding: 14px 14px;
+            min-height: 72px;
+            border-radius: 12px;
+            border: 1px solid rgba(37, 99, 235, 0.18);
+            background: rgba(255, 255, 255, 0.72);
+            font-family: inherit;
+            color: var(--fg);
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s, transform 0.2s;
+        }
+        .topic-card:hover {
+            border-color: rgba(37, 99, 235, 0.45);
+            transform: translateY(-2px);
+        }
+        .topic-card.selected {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
+        }
+        .topic-card .t-title {
+            display: block;
+            font-weight: 700;
+            font-size: 1rem;
+            margin-bottom: 4px;
+        }
+        .topic-card .t-hint {
+            display: block;
+            font-size: 0.78rem;
+            color: var(--dim);
+            line-height: 1.4;
+        }
+        #topicEcho {
+            margin-top: 10px;
+            min-height: 1.4em;
+            font-size: 0.88rem;
+            color: var(--accent-deep);
+        }
+
+        [data-reveal] {
+            opacity: 0;
+            transform: translateY(14px);
+            transition: opacity 0.55s ease, transform 0.55s ease;
+            transition-delay: var(--reveal-delay, 0ms);
+        }
+        [data-reveal].is-visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .landing-start {
+            margin-top: 40px;
+            padding: 22px 18px 28px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            box-shadow: 0 12px 32px rgba(30, 41, 59, 0.08);
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 12px;
+        }
+        .landing-start h2 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            text-align: center;
+            color: var(--fg);
+        }
+        .start-simple {
+            text-align: center;
+            padding: 12px;
+            border-radius: 12px;
+            background: var(--accent-soft);
+            border: 1px solid rgba(37, 99, 235, 0.28);
+            color: var(--accent-deep);
+            font-weight: 700;
+            font-size: 0.95rem;
+        }
+        .start-simple small {
+            display: block;
+            margin-top: 4px;
+            font-weight: 400;
+            font-size: 0.78rem;
+            color: var(--dim);
+        }
+
         #gateMsg {
             color: var(--fg);
-            font-size: 0.85rem;
+            font-size: 0.9rem;
             text-align: center;
-            max-width: 36em;
-            line-height: 1.6;
-            min-height: 2.8em;
-            text-shadow: 0 1px 6px rgba(255, 255, 255, 0.75), 0 1px 2px rgba(255, 255, 255, 0.9);
+            line-height: 1.55;
+            min-height: 1.4em;
         }
         #gateBar {
-            width: min(320px, 80vw);
-            height: 3px;
+            width: 100%;
+            height: 4px;
             border-radius: 2px;
-            background: rgba(79, 157, 110, 0.2);
+            background: rgba(37, 99, 235, 0.14);
             overflow: hidden;
         }
         #gateBar > i {
             display: block;
             height: 100%;
             width: 0%;
-            background: var(--green);
+            background: var(--accent);
             transition: width 0.2s ease;
         }
         #gatePct {
             color: var(--dim);
-            font-size: 0.7rem;
-            letter-spacing: 0.12em;
-            text-shadow: 0 1px 4px rgba(255, 255, 255, 0.85);
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            text-align: center;
         }
         #gateHint {
             color: var(--dim);
-            font-size: 0.65rem;
-            text-align: center;
-            max-width: 42em;
+            font-size: 0.72rem;
+            text-align: left;
             line-height: 1.55;
-            margin-top: 8px;
-            opacity: 0.95;
-            text-shadow: 0 1px 4px rgba(255, 255, 255, 0.85);
+            margin-top: 4px;
         }
         #gateAgentAssign {
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 10px;
-            width: min(720px, 94vw);
+            width: 100%;
             margin-top: 4px;
-            max-height: min(52vh, 420px);
+            max-height: min(42vh, 360px);
             overflow-y: auto;
             padding: 2px;
         }
@@ -800,12 +1057,12 @@
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 10px;
-            width: min(720px, 94vw);
+            width: 100%;
             margin-top: 4px;
         }
         #gateWolfModelPick {
             grid-template-columns: repeat(3, minmax(0, 1fr));
-            max-height: min(52vh, 420px);
+            max-height: min(42vh, 360px);
             overflow-y: auto;
             padding: 2px;
         }
@@ -814,30 +1071,29 @@
             flex-direction: column;
             align-items: stretch;
             gap: 4px;
-            padding: 10px 10px;
-            border: 1px solid rgba(79, 157, 110, 0.28);
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.55);
-            box-shadow: 0 2px 8px rgba(80, 100, 80, 0.06);
+            padding: 12px;
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.7);
             cursor: pointer;
             text-align: left;
             font-family: inherit;
             color: var(--fg);
             min-height: 3.6em;
         }
-        .gate-format-box:hover:not(:disabled) { border-color: rgba(79, 157, 110, 0.55); }
+        .gate-format-box:hover:not(:disabled) { border-color: rgba(37, 99, 235, 0.5); }
         .gate-format-box.selected {
-            border-color: var(--green);
-            background: rgba(79, 157, 110, 0.14);
-            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.3);
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
         }
         .gate-format-box .box-label {
-            font-size: 0.74rem;
-            letter-spacing: 0.04em;
+            font-size: 0.88rem;
+            font-weight: 700;
             line-height: 1.35;
         }
         .gate-format-box .box-hint {
-            font-size: 0.58rem;
+            font-size: 0.72rem;
             color: var(--dim);
             line-height: 1.4;
         }
@@ -845,6 +1101,31 @@
         #gateWolfModelLabel[hidden],
         #gateAgentAssign[hidden],
         #gateAssignLabel[hidden] { display: none !important; }
+
+        .gate-advanced {
+            display: none;
+            flex-direction: column;
+            gap: 10px;
+            padding-top: 4px;
+        }
+        .gate-advanced.open { display: flex; }
+
+        #gateAdvancedToggle {
+            background: transparent;
+            border: 1px dashed rgba(37, 99, 235, 0.35);
+            border-radius: 999px;
+            color: var(--accent-deep);
+            font-family: inherit;
+            font-size: 0.82rem;
+            padding: 10px 16px;
+            min-height: 44px;
+            cursor: pointer;
+        }
+        #gateAdvancedToggle:hover {
+            background: var(--accent-soft);
+            border-style: solid;
+        }
+
         .gate-agent-col {
             display: flex;
             flex-direction: column;
@@ -852,8 +1133,9 @@
             min-width: 0;
         }
         .gate-agent-col .agent-col-title {
-            font-size: 0.72rem;
-            letter-spacing: 0.1em;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
             text-align: center;
             padding: 4px 0 2px;
         }
@@ -865,24 +1147,23 @@
             flex-direction: column;
             align-items: stretch;
             gap: 4px;
-            padding: 10px 10px;
-            border: 1px solid rgba(79, 157, 110, 0.28);
+            padding: 10px;
+            border: 1px solid rgba(37, 99, 235, 0.2);
             border-radius: 10px;
-            background: rgba(255, 255, 255, 0.55);
-            box-shadow: 0 2px 8px rgba(80, 100, 80, 0.06);
+            background: rgba(255, 255, 255, 0.7);
             cursor: pointer;
             text-align: left;
             font-family: inherit;
             color: var(--fg);
-            min-height: 4.6em;
+            min-height: 4.2em;
         }
         .gate-model-box:hover:not(.unavailable):not(:disabled) {
-            border-color: rgba(79, 157, 110, 0.55);
+            border-color: rgba(37, 99, 235, 0.5);
         }
         .gate-model-box.selected {
-            border-color: var(--green);
-            background: rgba(79, 157, 110, 0.14);
-            box-shadow: inset 0 0 0 1px rgba(79, 157, 110, 0.3);
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.25);
         }
         .gate-model-box.unavailable,
         .gate-model-box:disabled {
@@ -890,29 +1171,29 @@
             cursor: not-allowed;
         }
         .gate-model-box .box-label {
-            font-size: 0.72rem;
-            letter-spacing: 0.05em;
+            font-size: 0.78rem;
+            font-weight: 600;
             line-height: 1.35;
         }
         .gate-model-box .box-hint {
-            font-size: 0.58rem;
+            font-size: 0.62rem;
             color: var(--dim);
             line-height: 1.4;
         }
         .gate-model-box .box-miss {
-            font-size: 0.55rem;
+            font-size: 0.58rem;
             color: var(--amber);
             line-height: 1.35;
         }
         .gate-model-box .box-miss[hidden] { display: none !important; }
         #gateAssignWarn {
-            width: min(720px, 94vw);
-            font-size: 0.68rem;
+            width: 100%;
+            font-size: 0.72rem;
             line-height: 1.5;
-            color: #8a5a1e;
-            border: 1px solid rgba(217, 154, 78, 0.4);
+            color: #9a3412;
+            border: 1px solid rgba(249, 115, 22, 0.4);
             border-radius: 8px;
-            background: rgba(217, 154, 78, 0.12);
+            background: rgba(249, 115, 22, 0.1);
             padding: 8px 10px;
             text-align: left;
         }
@@ -920,76 +1201,74 @@
         .opt-tag {
             display: inline-block;
             font-size: 0.55rem;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.06em;
             padding: 1px 6px;
             border-radius: 999px;
-            border: 1px solid rgba(79, 157, 110, 0.4);
+            border: 1px solid rgba(37, 99, 235, 0.35);
             color: var(--dim);
             vertical-align: middle;
         }
         .opt-tag.exp {
-            border-color: rgba(217, 154, 78, 0.55);
-            color: #a3792f;
+            border-color: rgba(249, 115, 22, 0.55);
+            color: #c2410c;
         }
         .opt-tag.rec {
-            border-color: rgba(79, 157, 110, 0.5);
-            color: #2f6a45;
+            border-color: rgba(37, 99, 235, 0.5);
+            color: var(--accent-deep);
         }
         .opt-tag.jp {
-            border-color: rgba(94, 156, 196, 0.55);
-            color: #3d78a0;
+            border-color: rgba(37, 99, 235, 0.55);
+            color: #1d4ed8;
         }
         .gate-section-label {
-            width: min(720px, 94vw);
-            font-size: 0.62rem;
-            letter-spacing: 0.14em;
+            width: 100%;
+            font-size: 0.68rem;
+            letter-spacing: 0.12em;
             color: var(--dim);
             text-align: left;
-            margin-top: 6px;
-            text-shadow: 0 1px 4px rgba(255, 255, 255, 0.85);
+            margin-top: 4px;
         }
         #gateLoad {
-            background: #4f9d6e;
-            border: 1px solid #3f7a54;
+            background: var(--accent);
+            border: none;
             border-radius: 999px;
             color: #fff;
             font-family: inherit;
-            font-size: 0.78rem;
-            letter-spacing: 0.08em;
-            padding: 10px 22px;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            padding: 14px 28px;
+            min-height: 52px;
             cursor: pointer;
-            margin-top: 6px;
-            box-shadow: 0 4px 14px rgba(79, 157, 110, 0.3);
+            margin-top: 4px;
+            box-shadow: 0 8px 22px rgba(37, 99, 235, 0.3);
         }
-        #gateLoad:hover:not(:disabled) { background: #3f7a54; }
+        #gateLoad:hover:not(:disabled) { background: var(--accent-deep); }
         #gateLoad:disabled {
             opacity: 0.45;
             cursor: wait;
-            background: rgba(131, 147, 127, 0.35);
-            border-color: rgba(79, 157, 110, 0.25);
-            color: #fff;
+            background: #94a3b8;
             box-shadow: none;
         }
         #gateActions {
             display: none;
-            margin-top: 8px;
+            margin-top: 4px;
             gap: 10px;
             flex-wrap: wrap;
             justify-content: center;
         }
         #gateActions.show { display: flex; }
         #gateSkip {
-            background: rgba(255, 255, 255, 0.5);
-            border: 1px solid rgba(79, 157, 110, 0.35);
+            background: rgba(255, 255, 255, 0.6);
+            border: 1px solid rgba(37, 99, 235, 0.28);
             border-radius: 999px;
             color: var(--fg);
             font-family: inherit;
-            font-size: 0.75rem;
-            letter-spacing: 0.06em;
+            font-size: 0.78rem;
             padding: 8px 18px;
             cursor: pointer;
         }
-        #gateSkip:hover { border-color: var(--green); color: #2f6a45; }
+        #gateSkip:hover { border-color: var(--accent); color: var(--accent-deep); }
 
         @media (max-width: 820px) {
             #app {
@@ -1011,27 +1290,23 @@
             #gateAgentAssign {
                 grid-template-columns: 1fr;
                 max-height: min(48vh, 380px);
-                width: min(400px, 92vw);
             }
             #gateFormatPick,
             #gateWolfModelPick {
                 grid-template-columns: 1fr;
-                width: min(400px, 92vw);
             }
-            .gate-section-label,
-            #gateAssignWarn {
-                width: min(400px, 92vw);
+            .flow-row {
+                grid-template-columns: repeat(2, 1fr);
             }
-            #modelGate {
-                justify-content: flex-start;
-                padding-top: 18px;
-                overflow-y: auto;
+            .landing {
+                padding: 20px 16px 40px;
             }
+            .status-meta #helpStrip { display: none; }
         }
 
         @media (prefers-reduced-transparency: reduce) {
             #app, .agent-panel {
-                background: #f3f7f1;
+                background: #f7f4ee;
                 backdrop-filter: none;
                 -webkit-backdrop-filter: none;
             }
@@ -1040,7 +1315,7 @@
                 background-image: none;
             }
             #modelGate {
-                background: #eef4ec;
+                background: #f3efe6;
                 backdrop-filter: none;
                 -webkit-backdrop-filter: none;
             }
@@ -1051,49 +1326,134 @@
     <div id="atmosphere" aria-hidden="true"></div>
 
     <div id="modelGate" role="status" aria-live="polite">
-        <div class="gate-brand">DIGITAL TATTOO</div>
-        <div class="gate-sub">INTERROGATION · IN-BROWSER LLM</div>
-        <div id="gateMsg">WebGPU を確認しています…</div>
-        <div class="gate-section-label">ゲーム形式</div>
-        <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
-            <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
-                <span class="box-label">尋問モード（2人）</span>
-                <span class="box-hint">AGENT-01/02 の2人が尋問する従来のゲーム。</span>
-            </button>
-            <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
-                <span class="box-label">人狼モード（5人・ハルシネーター追放）</span>
-                <span class="box-hint">討論者5人のうち1人が秘密のハルシネーター。周期的に追放投票。</span>
-            </button>
-        </div>
-        <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
-        <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
-        <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
-        <div id="gateWolfModelPick" role="radiogroup" aria-label="人狼モードモデル選択" hidden></div>
-        <div id="gateAssignWarn" hidden></div>
-        <button type="button" id="gateLoad" disabled>読み込む</button>
-        <div id="gateBar"><i id="gateFill"></i></div>
-        <div id="gatePct">—</div>
-        <div id="gateHint">
-            推奨は TinySwallow 1.5B（JP特化）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN はエージェント00のみが知る。
-        </div>
-        <div id="gateActions">
-            <button type="button" id="gateSkip" hidden>モデル必須</button>
+        <div class="landing">
+            <header class="landing-hero" data-reveal>
+                <h1 class="gate-brand">DIGITAL TATTOO</h1>
+                <p class="gate-sub">INTERROGATION · IN-BROWSER LLM</p>
+                <p class="hero-lead">ネットに残る足跡が、未来のあなたを形づくる。</p>
+                <p class="hero-sub">ブラウザ上で動くAI尋問シミュレーション。体験して、デジタル・タトゥーの意味を体感する。</p>
+                <a class="hero-cta" href="#gateStart">シミュレーションを始める</a>
+            </header>
+
+            <section class="landing-section" data-reveal aria-labelledby="sec-problem">
+                <h2 id="sec-problem">問題提起</h2>
+                <h3>一度出した情報は、消えない。</h3>
+                <p>SNSの一言、写真、プロフィール。小さな投稿がつながり、あとから自分ではコントロールできない「デジタル・タトゥー」になることがあります。</p>
+            </section>
+
+            <section class="landing-section" data-reveal aria-labelledby="sec-flow">
+                <h2 id="sec-flow">体験</h2>
+                <h3>拡散の流れを、短く追う。</h3>
+                <div class="flow-row" aria-hidden="false">
+                    <div class="flow-step">
+                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="14" r="6" stroke="currentColor" stroke-width="2"/><path d="M8 32c2.5-6 9-8 12-8s9.5 2 12 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M28 10h6M31 7v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span class="flow-label">SNS</span>
+                    </div>
+                    <div class="flow-step">
+                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><rect x="8" y="10" width="24" height="20" rx="3" stroke="currentColor" stroke-width="2"/><path d="M14 18h12M14 23h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span class="flow-label">投稿</span>
+                    </div>
+                    <div class="flow-step">
+                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M12 28V12l16 8-16 8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M28 14l4-2M28 20h5M28 26l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span class="flow-label">拡散</span>
+                    </div>
+                    <div class="flow-step">
+                        <svg class="flow-icon" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="20" r="10" stroke="currentColor" stroke-width="2"/><path d="M20 12v8l5 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span class="flow-label">未来</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="landing-section" data-reveal aria-labelledby="sec-learn">
+                <h2 id="sec-learn">学べること</h2>
+                <h3>知りたいテーマを選ぶ。</h3>
+                <div class="topic-cards" id="topicCards">
+                    <button type="button" class="topic-card" data-topic="job">
+                        <span class="t-title">就活</span>
+                        <span class="t-hint">検索される自分を想像する</span>
+                    </button>
+                    <button type="button" class="topic-card" data-topic="sns">
+                        <span class="t-title">SNS</span>
+                        <span class="t-hint">軽い投稿の残り方</span>
+                    </button>
+                    <button type="button" class="topic-card" data-topic="ai">
+                        <span class="t-title">AI</span>
+                        <span class="t-hint">推測されるプロフィール</span>
+                    </button>
+                    <button type="button" class="topic-card" data-topic="privacy">
+                        <span class="t-title">個人情報</span>
+                        <span class="t-hint">断片からつながる手がかり</span>
+                    </button>
+                </div>
+                <p id="topicEcho" aria-live="polite"></p>
+            </section>
+
+            <section class="landing-section" data-reveal aria-labelledby="sec-act">
+                <h2 id="sec-act">行動</h2>
+                <h3>読むより、体験する。</h3>
+                <p>下のボタンからシミュレーションを開始。AI尋問官が「対象者」の秘密を推理します。あなたはORIGINを刻み、流れを見守ります。</p>
+            </section>
+
+            <section class="landing-start" id="gateStart" data-reveal>
+                <h2>ゲームを始める</h2>
+                <div class="start-simple">
+                    通常モード（推奨）
+                    <small>標準設定のまますぐ開始できます</small>
+                </div>
+
+                <div class="gate-section-label">ゲーム形式</div>
+                <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
+                    <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
+                        <span class="box-label">尋問モード（2人）</span>
+                        <span class="box-hint">尋問官A/B が協同で推理する標準プレイ。</span>
+                    </button>
+                    <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
+                        <span class="box-label">人狼モード（5人）</span>
+                        <span class="box-hint">討論者5人＋追放投票。発展ルール。</span>
+                    </button>
+                </div>
+
+                <button type="button" id="gateAdvancedToggle" aria-expanded="false" aria-controls="gateAdvanced">詳細設定</button>
+
+                <div id="gateAdvanced" class="gate-advanced">
+                    <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
+                    <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
+                    <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
+                    <div id="gateWolfModelPick" role="radiogroup" aria-label="人狼モードモデル選択" hidden></div>
+                    <div id="gateAssignWarn" hidden></div>
+                    <div id="gateHint">
+                        推奨は TinySwallow 1.5B（JP特化）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN は対象者のみが知る。
+                    </div>
+                </div>
+
+                <button type="button" id="gateLoad" disabled>▶ 開始</button>
+                <div id="gateBar"><i id="gateFill"></i></div>
+                <div id="gatePct">—</div>
+                <div id="gateMsg">準備しています…</div>
+                <div id="gateActions">
+                    <button type="button" id="gateSkip" hidden>モデル必須</button>
+                </div>
+            </section>
         </div>
     </div>
 
     <div id="app">
         <div id="status">
-            <span class="brand">DIGITAL TATTOO // 00·01·02</span>
-            <div id="coherenceBar" title="議論の進み"><i id="coherenceFill"></i></div>
-            <span id="coherenceLabel">R0 · 議論0 · 準備</span>
-            <span id="engineBadge">LLM …</span>
-            <span id="phaseLabel">準備中</span>
-            <div id="helpStrip">
-                <strong>遊び方:</strong>
-                ORIGIN を 00 に刻印 →
-                <span style="color:var(--a01)">01</span>/<span style="color:var(--a02)">02</span>
-                がはい／いいえ質問 → 中央で議論 →
-                「あなたは〇〇です。」で正式推測（ラウンド上限なし）
+            <div class="status-top">
+                <span class="brand">DIGITAL TATTOO</span>
+                <span id="coherenceLabel">Round 0</span>
+            </div>
+            <div class="status-meta">
+                <div id="coherenceBar" title="議論の進み"><i id="coherenceFill"></i></div>
+                <span id="phaseLabel">準備しています…</span>
+                <span id="engineBadge">LLM …</span>
+                <button type="button" id="btnThinkToggle" aria-pressed="false" title="思考パネルの表示切替">AIの思考を見る</button>
+                <div id="helpStrip">
+                    <strong>遊び方:</strong>
+                    ORIGIN を対象者に刻印 →
+                    <span style="color:var(--a01)">尋問官A</span>/<span style="color:var(--a02)">尋問官B</span>
+                    が質問 → 中央で相談 → 「あなたは〇〇です。」で正式推測
+                </div>
             </div>
         </div>
 
@@ -1103,10 +1463,10 @@
         </div>
 
         <div id="board">
-            <section id="panel00" class="agent-panel a00" aria-label="AGENT-00">
+            <section id="panel00" class="agent-panel a00" aria-label="対象者 AGENT-00">
                 <div class="panel-head">
-                    <span class="who">エージェント00 · 対象</span>
-                    <span class="role">対象 · 秘密の役割 · 自由回答・詳しく</span>
+                    <span class="who">対象者 <span class="agent-id">AGENT-00</span></span>
+                    <span class="role">秘密の役割 · 自由回答</span>
                 </div>
                 <div class="panel-body">
                     <div class="think-slot" id="think00"></div>
@@ -1115,9 +1475,9 @@
             </section>
 
             <div id="midRow">
-                <section id="panel01" class="agent-panel a01" aria-label="AGENT-01">
+                <section id="panel01" class="agent-panel a01" aria-label="尋問官A AGENT-01">
                     <div class="panel-head">
-                        <span class="who">エージェント01 · 尋問</span>
+                        <span class="who">尋問官A <span class="agent-id">AGENT-01</span></span>
                         <span class="hyp">共有仮説: <span id="hyp01">（まだAIが立てていない）</span></span>
                     </div>
                     <div class="panel-body">
@@ -1126,26 +1486,26 @@
                     </div>
                 </section>
 
-                <section id="chatRoom" aria-label="01と02の会議室">
+                <section id="chatRoom" aria-label="AI相談中">
                     <div class="panel-head">
-                        <span class="who">会議室</span>
-                        <span class="role">01 ↔ 02 · 共用記憶つき</span>
+                        <span class="who">AI相談中</span>
+                        <span class="role">尋問官どうしの推理チャット</span>
                     </div>
-                    <div id="sharedMemory" aria-label="共用記憶">
+                    <div id="sharedMemory" aria-label="AIが覚えていること">
                         <div class="mem-head" id="sharedMemoryHead" title="開閉">
-                            <span class="mem-title mem-toggle">共用記憶</span>
+                            <span class="mem-title mem-toggle">AIが覚えていること</span>
                             <span class="mem-count" id="sharedMemoryCount">0件</span>
                         </div>
                         <div id="sharedMemoryList" aria-live="polite">
-                            <div class="mem-empty">まだ質問なし — エージェント01/02の共用Q→Aがここに残る</div>
+                            <div class="mem-empty">まだ質問なし — ここにあとで Q→A が残ります</div>
                         </div>
                     </div>
                     <div id="chatLog" aria-live="polite"></div>
                 </section>
 
-                <section id="panel02" class="agent-panel a02" aria-label="AGENT-02">
+                <section id="panel02" class="agent-panel a02" aria-label="尋問官B AGENT-02">
                     <div class="panel-head">
-                        <span class="who">エージェント02 · 尋問</span>
+                        <span class="who">尋問官B <span class="agent-id">AGENT-02</span></span>
                         <span class="hyp">共有仮説: <span id="hyp02">（まだAIが立てていない）</span></span>
                     </div>
                     <div class="panel-body">
@@ -1173,7 +1533,8 @@
         <form id="inputRow" autocomplete="off">
             <span id="promptMark">&gt;</span>
             <input type="text" id="userInput" maxlength="240" lang="ja"
-                   placeholder="モデル準備中…" spellcheck="false" disabled>
+                   placeholder="質問を入力…" spellcheck="false" disabled>
+            <button type="submit" id="btnSend">送信</button>
         </form>
     </div>
 
