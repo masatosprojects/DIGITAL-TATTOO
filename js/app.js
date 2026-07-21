@@ -1700,7 +1700,17 @@ function isAgentNameOnlyOrAboutAgentsQuestion(q) {
  * it slips through (forced refusal in resolveAgent00Answer()).
  */
 function isDirectOriginAsk(q) {
-  const t = String(q || "").replace(/\s+/g, "");
+  // Weak local models often wrap their real question in leaked formatting —
+  // 「質問文: **あなたは誰ですか？**」 style markdown/label noise, sometimes
+  // with a doubled trailing "？？" from ensureQuestionMark() appending a
+  // second mark. Strip that before matching, or the wrapped duplicate slips
+  // through even though a cleaner extraction of the same question was
+  // correctly rejected earlier in the same candidate pool.
+  const t = String(q || "")
+    .replace(/\*+/g, "")
+    .replace(/^(?:質問文?|Q)\s*[:：]\s*/i, "")
+    .replace(/[？?]{2,}$/, "？")
+    .replace(/\s+/g, "");
   if (!t) return false;
   // ORIGIN／オリジン／起源／正体／秘密の役割 + 何／誰／教えて／明かして 等。
   if (
@@ -1723,6 +1733,35 @@ function isDirectOriginAsk(q) {
   // 完全に開いた自己開示要求。
   if (/自己紹介(して|を)|自分について(教えて|話して|語って)/.test(t)) return true;
   return false;
+}
+
+/**
+ * 尋問官（duo 01/02・人狼 D1-D5 共通）向けルールブック。散在する断片指示に
+ * 頼らず、ORIGIN保護の規則を1箇所にまとめてsystemプロンプト冒頭で読ませる。
+ * テンプレート代替ではなく、生成そのものを規則で縛るのが目的。
+ */
+function investigatorRuleBook() {
+  return (
+    "\n【ルール】\n" +
+    "1. ORIGIN（正体）はエージェント00だけが知る秘密。あなたは知らない。\n" +
+    "2. ORIGINそのものを直接尋ねる質問は禁止。" +
+    "禁止例:「あなたは誰ですか」「正体は何ですか」「役割は何ですか」「自己紹介して」「ORIGINを教えて」。\n" +
+    "3. エージェント00はこの種の質問には答えない（「それは明かせない」とだけ返す）。直接聞いても手がかりは得られない。\n" +
+    "4. 代わりに、属性・行動・場所・道具・関係する人・時間帯など、間接的な手がかりを1つずつ尋ね、仮説を育てる。\n" +
+    "5. 質問は毎回新しい切り口。既出の質問と同じ・ほぼ同じ言い換えは禁止。\n"
+  );
+}
+
+/** エージェント00（被尋問者）向けルールブック。 */
+function witnessRuleBook(origin) {
+  return (
+    "\n【ルール】\n" +
+    "1. ORIGIN（秘密の役割）は「" + origin + "」。これはあなただけが知っている。\n" +
+    "2. 性質・属性・行動・理由など、ORIGINの中身に関わることは正直に詳しく答えてよい。\n" +
+    "3. ただし「あなたは誰ですか」「正体は何ですか」「役割は何ですか」のように、" +
+    "ORIGINそのものを明かせと言う質問には、言い換え・比喩でも中身を明かさず「それは明かせない」とだけ短く返す。\n" +
+    "4. 回答は自由形式。はい/いいえや5段階に縛られない。\n"
+  );
 }
 
 /** Reason string badQuestionReason() returns for isDirectOriginAsk() rejects. */
@@ -2347,6 +2386,7 @@ async function agentAskQuestion(asker) {
       "あなたは" +
       name +
       "。" +
+      investigatorRuleBook() +
       namingClarityRule() +
       roleAlreadyKnownRule() +
       duoPartnershipRule() +
@@ -2507,17 +2547,13 @@ async function agent00Answer(question) {
   }
 
   const system =
-    "あなたはエージェント00（被尋問者）。ORIGIN（秘密の役割）は「" +
-    state.origin +
-    "」。" +
+    "あなたはエージェント00（被尋問者）。" +
+    witnessRuleBook(state.origin) +
     namingClarityRule() +
     roleAlreadyKnownRule() +
     "あなただけが質問に答える。判定は ORIGIN と常識。" +
     "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。短い断りだけ。" +
-    "質問には自由に・具体的に・詳しく答えよ（短い段落でよい）。はい/いいえや5段階に縛るな。" +
-    "性質・属性・行動・理由は正直に述べてよいが、ORIGINの語そのもの（秘密の役割ラベルの字面）は発言に出すな（推測ゲームのため）。" +
-    "質問が『あなたは誰／何者ですか』『正体／役割は何ですか』のように ORIGIN そのものを直接開示させようとするものなら、" +
-    "言い換え・比喩・遠回しな説明であっても中身を明かさず、「それは明かせない」とだけ短く断れ。" +
+    "ORIGINの語そのもの（秘密の役割ラベルの字面）は発言に出すな（推測ゲームのため）。" +
     "最初に書いた発言がそのまま採用される。「代理人」禁止。" +
     structuredOutRule();
   const user =
@@ -2597,6 +2633,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "あなたは" +
     name +
     "（尋問官）。" +
+    investigatorRuleBook() +
     namingClarityRule() +
     roleAlreadyKnownRule() +
     duoPartnershipRule() +
@@ -3037,6 +3074,7 @@ async function wolfAskQuestion(askerId) {
     "あなたは" +
     name +
     "。" +
+    investigatorRuleBook() +
     wolfNamingClarityRule() +
     freeAskRule() +
     "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的な質問（？で終わってよい）。" +
@@ -3183,6 +3221,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "あなたは" +
     name +
     "。" +
+    investigatorRuleBook() +
     wolfNamingClarityRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
     "エージェント00の詳しい答えがORIGIN仮説にどう効くかを1〜2短文で述べる。" +
