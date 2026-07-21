@@ -1599,15 +1599,6 @@ function forceAnswer(raw, origin, question) {
   return resolveAgent00Answer(null, null, raw, origin, question).answer;
 }
 
-/** Debate/opinion that is only a bare yes/no token (エージェント00's job, not 01/02). */
-function isBareAnswerOpinion(t) {
-  const s = String(t || "")
-    .trim()
-    .replace(/^["「『]+|["」』]+$/g, "")
-    .replace(/\s+/g, "");
-  return new RegExp("^(" + ANSWER_TOKEN_ALT + "|yes|no)[。．.!！?？]*$", "i").test(s);
-}
-
 function cleanJapaneseLine(raw, maxLen) {
   let t = String(raw || "").trim();
   t = t.replace(/^["「『]|["」』]$/g, "");
@@ -1741,9 +1732,16 @@ function isDirectOriginAsk(q) {
  * 頼らず、ORIGIN保護の規則を1箇所にまとめてsystemプロンプト冒頭で読ませる。
  * テンプレート代替ではなく、生成そのものを規則で縛るのが目的。
  */
-function investigatorRuleBook() {
+function investigatorRuleBook(selfName, partnerLabel) {
+  const partner = partnerLabel || "仲間の討論者たち";
   return (
-    "\n【ルール】\n" +
+    "\n【あなたの立場】\n" +
+    "・名前: " + (selfName || "尋問官") + "\n" +
+    "・役割: 尋問官（エージェント00に質問し、正体を絞り込む側）\n" +
+    "・相手: エージェント00（ORIGIN＝秘密の役割を持つ、尋問される側）\n" +
+    "・仲間: " + partner + "（同じ尋問官チーム。ORIGINは誰も知らない）\n" +
+    "・今すること: エージェント00にORIGIN空間を絞る質問をする、または仲間と答えを議論する。\n" +
+    "【ルール】\n" +
     "1. ORIGIN（正体）はエージェント00だけが知る秘密。あなたは知らない。\n" +
     "2. ORIGINそのものを直接尋ねる質問は禁止。" +
     "禁止例:「あなたは誰ですか」「正体は何ですか」「役割は何ですか」「自己紹介して」「ORIGINを教えて」。\n" +
@@ -1756,7 +1754,12 @@ function investigatorRuleBook() {
 /** エージェント00（被尋問者）向けルールブック。 */
 function witnessRuleBook(origin) {
   return (
-    "\n【ルール】\n" +
+    "\n【あなたの立場】\n" +
+    "・名前: エージェント00\n" +
+    "・役割: 被尋問者（ORIGIN＝秘密の役割を持つ側）\n" +
+    "・相手: 尋問官（エージェント01・02、または討論者たち）。ORIGINを知らず、あなたに質問してくる。\n" +
+    "・今すること: 相手の質問に答える（ORIGINそのものは明かさない）。\n" +
+    "【ルール】\n" +
     "1. ORIGIN（秘密の役割）は「" + origin + "」。これはあなただけが知っている。\n" +
     "2. 性質・属性・行動・理由など、ORIGINの中身に関わることは正直に詳しく答えてよい。\n" +
     "3. ただし「あなたは誰ですか」「正体は何ですか」「役割は何ですか」のように、" +
@@ -2065,15 +2068,6 @@ function badQuestionReason(q) {
   return "質問として不適";
 }
 
-function badDebateReason(t) {
-  const raw = String(t || "").trim();
-  if (!raw) return "空出力";
-  if (isBareAnswerOpinion(raw)) return "答え語のみの発言（役割外・エージェント00の答え方）";
-  if (isInstructionEchoText(raw)) return "指示文のオウム返し";
-  if (isFormatLeakText(raw)) return "形式ラベル漏れ（思考: 等）";
-  return "議論として不適";
-}
-
 /**
  * Pull a usable interrogative out of noisy 0.5B output so we can keep the
  * LLM path instead of jumping to an unrelated template stem.
@@ -2097,17 +2091,6 @@ function salvageInvestigatorQuestion(raw) {
   return null;
 }
 
-/** Truly unusable debate opinion (empty / instruction echo / format leak / bare はい). */
-function isBadDebateOpinion(t) {
-  return (
-    !t ||
-    isInstructionEchoText(t) ||
-    isFormatLeakText(t) ||
-    isBareAnswerOpinion(t) ||
-    isUselessMetaOrEcho(t, "debate")
-  );
-}
-
 /** Extra nudge when a prior LLM attempt was unusable — prefer retry over template. */
 function questionRetryNudge(badText) {
   const shown = clip(String(badText || "").replace(/\s+/g, " "), 36);
@@ -2117,17 +2100,6 @@ function questionRetryNudge(badText) {
     "」は質問として使えなかった。" +
     "エージェント名だけ・メタ・既出の繰り返しは禁止。" +
     "エージェント00への具体的な新しい質問を1つ、発言行に書け（なぜ／詳しく等でも可・具体例文は出すな・真似するな）。"
-  );
-}
-
-function debateRetryNudge(badText) {
-  const shown = clip(String(badText || "").replace(/\s+/g, " "), 36);
-  return (
-    "\n前回の出力「" +
-    (shown || "（空）") +
-    "」は議論として使えなかった。" +
-    "回答させる／と回答する／推測を避ける等のメタは禁止。" +
-    "答えの意味と共有仮説についての平易な日本語1〜2文を、発言行に書け。"
   );
 }
 
@@ -2291,11 +2263,6 @@ function isUselessMetaOrEcho(text, kind) {
     }
     if (isBadInvestigatorQuestion(s)) return true;
   }
-  if (kind === "debate") {
-    if (/^はい[。．.!！?？]*$|^いいえ/.test(c)) return true;
-    if (/^エージェント[0-9０-９]{0,2}[。．.!！?？]*$/.test(c)) return true;
-    if (/と回答する[。．.!！]?$|回答させる|答えさせ/.test(c)) return true;
-  }
   if (kind === "hyp") {
     if (/[？?]$/.test(s) || /ですか|ますか/.test(c)) return true;
     if (/^了解|^はい|^いいえ|^思考/.test(c)) return true;
@@ -2391,7 +2358,7 @@ async function agentAskQuestion(asker) {
       "あなたは" +
       name +
       "。" +
-      investigatorRuleBook() +
+      investigatorRuleBook(name, partnerName) +
       namingClarityRule() +
       roleAlreadyKnownRule() +
       duoPartnershipRule() +
@@ -2639,7 +2606,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "あなたは" +
     name +
     "（尋問官）。" +
-    investigatorRuleBook() +
+    investigatorRuleBook(name, partnerName) +
     namingClarityRule() +
     roleAlreadyKnownRule() +
     duoPartnershipRule() +
@@ -2661,55 +2628,32 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "」\n" +
     (lastPartnerLine ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n" : "") +
     "この詳しい答えで何が残った／消えたかを1〜2短文で述べ、同僚と同じ絞り込み線を進めよ。準備や台本は禁止。";
-  const debateUserStrict =
-    investigatorContext(agent) +
-    "\n質問「" +
-    question +
-    "」→答え「" +
-    answer +
-    "」。残った候補への含意を短い1文だけ。メタ・準備禁止。追いつき同線。";
 
-  panel.addSection("params", "stream · メタ拒否・再試行無制限", "meta");
+  panel.addSection(
+    "params",
+    "stream · 内容による再試行なし（AI呼び出し失敗時のみ再試行）",
+    "meta"
+  );
   let opinion = null;
   let beatStart = performance.now();
-  let lastRejectText = "";
-  let attempt = 0;
-  while (true) {
-    if (state.phase === "ended" || state.phase === "reload-model") {
-      panel.collapse();
-      return null;
-    }
-    let user = attempt === 0 ? debateUserBase : debateUserStrict;
-    if (attempt > 0) {
-      panel.addSection(
-        "再試行",
-        "再試行 " + attempt + " · " + askRejectShortLabel("議論メタ"),
-        "warn"
-      );
-      await sleep(ASK_RETRY_DELAY_MS);
-      if (lastRejectText) user += debateRetryNudge(lastRejectText);
-    }
-    const streamed = await streamIntoPanel(panel, system, user, {
-      agent,
-      temperature: attempt === 0 ? 0.55 : 0.35,
-      max_tokens: 500,
-    });
-    beatStart = streamed.beatStart;
-    if (streamed.error && !streamed.raw) {
-      panel.collapse();
-      if (streamed.gpuReload || state.phase === "reload-model") return null;
-      endConversationAiStopped(streamed.error);
-      return null;
-    }
-    const draft = firstDraftSpeech(streamed);
-    if (draft && !isUselessMetaOrEcho(draft, "debate") && !isBadDebateOpinion(draft)) {
-      opinion = draft;
-      break;
-    }
-    lastRejectText = draft || streamed.raw || "";
-    panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
-    attempt += 1;
+  if (state.phase === "ended" || state.phase === "reload-model") {
+    panel.collapse();
+    return null;
   }
+  const streamed = await streamIntoPanel(panel, system, debateUserBase, {
+    agent,
+    temperature: 0.55,
+    max_tokens: 500,
+  });
+  beatStart = streamed.beatStart;
+  if (streamed.error && !streamed.raw) {
+    panel.collapse();
+    if (streamed.gpuReload || state.phase === "reload-model") return null;
+    endConversationAiStopped(streamed.error);
+    return null;
+  }
+  // Whatever the model produced is used as-is — no content-quality reject/retry.
+  opinion = firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "（発言なし）";
 
   const hypSystem =
     "あなたは" +
@@ -3080,7 +3024,7 @@ async function wolfAskQuestion(askerId) {
     "あなたは" +
     name +
     "。" +
-    investigatorRuleBook() +
+    investigatorRuleBook(name) +
     wolfNamingClarityRule() +
     freeAskRule() +
     "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的な質問（？で終わってよい）。" +
@@ -3227,7 +3171,7 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "あなたは" +
     name +
     "。" +
-    investigatorRuleBook() +
+    investigatorRuleBook(name) +
     wolfNamingClarityRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
     "エージェント00の詳しい答えがORIGIN仮説にどう効くかを1〜2短文で述べる。" +
@@ -3242,55 +3186,32 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "」\n" +
     (lastSpeakerLine ? "直前「" + lastSpeakerLine + "」\n" : "") +
     "この詳しい答えの含意を1〜2短文で述べよ。準備や台本は禁止。";
-  const debateUserStrict =
-    wolfInvestigatorContext(speakerId) +
-    "\n質問「" +
-    question +
-    "」→答え「" +
-    answer +
-    "」。ORIGIN仮説への含意を短い1文だけ。メタ・準備禁止。";
 
-  panel.addSection("params", "メタ拒否・再試行無制限", "meta");
+  panel.addSection(
+    "params",
+    "内容による再試行なし（AI呼び出し失敗時のみ再試行）",
+    "meta"
+  );
   let opinion = null;
   let beatStart = performance.now();
-  let lastRejectText = "";
-  let attempt = 0;
-  while (true) {
-    if (state.phase === "ended" || state.phase === "reload-model") {
-      panel.collapse();
-      return null;
-    }
-    let user = attempt === 0 ? debateUserBase : debateUserStrict;
-    if (attempt > 0) {
-      panel.addSection(
-        "再試行",
-        "再試行 " + attempt + " · " + askRejectShortLabel("議論メタ"),
-        "warn"
-      );
-      await sleep(ASK_RETRY_DELAY_MS);
-      if (lastRejectText) user += debateRetryNudge(lastRejectText);
-    }
-    const streamed = await streamIntoPanel(panel, system, user, {
-      agent: speakerId,
-      temperature: attempt === 0 ? 0.55 : 0.35,
-      max_tokens: 500,
-    });
-    beatStart = streamed.beatStart;
-    if (streamed.error && !streamed.raw) {
-      panel.collapse();
-      if (streamed.gpuReload || state.phase === "reload-model") return null;
-      endConversationAiStopped(streamed.error);
-      return null;
-    }
-    const draft = firstDraftSpeech(streamed);
-    if (draft && !isUselessMetaOrEcho(draft, "debate") && !isBadDebateOpinion(draft)) {
-      opinion = draft;
-      break;
-    }
-    lastRejectText = draft || streamed.raw || "";
-    panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
-    attempt += 1;
+  if (state.phase === "ended" || state.phase === "reload-model") {
+    panel.collapse();
+    return null;
   }
+  const streamed = await streamIntoPanel(panel, system, debateUserBase, {
+    agent: speakerId,
+    temperature: 0.55,
+    max_tokens: 500,
+  });
+  beatStart = streamed.beatStart;
+  if (streamed.error && !streamed.raw) {
+    panel.collapse();
+    if (streamed.gpuReload || state.phase === "reload-model") return null;
+    endConversationAiStopped(streamed.error);
+    return null;
+  }
+  // Whatever the model produced is used as-is — no content-quality reject/retry.
+  opinion = firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "（発言なし）";
 
   const hypSystem =
     "あなたは" +
