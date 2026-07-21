@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "narrow-coop-1";
+const CLIENT_BUILD = "no-dup-ask-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -1576,10 +1576,27 @@ function isMetaFormatQuestion(q) {
   return false;
 }
 
+/**
+ * Normalize JP interrogatives for duplicate detection: drop quotes/parens/
+ * whitespace/punct, then strip polite endings (ですか／でしょうか) and a
+ * trailing か so 「〜ですか？」「〜か？」 share a stem. Keep ます／ません
+ * polarity distinct.
+ */
 function normalizeQuestionKey(q) {
-  return String(q || "")
+  let s = String(q || "")
     .replace(/\s+/g, "")
-    .replace(/[「」『』"'？?。．.!！]+/g, "");
+    .replace(/[「」『』（）()【】［］\[\]"'“”‘’]/g, "")
+    .replace(/[？?。．.!！、,，･・]/g, "");
+  s = s.replace(/(でしょうか|ですか|のですか)$/u, "");
+  s = s.replace(/か$/u, "");
+  return s;
+}
+
+/** Compact list of prior asks for the LLM (no answers — just Q stems). */
+function askedQuestionsBlock() {
+  const qs = (state.history || []).map((h) => h && h.q).filter(Boolean);
+  if (!qs.length) return "（まだ無し）";
+  return qs.map((q, i) => i + 1 + ". 「" + q + "」").join("\n");
 }
 
 /** True when this question (near-)duplicates something already asked. */
@@ -1589,7 +1606,12 @@ function isRepeatHistoryQuestion(q) {
   return (state.history || []).some((h) => {
     const hk = normalizeQuestionKey(h.q);
     if (!hk) return false;
-    return hk === key || (key.length >= 6 && (hk.includes(key) || key.includes(hk)));
+    if (hk === key) return true;
+    // Near-dup: same stem / one contains the other (punct / quote / か variant).
+    if (key.length >= 6 && hk.length >= 6 && (hk.includes(key) || key.includes(hk))) {
+      return true;
+    }
+    return false;
   });
 }
 
@@ -1890,7 +1912,9 @@ function investigatorContext(agent) {
     "遅いウォームアップや関係確認は禁止。同僚の線に追いつき、同じ軸で狭め続けよ。\n" +
     formatSharedHypPromptBlock() +
     "\nQ&A履歴:\n" +
-    historyBlock()
+    historyBlock() +
+    "\n既に聞いた質問（再質問・言い換え禁止）:\n" +
+    askedQuestionsBlock()
   );
 }
 
@@ -1979,7 +2003,10 @@ function extractAskTo00(streamed) {
   }
   for (const cand of pool) {
     const q = ensureQuestionMark(unwrapSpeechJunk(cand));
-    if (q && !isUselessMetaOrEcho(q, "ask")) return q;
+    if (!q || isUselessMetaOrEcho(q, "ask")) continue;
+    // Prefer a fresh ask from the same stream over a history echo.
+    if (isRepeatHistoryQuestion(q)) continue;
+    return q;
   }
   return null;
 }
@@ -2029,7 +2056,8 @@ async function agentAskQuestion(asker) {
       "発言は必ず1文だけ。エージェント00への具体的なはい/いいえ質問（？で終わる）。" +
       "目的: ORIGIN候補空間をカテゴリ・属性・行動でどんどん狭める。" +
       "最初の質問から具体的に絞れ（関係確認・準備・ウォームアップ禁止）。" +
-      "履歴があるときは直前の答えで分岐し、残った可能性をさらに狭めよ。" +
+      "履歴があるときは直前の答えと共有仮説から分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
+      "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。必ず未質問の軸へ進め。" +
       "例の形: 「あなたは夜に活動しますか？」「あなたは生き物ですか？」「あなたは屋内で働きますか？」" +
       "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
       structuredOutRule() +
@@ -2038,16 +2066,30 @@ async function agentAskQuestion(asker) {
       investigatorContext(asker) +
       (historyLen === 0
         ? "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動のはい/いいえ質問を1つだけ（？で終わる）。準備・関係確認・議論宣言は禁止。"
-        : "\n共有仮説とQ&A履歴を使い、直前の答えで分岐して候補空間をさらに狭めるはい/いいえ質問を1つだけ（？で終わる）。準備や議論の宣言は禁止。");
+        : "\n共有仮説とQ&A履歴を使い、直前の答えで分岐して候補空間をさらに狭める新しいはい/いいえ質問を1つだけ（？で終わる）。既出質問リストと同じ・ほぼ同じ質問は禁止。準備や議論の宣言は禁止。");
     const askUserStrict =
       investigatorContext(asker) +
-      "\n短い1文だけ。エージェント00に聞く具体的な絞り込み質問（？必須）。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
+      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問（？必須）。既出と同じ意味の再質問は禁止。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
 
     panel.addSection("params", "stream · max_tokens=500 · メタ拒否・再試行あり", "meta");
+    let lastRejectReason = "";
+    let lastRejectText = "";
     for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
-      const user = attempt === 0 ? askUserBase : askUserStrict;
+      let user = attempt === 0 ? askUserBase : askUserStrict;
       if (attempt > 0) {
-        panel.addSection("再試行", "メタ/非質問のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")", "warn");
+        const why = lastRejectReason || "メタ/非質問";
+        panel.addSection(
+          "再試行",
+          why + "のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")",
+          "warn"
+        );
+        if (lastRejectText) user += questionRetryNudge(lastRejectText);
+        if (lastRejectReason === "既出質問の重複") {
+          user +=
+            "\n特に「" +
+            clip(lastRejectText, 40) +
+            "」と同じ意味の再質問は禁止。答えと共有仮説から未質問の軸へ分岐せよ。";
+        }
       }
       const streamed = await streamIntoPanel(panel, system, user, {
         agent: asker,
@@ -2065,18 +2107,30 @@ async function agentAskQuestion(asker) {
       if (!question) {
         const draft = firstDraftSpeech(streamed);
         const cand = draft ? ensureQuestionMark(draft) : "";
-        if (cand && !isUselessMetaOrEcho(cand, "ask")) question = cand;
+        if (cand && !isUselessMetaOrEcho(cand, "ask") && !isRepeatHistoryQuestion(cand)) {
+          question = cand;
+        }
       }
-      if (question) break;
-      panel.addSection(
-        "却下",
-        clip(firstDraftSpeech(streamed) || streamed.raw || "(空)", 80),
-        "warn"
-      );
+      if (question && isRepeatHistoryQuestion(question)) {
+        lastRejectReason = "既出質問の重複";
+        lastRejectText = question;
+        panel.addSection("却下", "重複: " + clip(question, 80), "warn");
+        question = null;
+      } else if (!question) {
+        lastRejectReason = "メタ/非質問";
+        lastRejectText = firstDraftSpeech(streamed) || streamed.raw || "";
+        panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
+      } else {
+        break;
+      }
     }
     if (!question) {
       panel.collapse();
-      endConversationAiStopped("AIが使える質問を出せなかった（メタ・非質問の繰り返し）");
+      endConversationAiStopped(
+        lastRejectReason === "既出質問の重複"
+          ? "AIが既出と異なる質問を出せなかった（重複の繰り返し）"
+          : "AIが使える質問を出せなかった（メタ・非質問の繰り返し）"
+      );
       return null;
     }
   }
@@ -2580,7 +2634,9 @@ function wolfInvestigatorContext(speakerId) {
     ")の仮説: 「" +
     clip(self ? self.hyp : "未定", 40) +
     "」\nQ&A履歴:\n" +
-    wolfHistoryBlock()
+    wolfHistoryBlock() +
+    "\n既に聞いた質問（再質問・言い換え禁止）:\n" +
+    askedQuestionsBlock()
   );
 }
 
@@ -2602,23 +2658,39 @@ async function wolfAskQuestion(askerId) {
     "。" +
     wolfNamingClarityRule() +
     "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的なはい/いいえ質問（？で終わる）。" +
+    "履歴があるときは答えから分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
+    "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。" +
     "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人。" +
     structuredOutRule() +
     "発言行に質問文だけを書く。";
   const askUserBase =
     wolfInvestigatorContext(askerId) +
-    "\nエージェント00へのはい/いいえ質問を1つだけ作れ（？で終わる）。準備や議論の宣言は禁止。";
+    "\nエージェント00へのはい/いいえ質問を1つだけ作れ（？で終わる）。既出と同じ・ほぼ同じは禁止。準備や議論の宣言は禁止。";
   const askUserStrict =
     wolfInvestigatorContext(askerId) +
-    "\n短い1文だけ。エージェント00に聞く具体的な質問（？必須）。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
+    "\n短い1文だけ。エージェント00に聞く具体的な新しい質問（？必須）。既出再質問禁止。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
 
   panel.addSection("params", "メタ拒否・再試行あり", "meta");
   let question = null;
   let beatStart = performance.now();
+  let lastRejectReason = "";
+  let lastRejectText = "";
   for (let attempt = 0; attempt <= ASK_RETRY_MAX; attempt++) {
-    const user = attempt === 0 ? askUserBase : askUserStrict;
+    let user = attempt === 0 ? askUserBase : askUserStrict;
     if (attempt > 0) {
-      panel.addSection("再試行", "メタ/非質問のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")", "warn");
+      const why = lastRejectReason || "メタ/非質問";
+      panel.addSection(
+        "再試行",
+        why + "のため再生成 (" + attempt + "/" + ASK_RETRY_MAX + ")",
+        "warn"
+      );
+      if (lastRejectText) user += questionRetryNudge(lastRejectText);
+      if (lastRejectReason === "既出質問の重複") {
+        user +=
+          "\n特に「" +
+          clip(lastRejectText, 40) +
+          "」と同じ意味の再質問は禁止。未質問の軸へ分岐せよ。";
+      }
     }
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: askerId,
@@ -2635,14 +2707,30 @@ async function wolfAskQuestion(askerId) {
     if (!question) {
       const draft = firstDraftSpeech(streamed);
       const cand = draft ? ensureQuestionMark(draft) : "";
-      if (cand && !isUselessMetaOrEcho(cand, "ask")) question = cand;
+      if (cand && !isUselessMetaOrEcho(cand, "ask") && !isRepeatHistoryQuestion(cand)) {
+        question = cand;
+      }
     }
-    if (question) break;
-    panel.addSection("却下", clip(firstDraftSpeech(streamed) || streamed.raw || "(空)", 80), "warn");
+    if (question && isRepeatHistoryQuestion(question)) {
+      lastRejectReason = "既出質問の重複";
+      lastRejectText = question;
+      panel.addSection("却下", "重複: " + clip(question, 80), "warn");
+      question = null;
+    } else if (!question) {
+      lastRejectReason = "メタ/非質問";
+      lastRejectText = firstDraftSpeech(streamed) || streamed.raw || "";
+      panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
+    } else {
+      break;
+    }
   }
   if (!question) {
     panel.collapse();
-    endConversationAiStopped("AIが使える質問を出せなかった（メタ・非質問の繰り返し）");
+    endConversationAiStopped(
+      lastRejectReason === "既出質問の重複"
+        ? "AIが既出と異なる質問を出せなかった（重複の繰り返し）"
+        : "AIが使える質問を出せなかった（メタ・非質問の繰り返し）"
+    );
     return null;
   }
 
