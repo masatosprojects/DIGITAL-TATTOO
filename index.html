@@ -4,28 +4,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DIGITAL TATTOO — 尋問ゲーム</title>
+    <meta name="client-build" content="ux-product-2">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #f3efe6;
-            --fg: #1e293b;
+            --bg: #EEF3FB;
+            --fg: #0f172a;
             --dim: #64748b;
             --accent: #2563EB;
             --accent-deep: #1d4ed8;
-            --accent-soft: rgba(37, 99, 235, 0.12);
+            --accent-soft: rgba(37, 99, 235, 0.14);
             --green: #2563EB;
             --amber: #F97316;
             --warn: #dc2626;
             --a00: #2563EB;
             --a01: #F97316;
             --a02: #7c3aed;
-            --panel: rgba(255, 255, 255, 0.78);
-            --panel-edge: rgba(37, 99, 235, 0.18);
-            --chat-bg: #f8f2e8;
-            --chat-fg: #2a241c;
-            --chat-dim: #7a7468;
+            --panel: rgba(255, 255, 255, 0.86);
+            --panel-edge: rgba(37, 99, 235, 0.22);
+            --chat-bg: #f4f7fd;
+            --chat-fg: #1e293b;
+            --chat-dim: #64748b;
             --font: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", sans-serif;
             --display: "Outfit", "Zen Kaku Gothic New", sans-serif;
             --sans: var(--font);
@@ -57,10 +58,9 @@
             pointer-events: none;
             background-color: var(--bg);
             background-image:
-                radial-gradient(ellipse at 70% 10%, rgba(37, 99, 235, 0.1) 0%, transparent 50%),
-                radial-gradient(ellipse at 20% 80%, rgba(249, 115, 22, 0.08) 0%, transparent 45%),
-                linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(243, 239, 230, 0.5) 100%),
-                url("%BASE_URL%bg-floral.png");
+                radial-gradient(ellipse at 78% 8%, rgba(37, 99, 235, 0.22) 0%, transparent 48%),
+                radial-gradient(ellipse at 12% 88%, rgba(249, 115, 22, 0.1) 0%, transparent 42%),
+                linear-gradient(165deg, #dbe7ff 0%, #EEF3FB 42%, #f8fafc 100%);
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
@@ -783,9 +783,9 @@
             -webkit-overflow-scrolling: touch;
             background-color: var(--bg);
             background-image:
-                radial-gradient(ellipse at 60% 0%, rgba(37, 99, 235, 0.14) 0%, transparent 55%),
-                linear-gradient(180deg, rgba(255, 252, 247, 0.75) 0%, rgba(243, 239, 230, 0.88) 100%),
-                url("%BASE_URL%bg-floral.png");
+                radial-gradient(ellipse at 50% -10%, rgba(37, 99, 235, 0.28) 0%, transparent 52%),
+                radial-gradient(ellipse at 100% 40%, rgba(124, 58, 237, 0.08) 0%, transparent 40%),
+                linear-gradient(180deg, #dbe7ff 0%, #EEF3FB 38%, #f8fafc 100%);
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
@@ -807,33 +807,49 @@
 
         .landing-hero {
             text-align: center;
-            padding: 28px 0 20px;
+            padding: 36px 0 28px;
+        }
+        .build-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin: 0 0 16px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(37, 99, 235, 0.12);
+            border: 1px solid rgba(37, 99, 235, 0.28);
+            color: var(--accent-deep);
+            font-family: var(--display);
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
         .gate-brand {
             font-family: var(--display);
             font-weight: 800;
-            font-size: clamp(2.1rem, 9vw, 3.2rem);
-            letter-spacing: 0.04em;
-            line-height: 1.05;
+            font-size: clamp(2.4rem, 10vw, 3.6rem);
+            letter-spacing: 0.03em;
+            line-height: 1.02;
             color: var(--accent);
-            margin: 0 0 10px;
-            text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+            margin: 0 0 14px;
+            text-shadow: 0 2px 0 rgba(255, 255, 255, 0.85);
         }
         .gate-sub {
             display: none;
         }
         .hero-lead {
-            margin: 0 auto 10px;
+            margin: 0 auto 12px;
             max-width: 22em;
-            font-size: clamp(1.05rem, 3.5vw, 1.25rem);
+            font-size: clamp(1.12rem, 3.8vw, 1.35rem);
             font-weight: 700;
             line-height: 1.45;
             color: var(--fg);
         }
         .hero-sub {
-            margin: 0 auto 22px;
+            margin: 0 auto 26px;
             max-width: 26em;
-            font-size: 1rem;
+            font-size: 1.02rem;
             line-height: 1.6;
             color: var(--dim);
         }
@@ -841,21 +857,29 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-height: 52px;
-            padding: 12px 28px;
-            border-radius: 999px;
+            min-height: 56px;
+            padding: 14px 34px;
+            border-radius: 14px;
             background: var(--accent);
             color: #fff;
             font-family: inherit;
-            font-size: 1.05rem;
+            font-size: 1.12rem;
             font-weight: 700;
             letter-spacing: 0.04em;
             text-decoration: none;
             border: none;
             cursor: pointer;
-            box-shadow: 0 8px 22px rgba(37, 99, 235, 0.32);
+            box-shadow: 0 12px 28px rgba(37, 99, 235, 0.38);
+            animation: hero-cta-pulse 2.4s ease-in-out infinite;
         }
-        .hero-cta:hover { background: var(--accent-deep); }
+        .hero-cta:hover { background: var(--accent-deep); animation: none; }
+        @keyframes hero-cta-pulse {
+            0%, 100% { transform: translateY(0); box-shadow: 0 12px 28px rgba(37, 99, 235, 0.38); }
+            50% { transform: translateY(-2px); box-shadow: 0 16px 34px rgba(37, 99, 235, 0.48); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .hero-cta { animation: none; }
+        }
 
         .landing-section {
             margin: 36px 0;
@@ -1315,7 +1339,7 @@
                 background-image: none;
             }
             #modelGate {
-                background: #f3efe6;
+                background: #EEF3FB;
                 backdrop-filter: none;
                 -webkit-backdrop-filter: none;
             }
@@ -1328,6 +1352,7 @@
     <div id="modelGate" role="status" aria-live="polite">
         <div class="landing">
             <header class="landing-hero" data-reveal>
+                <p class="build-chip" id="buildChip">build ux-product-2</p>
                 <h1 class="gate-brand">DIGITAL TATTOO</h1>
                 <p class="gate-sub">INTERROGATION · IN-BROWSER LLM</p>
                 <p class="hero-lead">ネットに残る足跡が、未来のあなたを形づくる。</p>
@@ -1398,24 +1423,24 @@
                 <h2>ゲームを始める</h2>
                 <div class="start-simple">
                     通常モード（推奨）
-                    <small>標準設定のまますぐ開始できます</small>
-                </div>
-
-                <div class="gate-section-label">ゲーム形式</div>
-                <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
-                    <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
-                        <span class="box-label">尋問モード（2人）</span>
-                        <span class="box-hint">尋問官A/B が協同で推理する標準プレイ。</span>
-                    </button>
-                    <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
-                        <span class="box-label">人狼モード（5人）</span>
-                        <span class="box-hint">討論者5人＋追放投票。発展ルール。</span>
-                    </button>
+                    <small>標準設定のまますぐ開始できます。形式やモデルは「詳細設定」から変更。</small>
                 </div>
 
                 <button type="button" id="gateAdvancedToggle" aria-expanded="false" aria-controls="gateAdvanced">詳細設定</button>
 
                 <div id="gateAdvanced" class="gate-advanced">
+                    <div class="gate-section-label">ゲーム形式</div>
+                    <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
+                        <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
+                            <span class="box-label">尋問モード（2人）</span>
+                            <span class="box-hint">尋問官A/B が協同で推理する標準プレイ。</span>
+                        </button>
+                        <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
+                            <span class="box-label">人狼モード（5人）</span>
+                            <span class="box-hint">討論者5人＋追放投票。発展ルール。</span>
+                        </button>
+                    </div>
+
                     <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
                     <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
                     <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
@@ -1538,6 +1563,6 @@
         </form>
     </div>
 
-    <script type="module" src="./js/app.js"></script>
+    <script type="module" src="./js/app.js?v=ux-product-2"></script>
 </body>
 </html>

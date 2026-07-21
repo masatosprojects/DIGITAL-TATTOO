@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "ux-product-1";
+const CLIENT_BUILD = "ux-product-2";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -4384,6 +4384,9 @@ if (gateAdvancedToggle && gateAdvanced) {
     gateAdvancedToggle.textContent = open ? "詳細設定を閉じる" : "詳細設定";
   });
 }
+
+const buildChip = document.getElementById("buildChip");
+if (buildChip) buildChip.textContent = "build " + CLIENT_BUILD;
 
 if (btnThinkToggle && boardEl) {
   btnThinkToggle.addEventListener("click", () => {
