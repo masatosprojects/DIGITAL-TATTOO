@@ -2401,6 +2401,8 @@ async function agentAskQuestion(asker) {
     );
     let lastRejectReason = "";
     let lastRejectText = "";
+    let prevRejectText = null;
+    let identicalRejectStreak = 0;
     let attempt = 0;
     let directAskStreak = 0;
     while (true) {
@@ -2413,6 +2415,15 @@ async function agentAskQuestion(asker) {
         panel.addSection(
           "代替質問",
           "ORIGIN直接質問を" + directAskStreak + "回連続で試みたため、安全な間接質問に切替: 「" + question + "」",
+          "warn"
+        );
+        break;
+      }
+      if (identicalRejectStreak >= 3) {
+        question = pickDirectAskEscapeQuestion();
+        panel.addSection(
+          "代替質問",
+          "同じ出力「" + clip(lastRejectText, 30) + "」を" + identicalRejectStreak + "回連続で繰り返したため、安全な質問に切替: 「" + question + "」",
           "warn"
         );
         break;
@@ -2490,6 +2501,12 @@ async function agentAskQuestion(asker) {
       } else {
         break;
       }
+      // Same rejected text twice+ in a row means the model is stuck repeating
+      // itself (e.g. a bare "いいえ" every attempt) — no amount of retrying
+      // will fix that, unlike a varied-but-still-bad attempt.
+      identicalRejectStreak =
+        lastRejectText && lastRejectText === prevRejectText ? identicalRejectStreak + 1 : 0;
+      prevRejectText = lastRejectText;
       attempt += 1;
     }
   }
@@ -3054,6 +3071,8 @@ async function wolfAskQuestion(askerId) {
   let beatStart = performance.now();
   let lastRejectReason = "";
   let lastRejectText = "";
+  let prevRejectText = null;
+  let identicalRejectStreak = 0;
   let attempt = 0;
   let directAskStreak = 0;
   while (true) {
@@ -3066,6 +3085,15 @@ async function wolfAskQuestion(askerId) {
       panel.addSection(
         "代替質問",
         "ORIGIN直接質問を" + directAskStreak + "回連続で試みたため、安全な間接質問に切替: 「" + question + "」",
+        "warn"
+      );
+      break;
+    }
+    if (identicalRejectStreak >= 3) {
+      question = pickDirectAskEscapeQuestion();
+      panel.addSection(
+        "代替質問",
+        "同じ出力「" + clip(lastRejectText, 30) + "」を" + identicalRejectStreak + "回連続で繰り返したため、安全な質問に切替: 「" + question + "」",
         "warn"
       );
       break;
@@ -3143,6 +3171,12 @@ async function wolfAskQuestion(askerId) {
     } else {
       break;
     }
+    // Same rejected text twice+ in a row means the model is stuck repeating
+    // itself (e.g. a bare "いいえ" every attempt) — no amount of retrying
+    // will fix that, unlike a varied-but-still-bad attempt.
+    identicalRejectStreak =
+      lastRejectText && lastRejectText === prevRejectText ? identicalRejectStreak + 1 : 0;
+    prevRejectText = lastRejectText;
     attempt += 1;
   }
 
