@@ -179,7 +179,7 @@ export const MODEL_CATALOG = [
   {
     key: "swallow",
     rank: 3,
-    label: "TinySwallow 1.5B（JP特化）",
+    label: "TinySwallow 1.5B（JP特化）· 推奨",
     shortLabel: "Swallow",
     // WebLLM model_id (custom appConfig). Sakana ChatUI uses short "TinySwallow-1.5B";
     // we keep the MLC repo suffix so IndexedDB keys match the HF artifact name.
@@ -199,14 +199,15 @@ export const MODEL_CATALOG = [
     requiresF16: false,
     remoteOk: true,
     license: "Apache-2.0",
+    isDefault: true,
     hint:
-      "Sakana JP特化蒸留。初回 ≈830 MB（HF+IndexedDB）· VRAM ≈1.9 GB（q4f32）。" +
+      "Sakana JP特化蒸留・最推奨。初回 ≈830 MB（HF+IndexedDB）· VRAM ≈1.9 GB（q4f32）。" +
       "WASM は同一オリジン優先（無ければ jsDelivr）。",
   },
   {
     key: "default",
     rank: 4,
-    label: "標準 Qwen 1.5B · 推奨（もともとの標準）",
+    label: "標準 Qwen 1.5B（もともとの標準）",
     shortLabel: "標準1.5B",
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -220,14 +221,96 @@ export const MODEL_CATALOG = [
     requiresF16: true,
     remoteOk: true,
     license: "Apache-2.0",
-    isDefault: true,
     hint:
-      "もともとの標準・最推奨。≈840 MB · VRAM ≈1.6 GB。" +
+      "もともとの標準。≈840 MB · VRAM ≈1.6 GB。" +
       "Pages でも選択可（未同梱時は初回は HF から取得 · IndexedDB）。",
   },
   {
+    key: "qwen3-1.7b",
+    rank: 4.5,
+    label: "Qwen3 1.7B（新世代・多言語強化）",
+    shortLabel: "Qwen3-1.7B",
+    id: "Qwen3-1.7B-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen3-1.7B-q4f16_1-MLC",
+    wasm: "Qwen3-1.7B-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 984,
+    vramMB: 2037,
+    minVramHint: 2200,
+    usable: "yes",
+    jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Apache-2.0",
+    hint:
+      "Qwen2.5 の後継。多言語対応を強化した新世代・標準1.5Bとほぼ同格サイズ。" +
+      "≈984 MB · VRAM ≈2.0 GB。初回は HF から取得。",
+  },
+  {
+    key: "qwen3-0.6b",
+    rank: 5.5,
+    label: "Qwen3 0.6B（軽量・新世代）",
+    shortLabel: "Qwen3-0.6B",
+    id: "Qwen3-0.6B-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen3-0.6B-q4f16_1-MLC",
+    wasm: "Qwen3-0.6B-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 335,
+    vramMB: 1403,
+    minVramHint: 1600,
+    usable: "yes",
+    jpQuality: 2,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Apache-2.0",
+    hint:
+      "軽量 Qwen 0.5B の新世代版。多言語対応が改善。≈335 MB · VRAM ≈1.4 GB。初回は HF から取得。",
+  },
+  {
+    key: "llama32-3b",
+    rank: 1.5,
+    label: "Llama 3.2 3B Instruct（日本語は弱め）",
+    shortLabel: "Llama3.2-3B",
+    id: "Llama-3.2-3B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Llama-3.2-3B-Instruct-q4f16_1-MLC",
+    wasm: "Llama-3.2-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 1733,
+    vramMB: 2264,
+    minVramHint: 2500,
+    usable: "maybe",
+    jpQuality: 3,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Llama 3.2 Community License",
+    hint:
+      "Meta公式・多言語だが公式サポート言語に日本語は含まれず、日本語品質は他候補より劣る。" +
+      "≈1.7 GB · VRAM ≈2.3 GB。初回は HF から取得。",
+  },
+  {
+    key: "llama32-1b",
+    rank: 6,
+    label: "Llama 3.2 1B Instruct（日本語は弱め）",
+    shortLabel: "Llama3.2-1B",
+    id: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Llama-3.2-1B-Instruct-q4f16_1-MLC",
+    wasm: "Llama-3.2-1B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    sizeMB: 672,
+    vramMB: 879,
+    minVramHint: 1000,
+    usable: "yes",
+    jpQuality: 3,
+    jpSpecialized: false,
+    requiresF16: true,
+    remoteOk: true,
+    license: "Llama 3.2 Community License",
+    hint:
+      "最軽量級。公式サポート言語に日本語は含まれず、日本語品質は他候補より劣る。" +
+      "≈672 MB · VRAM ≈0.9 GB。初回は HF から取得。",
+  },
+  {
     key: "lite",
-    rank: 5,
+    rank: 7,
     label: "軽量 Qwen 0.5B（品質劣る）",
     shortLabel: "軽量0.5B",
     id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
@@ -244,15 +327,15 @@ export const MODEL_CATALOG = [
     license: "Apache-2.0",
     hint:
       "品質は劣る（会話が崩れやすい）。≈280 MB。Pages CI 同一オリジン同梱。" +
-      "推奨は標準 Qwen 1.5B。",
+      "推奨は TinySwallow。",
   },
 ];
 
 /** @type {Record<string, ModelInfo>} */
 export const MODELS = Object.fromEntries(MODEL_CATALOG.map((m) => [m.key, m]));
 
-/** Smartest *usable* on Netlify / local (not the largest/maybe). */
-export const DEFAULT_MODEL_KEY = "default";
+/** Recommended pick — JP-specialized and usable=yes. */
+export const DEFAULT_MODEL_KEY = "swallow";
 
 /** Pages CI publishes this same-origin by default (fits ≈1 GB soft cap). */
 export const PAGES_MODEL_KEY = "lite";

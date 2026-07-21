@@ -63,7 +63,7 @@ export const MODELS = {
   swallow: {
     key: "swallow",
     rank: 3,
-    label: "TinySwallow 1.5B（JP特化）",
+    label: "TinySwallow 1.5B（JP特化）· 推奨",
     id: "TinySwallow-1.5B-Instruct-q4f32_1-MLC",
     hfRepo: "SakanaAI/TinySwallow-1.5B-Instruct-q4f32_1-MLC",
     wasmName: "Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm",
@@ -77,7 +77,7 @@ export const MODELS = {
   default: {
     key: "default",
     rank: 4,
-    label: "標準 Qwen 1.5B · 推奨（もともとの標準）",
+    label: "標準 Qwen 1.5B（もともとの標準）",
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
     wasmName: "Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm",
@@ -88,9 +88,65 @@ export const MODELS = {
     license: "Apache-2.0",
     hfCompatPrefix: path.join("resolve", "main"),
   },
+  "qwen3-1.7b": {
+    key: "qwen3-1.7b",
+    rank: 4.5,
+    label: "Qwen3 1.7B（新世代・多言語強化）",
+    id: "Qwen3-1.7B-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen3-1.7B-q4f16_1-MLC",
+    wasmName: "Qwen3-1.7B-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Qwen3-1.7B-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 2037,
+    approxDownloadMB: 984,
+    usable: "yes",
+    license: "Apache-2.0",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
+  "qwen3-0.6b": {
+    key: "qwen3-0.6b",
+    rank: 5.5,
+    label: "Qwen3 0.6B（軽量・新世代）",
+    id: "Qwen3-0.6B-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Qwen3-0.6B-q4f16_1-MLC",
+    wasmName: "Qwen3-0.6B-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Qwen3-0.6B-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 1403,
+    approxDownloadMB: 335,
+    usable: "yes",
+    license: "Apache-2.0",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
+  "llama32-3b": {
+    key: "llama32-3b",
+    rank: 1.5,
+    label: "Llama 3.2 3B Instruct（日本語は弱め）",
+    id: "Llama-3.2-3B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Llama-3.2-3B-Instruct-q4f16_1-MLC",
+    wasmName: "Llama-3.2-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Llama-3.2-3B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 2264,
+    approxDownloadMB: 1733,
+    usable: "maybe",
+    license: "Llama 3.2 Community License",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
+  "llama32-1b": {
+    key: "llama32-1b",
+    rank: 6,
+    label: "Llama 3.2 1B Instruct（日本語は弱め）",
+    id: "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+    hfRepo: "mlc-ai/Llama-3.2-1B-Instruct-q4f16_1-MLC",
+    wasmName: "Llama-3.2-1B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    wasmUrl: WASM_BASE + "Llama-3.2-1B-Instruct-q4f16_1_cs1k-webgpu.wasm",
+    vramMB: 879,
+    approxDownloadMB: 672,
+    usable: "yes",
+    license: "Llama 3.2 Community License",
+    hfCompatPrefix: path.join("resolve", "main"),
+  },
   lite: {
     key: "lite",
-    rank: 5,
+    rank: 7,
     label: "軽量 Qwen 0.5B",
     id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
     hfRepo: "mlc-ai/Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
@@ -106,13 +162,29 @@ export const MODELS = {
 
 /** Ordered keys for --all (Qwen pack; JP extras are opt-in). */
 export const ALL_KEYS = ["hq", "default", "lite"];
-/** Optional remote-friendly JP models (not in Pages CI / --all by default). */
-export const EXTRA_KEYS = ["swallow", "gemma-jpn"];
+/** Optional remote-friendly JP / newer-gen / lighter-weight models (opt-in). */
+export const EXTRA_KEYS = [
+  "swallow",
+  "gemma-jpn",
+  "qwen3-1.7b",
+  "qwen3-0.6b",
+  "llama32-3b",
+  "llama32-1b",
+];
 /**
  * Pages CI: full lite weights + WASM libs for HF-remote models (~20 MB libs).
  * Avoids raw.githubusercontent.com failures when loading TinySwallow / 1.5B on Pages.
  */
-export const PAGES_WASM_KEYS = ["default", "swallow", "hq", "gemma-jpn"];
+export const PAGES_WASM_KEYS = [
+  "default",
+  "swallow",
+  "hq",
+  "gemma-jpn",
+  "qwen3-1.7b",
+  "qwen3-0.6b",
+  "llama32-3b",
+  "llama32-1b",
+];
 
 /** @deprecated use MODELS.default */
 export const MODEL = MODELS.default;

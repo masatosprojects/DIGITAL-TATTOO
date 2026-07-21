@@ -3180,7 +3180,7 @@ function enterFallback(reason) {
   gateLoad.textContent = "読み込む";
   gateHint.innerHTML =
     "モデルの読み込みが必要です。定型文でのプレイはありません。<br>" +
-    "推奨は標準 Qwen 1.5B。別モデルや再読み込みを試してください。";
+    "推奨は TinySwallow 1.5B。別モデルや再読み込みを試してください。";
   gateActions.classList.add("show");
   if (gateSkip) gateSkip.hidden = true;
 }
@@ -3632,12 +3632,13 @@ gateLoad.addEventListener("click", async () => {
 async function init() {
   const pages = isGitHubPagesHost();
   gateHint.innerHTML = pages
-    ? "<strong>推奨: 標準 Qwen 1.5B（もともとの標準）</strong> — Pages でも選択可。" +
-      "未同梱時は Hugging Face + IndexedDB（初回 ≈840 MB）。" +
-      "TinySwallow（JP特化）/ 3B / Gemma-JPN も選択可。<br>" +
+    ? "<strong>推奨: TinySwallow 1.5B（JP特化）</strong> — Pages でも選択可。" +
+      "未同梱時は Hugging Face + IndexedDB（初回 ≈830 MB）。" +
+      "標準 Qwen 1.5B / Qwen3 1.7B・0.6B / 3B / Gemma-JPN / Llama 3.2 も選択可。<br>" +
       "0.5B は品質が落ちます。CI は 0.5B を同一オリジン同梱。同じ選択はエンジン共有。"
-    : "<strong>推奨: 標準 Qwen 1.5B（もともとの標準）</strong> · " +
-      "軽量 0.5B · TinySwallow（JP特化）· 高精度 3B · Gemma-JPN（system不可）。<br>" +
+    : "<strong>推奨: TinySwallow 1.5B（JP特化）</strong> · " +
+      "標準 Qwen 1.5B · Qwen3 1.7B・0.6B（新世代）· 軽量 0.5B · " +
+      "高精度 3B · Gemma-JPN（system不可）· Llama 3.2 1B・3B（日本語弱め）。<br>" +
       "未配置モデルは初回 HF 取得可。同じモデルを選んだエージェントはエンジンを共有します。";
   buildAssignPicker();
   updateHud();
