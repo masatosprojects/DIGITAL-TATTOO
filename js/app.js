@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "no-dup-ask-1";
+const CLIENT_BUILD = "shared-memory-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -108,6 +108,10 @@ const hyp01El = document.getElementById("hyp01");
 const hyp02El = document.getElementById("hyp02");
 const phaseLabelEl = document.getElementById("phaseLabel");
 const chatLog = document.getElementById("chatLog");
+const sharedMemoryEl = document.getElementById("sharedMemory");
+const sharedMemoryHead = document.getElementById("sharedMemoryHead");
+const sharedMemoryList = document.getElementById("sharedMemoryList");
+const sharedMemoryCount = document.getElementById("sharedMemoryCount");
 const panel00 = document.getElementById("panel00");
 const panel01 = document.getElementById("panel01");
 const panel02 = document.getElementById("panel02");
@@ -146,7 +150,13 @@ const state = {
   phase: "boot",
   round: 0,
   nextAsker: "01",
+  /**
+   * 共用記憶 (01/02 shared memory): completed Q→A beats.
+   * Shape: { q, a, asker, round, ts }[]
+   */
   history: [],
+  /** Normalized question stems remembered as soon as a question is spoken. */
+  askedStems: [],
   /** Duo: shared hyp — empty until AI invents one (no prepared starter). */
   sharedHyp: "",
   /** @type {string[]} short alternate candidates (shared). */
@@ -430,6 +440,85 @@ function updateHud() {
   if (btnGuess) {
     btnGuess.disabled = state.phase !== "playing" || !canStartGuessRound();
   }
+  renderSharedMemory();
+}
+
+/** 共用記憶 UI — always-visible Q→A list for エージェント01/02. */
+function renderSharedMemory() {
+  if (!sharedMemoryList || !sharedMemoryCount) return;
+  const rows = state.history || [];
+  sharedMemoryCount.textContent = rows.length + "件";
+  if (!rows.length) {
+    sharedMemoryList.innerHTML =
+      '<div class="mem-empty">まだ質問なし — エージェント01/02の共用Q→Aがここに残る</div>';
+    return;
+  }
+  sharedMemoryList.innerHTML = rows
+    .map((h, i) => {
+      const asker = agentDisplayName(h.asker || "");
+      const round = h.round != null ? "R" + h.round : "";
+      return (
+        '<div class="mem-row">' +
+        '<span class="mem-idx">' +
+        (i + 1) +
+        "</span>" +
+        '<div class="mem-q">「' +
+        escapeHtmlLite(h.q) +
+        "」</div>" +
+        '<div class="mem-a">→ 「' +
+        escapeHtmlLite(h.a) +
+        "」</div>" +
+        '<div class="mem-meta">' +
+        escapeHtmlLite([round, asker].filter(Boolean).join(" · ")) +
+        "</div>" +
+        "</div>"
+      );
+    })
+    .join("");
+  sharedMemoryList.scrollTop = sharedMemoryList.scrollHeight;
+}
+
+function escapeHtmlLite(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Record a completed ask+answer into 共用記憶 and refresh UI. */
+function recordSharedMemory(question, answer, asker) {
+  const entry = {
+    q: String(question || "").trim(),
+    a: String(answer || "").trim(),
+    asker: asker || "",
+    round: state.round || 0,
+    ts: Date.now(),
+  };
+  if (!entry.q) return;
+  state.history.push(entry);
+  rememberAskedStem(entry.q);
+  renderSharedMemory();
+}
+
+/** Remember stem as soon as a question is spoken (blocks re-ask before answer lands). */
+function rememberAskedStem(q) {
+  const key = normalizeQuestionKey(q);
+  if (!key || key.length < 4) return;
+  if (!Array.isArray(state.askedStems)) state.askedStems = [];
+  if (!state.askedStems.includes(key)) state.askedStems.push(key);
+}
+
+function clearSharedMemory() {
+  state.history = [];
+  state.askedStems = [];
+  renderSharedMemory();
+}
+
+if (sharedMemoryHead && sharedMemoryEl) {
+  sharedMemoryHead.addEventListener("click", () => {
+    sharedMemoryEl.classList.toggle("collapsed");
+  });
 }
 
 function setControlsVisible(show) {
@@ -552,7 +641,14 @@ function isVagueSharedHyp(h) {
     t === "まだ分からない" ||
     t === "まだ不明" ||
     t === "別候補を検討中" ||
-    /^まだ特定できていない/.test(t)
+    /^まだ特定できていない/.test(t) ||
+    // 1429/1432: TinySwallow emitted label mash 「共有仮説 確定的」 as the hyp itself.
+    /^共有仮説/.test(t) ||
+    /^(確定的|別候補|仮説)$/.test(t) ||
+    /確定的$/.test(t.replace(/\s+/g, "")) ||
+    // 1432: hyp became the answer-scale token 「どちらとも言えない」
+    /^(はい|いいえ|どちらとも言えな|どちらかというと)/.test(t.replace(/\s+/g, "")) ||
+    /どちらとも言えな|どちらかというと/.test(t)
   );
 }
 
@@ -1573,7 +1669,59 @@ function isMetaFormatQuestion(q) {
   if (/答え(て|る|させ)|(答えてください)|(答えよ)/.test(t) && /はい|いいえ|yes|no/.test(t)) {
     return true;
   }
+  // 1429: questions about the answer scale itself, not ORIGIN identity.
+  if (
+    /どちらとも言えな|どちらかというと/.test(t) &&
+    /(答え|回答|答えて|答えます|答えさせ)/.test(t)
+  ) {
+    return true;
+  }
+  if (/5段階|回答の選択肢|答え方(を|について)/.test(t)) return true;
   return false;
+}
+
+/**
+ * 1429: TinySwallow often emits bare speaker tags as "questions"
+ * (「エージェント01？」「エージェント02？」) or asks about the other agent
+ * instead of ORIGIN attributes.
+ */
+function isAgentNameOnlyOrAboutAgentsQuestion(q) {
+  const raw = String(q || "").trim();
+  const t = raw.replace(/\s+/g, "");
+  if (!t) return true;
+  const bare = t.replace(/[「」『』？?。．.!！、,，]/g, "");
+  if (/^(エージェント|AGENT-?)[0-9０-９]{0,2}$/i.test(bare)) return true;
+  // Whole substance is agent-label noise (no ORIGIN attribute probe).
+  if (
+    /エージェント[0-9０-９]{0,2}|AGENT-?[0-9]{0,2}/i.test(t) &&
+    !/(あなた|貴方|君|お前|ORIGIN|起源|正体|役割)/.test(t) &&
+    !/(ですか|ますか|でしょうか)/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reject open-ended / free-form asks (not yes/no probes of ORIGIN).
+ * 1429: 「あなたが経験したORIGINについて、具体的なエピソードを教えてください。」
+ */
+function isOpenEndedNotYesNoQuestion(q) {
+  const t = String(q || "").replace(/\s+/g, "");
+  if (!t) return true;
+  if (
+    /教えてください|教えてくれ|具体的なエピソード|詳しく説明|自由に述べ|何ですか$|誰ですか$|どんな|どのように|なぜ|どうして/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // Prefer closed yes/no shape: ですか／ますか／でしょうか, or clear 〜か？
+  if (/(ですか|ますか|でしょうか)[？?]?$/.test(t)) return false;
+  if (/(あなた|貴方|君|お前).{0,24}(か)[？?]?$/.test(t) && !/教えて/.test(t)) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -1587,28 +1735,61 @@ function normalizeQuestionKey(q) {
     .replace(/\s+/g, "")
     .replace(/[「」『』（）()【】［］\[\]"'“”‘’]/g, "")
     .replace(/[？?。．.!！、,，･・]/g, "");
-  s = s.replace(/(でしょうか|ですか|のですか)$/u, "");
+  // Strip polite / yes-no endings including ますか (1432 night-activity repeat).
+  s = s.replace(/(でしょうか|ですか|のですか|ますか|ませんか)$/u, "");
   s = s.replace(/か$/u, "");
   return s;
 }
 
-/** Compact list of prior asks for the LLM (no answers — just Q stems). */
+/**
+ * 共用記憶 block for prompts — full Q→A list (01/02 shared tool).
+ * Prefer this over a bare question stem list so agents see answers too.
+ */
+function sharedMemoryBlock(limit = 12) {
+  const rows = (state.history || []).slice(-limit);
+  if (!rows.length) return "（まだ無し — 未質問の属性から絞れ）";
+  return rows
+    .map(
+      (h, i) =>
+        i +
+        1 +
+        ". 「" +
+        h.q +
+        "」→「" +
+        h.a +
+        "」"
+    )
+    .join("\n");
+}
+
+/** Compact list of prior asks for the LLM (stems only — backup to shared memory). */
 function askedQuestionsBlock() {
   const qs = (state.history || []).map((h) => h && h.q).filter(Boolean);
-  if (!qs.length) return "（まだ無し）";
-  return qs.map((q, i) => i + 1 + ". 「" + q + "」").join("\n");
+  const pending = (state.askedStems || []).length > qs.length;
+  if (!qs.length && !pending) return "（まだ無し）";
+  const lines = qs.map((q, i) => i + 1 + ". 「" + q + "」");
+  return lines.length ? lines.join("\n") : "（回答待ちの質問あり・再質問禁止）";
 }
 
 /** True when this question (near-)duplicates something already asked. */
 function isRepeatHistoryQuestion(q) {
   const key = normalizeQuestionKey(q);
   if (!key || key.length < 4) return false;
+  const stemHit = (state.askedStems || []).some((hk) => {
+    if (!hk) return false;
+    if (hk === key) return true;
+    if (key.length >= 5 && hk.length >= 5 && (hk.includes(key) || key.includes(hk))) {
+      return true;
+    }
+    return false;
+  });
+  if (stemHit) return true;
   return (state.history || []).some((h) => {
     const hk = normalizeQuestionKey(h.q);
     if (!hk) return false;
     if (hk === key) return true;
     // Near-dup: same stem / one contains the other (punct / quote / か variant).
-    if (key.length >= 6 && hk.length >= 6 && (hk.includes(key) || key.includes(hk))) {
+    if (key.length >= 5 && hk.length >= 5 && (hk.includes(key) || key.includes(hk))) {
       return true;
     }
     return false;
@@ -1737,6 +1918,8 @@ function isPlaceholderEchoQuestion(q) {
 function isBadInvestigatorQuestion(q) {
   return (
     isMetaFormatQuestion(q) ||
+    isAgentNameOnlyOrAboutAgentsQuestion(q) ||
+    isOpenEndedNotYesNoQuestion(q) ||
     isHistoryEchoQuestion(q) ||
     isInstructionEchoText(q) ||
     isFormatLeakText(q) ||
@@ -1759,6 +1942,12 @@ function badQuestionReason(q) {
   }
   if (new RegExp("^エージェント\\d{0,2}(" + ANSWER_TOKEN_ALT + "|yes|no)", "i").test(t)) {
     return "話者タグ＋5段階語のみ（質問ではない）";
+  }
+  if (isAgentNameOnlyOrAboutAgentsQuestion(q)) {
+    return "エージェント名のみ／同僚への問い（ORIGIN属性ではない）";
+  }
+  if (isOpenEndedNotYesNoQuestion(q)) {
+    return "自由記述・非はい/いいえ質問";
   }
   if (isMetaFormatQuestion(q)) return "メタ／回答形式の指示を質問にしている";
   if (isHistoryEchoQuestion(q)) return "履歴エコー（過去の質問や答え語の混入）";
@@ -1802,7 +1991,8 @@ function isBadDebateOpinion(t) {
     !t ||
     isInstructionEchoText(t) ||
     isFormatLeakText(t) ||
-    isBareAnswerOpinion(t)
+    isBareAnswerOpinion(t) ||
+    isUselessMetaOrEcho(t, "debate")
   );
 }
 
@@ -1833,8 +2023,8 @@ function questionRetryNudge(badText) {
     "\n前回の出力「" +
     (shown || "（空）") +
     "」は質問として使えなかった。" +
-    "はい／いいえの1語だけ・メタ指示・履歴の繰り返しは禁止。" +
-    "別の具体的な日本語の質問文を1つだけ、発言行に書け。"
+    "エージェント名だけ・自由記述・メタ・既出の繰り返しは禁止。" +
+    "ORIGINの属性を狭める「あなたは〜ですか？」形のはい/いいえ質問を1つだけ、発言行に書け。"
   );
 }
 
@@ -1844,7 +2034,7 @@ function debateRetryNudge(badText) {
     "\n前回の出力「" +
     (shown || "（空）") +
     "」は議論として使えなかった。" +
-    "はい／いいえ等の5段階語だけ・指示文の繰り返しは禁止。" +
+    "回答させる／と回答する／推測を避ける等のメタは禁止。" +
     "答えの意味と共有仮説についての平易な日本語1〜2文を、発言行に書け。"
   );
 }
@@ -1867,6 +2057,9 @@ function isBadHypothesis(h, question) {
   if (new RegExp(ANSWER_TOKEN_ALT).test(t)) return true;
   if (/^エージェント\d{0,2}/.test(t)) return true;
   if ((t.match(/エージェント\d{0,2}/g) || []).length >= 2) return true;
+  // 1429: 「共有仮説 確定的」 label mash is not a role guess.
+  if (/^共有仮説|確定的$|^確定的|^別[:：]/.test(t)) return true;
+  if (isVagueSharedHyp(h)) return true;
   if (question) {
     const q = String(question).replace(/\s+/g, "");
     if (q && q.length >= 6 && (t.includes(q.slice(0, 10)) || q.includes(t))) return true;
@@ -1874,16 +2067,15 @@ function isBadHypothesis(h, question) {
   return false;
 }
 
-function historyBlock(limit = 8) {
+/** Keep recent Q&A short — TinySwallow gets confused by long agent-tagged history. */
+function historyBlock(limit = 4) {
   const take = state.history.slice(-limit);
   if (!take.length) return "（まだ質問なし）";
   return take
     .map(
       (h, i) =>
         (i + 1) +
-        ". [" +
-        agentDisplayName(h.asker) +
-        "→エージェント00] 「" +
+        ". 「" +
         h.q +
         "」→「" +
         h.a +
@@ -1911,9 +2103,9 @@ function investigatorContext(agent) {
     "尋問方針: はい/いいえ質問でORIGINの候補空間をどんどん絞る。" +
     "遅いウォームアップや関係確認は禁止。同僚の線に追いつき、同じ軸で狭め続けよ。\n" +
     formatSharedHypPromptBlock() +
-    "\nQ&A履歴:\n" +
-    historyBlock() +
-    "\n既に聞いた質問（再質問・言い換え禁止）:\n" +
+    "\n【共用記憶】既出の質問とエージェント00の答え（絶対に同じ・ほぼ同じ質問を繰り返すな）:\n" +
+    sharedMemoryBlock() +
+    "\n既出質問ステム（再質問・言い換え禁止）:\n" +
     askedQuestionsBlock()
   );
 }
@@ -1942,11 +2134,22 @@ function unwrapSpeechJunk(raw) {
   const md = [...t.matchAll(/(?:^|\n)#*\s*発言\s*[:：]?\s*\n?([\s\S]*?)(?=\n#+\s*(?:思考|発言)|$)/gi)];
   if (md.length) t = md[md.length - 1][1].trim();
   t = t.replace(/^思考\s*[:：]\s*/m, "").trim();
-  // One line only — drop fake multi-agent scripts
-  t = t.split(/\n+/).map((l) => l.trim()).filter(Boolean)[0] || t;
+  // One line only — drop fake multi-agent scripts; skip bare speaker-tag lines
+  // (1432: speak started with 「エージェント02」 then the real paragraph).
+  const lines = t.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  while (
+    lines.length > 1 &&
+    /^エージェント[0-9０-９]{0,2}$/.test(lines[0].replace(/[「」『』"'：:\s]/g, ""))
+  ) {
+    lines.shift();
+  }
+  t = lines[0] || t;
   t = t.replace(/^\[エージェント\d{0,2}\]\s*/g, "");
   t = t.replace(/^エージェント\d{0,2}\s*[：:→]\s*/g, "");
-  t = t.replace(/^["「『]+|["」』]+$/g, "");
+  // Bare agent name alone is never usable speech.
+  if (/^エージェント[0-9０-９]{0,2}$/.test(t.replace(/[「」『』"'：:\s？?。．.!！]/g, ""))) {
+    return "";
+  }  t = t.replace(/^["「『]+|["」』]+$/g, "");
   t = t.replace(/^[（(【\[]+|［]|[）)】\]]+$/g, "");
   t = t.replace(/^[（(]+|[）)]+$/g, "");
   return t.trim();
@@ -1968,6 +2171,14 @@ function isUselessMetaOrEcho(text, kind) {
   ) {
     return true;
   }
+  // 1429/1432 exact meta / script dumps from TinySwallow debate+ask
+  if (
+    /答えが明確でない|推測を避ける|議論材料となる情報|回答させることを考える|と回答する|情報をお伝えします|どちらともいえない」と回答|どちらとも言えない」と回答|共有仮説や議論材料|答えが確定的|という答えが|含意は、あなたが/.test(
+      c
+    )
+  ) {
+    return true;
+  }
   if (/^はい[。．.!！?？]*$|^いいえ|^了解しました|^どちらかというと/.test(c) && kind === "ask") {
     return true;
   }
@@ -1979,14 +2190,18 @@ function isUselessMetaOrEcho(text, kind) {
     if (!/[？?]$/.test(s) && !/(ですか|ますか|でしょうか|ないか|るか|のか)[？?]?$/.test(c)) {
       return true;
     }
+    if (isBadInvestigatorQuestion(s)) return true;
   }
   if (kind === "debate") {
     if (/^はい[。．.!！?？]*$|^いいえ/.test(c)) return true;
+    if (/^エージェント[0-9０-９]{0,2}[。．.!！?？]*$/.test(c)) return true;
+    if (/と回答する[。．.!！]?$|回答させる|答えさせ/.test(c)) return true;
   }
   if (kind === "hyp") {
     if (/[？?]$/.test(s) || /ですか|ますか/.test(c)) return true;
     if (/^了解|^はい|^いいえ|^思考/.test(c)) return true;
     if (c.length > 36) return true; // keep hyp short
+    if (isVagueSharedHyp(s) || isBadHypothesis(s, null)) return true;
   }
   return false;
 }
@@ -2001,17 +2216,31 @@ function extractAskTo00(streamed) {
   for (const m of blob.matchAll(/([^\n「」]{4,40}(?:ですか|ますか|でしょうか)[？?]?)/g)) {
     pool.push(m[1]);
   }
-  for (const cand of pool) {
+  // Prefer quoted / あなたは…ですか forms over a leaked speaker-tag first line
+  // (1429: speak「エージェント01」won over the real quoted ask).
+  const ranked = pool.slice().sort((a, b) => {
+    const score = (x) => {
+      const t = String(x || "");
+      let s = 0;
+      if (/あなた/.test(t)) s += 3;
+      if (/(ですか|ますか|でしょうか)/.test(t)) s += 3;
+      if (/「/.test(t) || pool.indexOf(x) > 0) s += 1;
+      if (/^エージェント/.test(t.replace(/\s+/g, ""))) s -= 5;
+      return s;
+    };
+    return score(b) - score(a);
+  });
+  for (const cand of ranked) {
     const q = ensureQuestionMark(unwrapSpeechJunk(cand));
     if (!q || isUselessMetaOrEcho(q, "ask")) continue;
-    // Prefer a fresh ask from the same stream over a history echo.
+    if (isBadInvestigatorQuestion(q)) continue;
     if (isRepeatHistoryQuestion(q)) continue;
     return q;
   }
   return null;
 }
 
-const ASK_RETRY_MAX = 2;
+const ASK_RETRY_MAX = 3;
 /** Debate / hyp: one retry after a useless first draft (2 attempts total). */
 const DEBATE_RETRY_MAX = 1;
 
@@ -2060,16 +2289,18 @@ async function agentAskQuestion(asker) {
       "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。必ず未質問の軸へ進め。" +
       "例の形: 「あなたは夜に活動しますか？」「あなたは生き物ですか？」「あなたは屋内で働きますか？」" +
       "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
+      "禁止: 「エージェント01？」のような名前だけ・教えてください型の自由記述・答え方（どちらとも言えない等）自体についての質問。" +
+      "絶対に共用記憶にある質問と同じ・ほぼ同じ内容を繰り返すな。" +
       structuredOutRule() +
       "発言行に質問文だけを書く。";
     const askUserBase =
       investigatorContext(asker) +
       (historyLen === 0
         ? "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動のはい/いいえ質問を1つだけ（？で終わる）。準備・関係確認・議論宣言は禁止。"
-        : "\n共有仮説とQ&A履歴を使い、直前の答えで分岐して候補空間をさらに狭める新しいはい/いいえ質問を1つだけ（？で終わる）。既出質問リストと同じ・ほぼ同じ質問は禁止。準備や議論の宣言は禁止。");
+        : "\n共用記憶の答えと共有仮説から分岐し、まだ聞いていない新しいはい/いいえ質問を1つだけ（？で終わる）。既出と同一・ほぼ同一は絶対禁止。");
     const askUserStrict =
       investigatorContext(asker) +
-      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問（？必須）。既出と同じ意味の再質問は禁止。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
+      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問（？必須）。共用記憶の再質問は絶対禁止。例: あなたは〇〇ですか？ メタ・準備・台本・エージェント名のみ禁止。";
 
     panel.addSection("params", "stream · max_tokens=500 · メタ拒否・再試行あり", "meta");
     let lastRejectReason = "";
@@ -2088,7 +2319,7 @@ async function agentAskQuestion(asker) {
           user +=
             "\n特に「" +
             clip(lastRejectText, 40) +
-            "」と同じ意味の再質問は禁止。答えと共有仮説から未質問の軸へ分岐せよ。";
+            "」と同じ意味の再質問は絶対禁止。共用記憶に無い軸へ分岐せよ。";
         }
       }
       const streamed = await streamIntoPanel(panel, system, user, {
@@ -2107,7 +2338,7 @@ async function agentAskQuestion(asker) {
       if (!question) {
         const draft = firstDraftSpeech(streamed);
         const cand = draft ? ensureQuestionMark(draft) : "";
-        if (cand && !isUselessMetaOrEcho(cand, "ask") && !isRepeatHistoryQuestion(cand)) {
+        if (cand && !isBadInvestigatorQuestion(cand) && !isUselessMetaOrEcho(cand, "ask")) {
           question = cand;
         }
       }
@@ -2115,6 +2346,11 @@ async function agentAskQuestion(asker) {
         lastRejectReason = "既出質問の重複";
         lastRejectText = question;
         panel.addSection("却下", "重複: " + clip(question, 80), "warn");
+        question = null;
+      } else if (question && isBadInvestigatorQuestion(question)) {
+        lastRejectReason = badQuestionReason(question);
+        lastRejectText = question;
+        panel.addSection("却下", lastRejectReason + ": " + clip(question, 80), "warn");
         question = null;
       } else if (!question) {
         lastRejectReason = "メタ/非質問";
@@ -2137,6 +2373,7 @@ async function agentAskQuestion(asker) {
 
   panel.addSection("最終質問", question, "out");
   panel.collapse();
+  rememberAskedStem(question);
   appendSpeech(asker, "「" + question + "」", "a" + asker);
   appendChatBubble(
     "ask",
@@ -2190,14 +2427,27 @@ async function agent00Answer(question) {
     return null;
   }
 
-  const answer = firstDraftSpeech(streamed);
+  const resolved = resolveAgent00Answer(
+    streamed.think,
+    streamed.speak || firstDraftSpeech(streamed),
+    streamed.raw,
+    state.origin,
+    question
+  );
+  let answer = resolved.answer;
   if (!answer) {
-    panel.collapse();
-    endConversationAiStopped("エージェント00の回答が空");
-    return null;
+    // 1429/1432: TinySwallow answered 「エージェント02」 — force neutral scale token.
+    answer = "どちらとも言えない";
+    panel.addSection(
+      "回答補正",
+      (resolved.note || "5段階語を抽出できず") + " → 「どちらとも言えない」",
+      "warn"
+    );
+  } else if (resolved.note) {
+    panel.addSection("判定メモ", resolved.note, "meta");
   }
 
-  panel.addSection("最終判定（初稿）", answer, "out");
+  panel.addSection("最終判定", answer, "out");
   panel.collapse();
 
   const ansEl = document.createElement("div");
@@ -2241,6 +2491,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "t=0から協力確定。同僚が開いた絞り込み線に追いつき、同じ軸を進めよ（メタ準備や最初からのやり直し禁止）。" +
     "発言は1〜2短文だけ。何が残った／消えたかを述べ、次に狭める方向を示す。" +
     "禁止: 準備・議論しましょう・5段階評価・メタ・同僚への呼びかけだけの文・複数エージェント台本・了解しました・代理人。" +
+    "禁止: 「どちらとも言えないと回答させる」「と回答する」「答えが確定的」など答え方そのもののメタ議論。" +
+    "禁止: エージェント名だけの発言。" +
     structuredOutRule();
   const debateUserBase =
     investigatorContext(agent) +
@@ -2459,7 +2711,7 @@ async function runQaRound() {
   if (!question || state.phase === "ended") return;
   const answer = await agent00Answer(question);
   if (!answer || state.phase === "ended") return;
-  state.history.push({ q: question, a: answer, asker });
+  recordSharedMemory(question, answer, asker);
 
   await runDiscussionPhase(asker, question, answer);
   if (state.phase === "ended") return;
@@ -2633,9 +2885,9 @@ function wolfInvestigatorContext(speakerId) {
     selfName +
     ")の仮説: 「" +
     clip(self ? self.hyp : "未定", 40) +
-    "」\nQ&A履歴:\n" +
-    wolfHistoryBlock() +
-    "\n既に聞いた質問（再質問・言い換え禁止）:\n" +
+    "」\n【共用記憶】既出Q→A（同じ・ほぼ同じ質問の再質問は絶対禁止）:\n" +
+    sharedMemoryBlock() +
+    "\n既出質問ステム:\n" +
     askedQuestionsBlock()
   );
 }
@@ -2707,7 +2959,7 @@ async function wolfAskQuestion(askerId) {
     if (!question) {
       const draft = firstDraftSpeech(streamed);
       const cand = draft ? ensureQuestionMark(draft) : "";
-      if (cand && !isUselessMetaOrEcho(cand, "ask") && !isRepeatHistoryQuestion(cand)) {
+      if (cand && !isBadInvestigatorQuestion(cand) && !isUselessMetaOrEcho(cand, "ask")) {
         question = cand;
       }
     }
@@ -2715,6 +2967,11 @@ async function wolfAskQuestion(askerId) {
       lastRejectReason = "既出質問の重複";
       lastRejectText = question;
       panel.addSection("却下", "重複: " + clip(question, 80), "warn");
+      question = null;
+    } else if (question && isBadInvestigatorQuestion(question)) {
+      lastRejectReason = badQuestionReason(question);
+      lastRejectText = question;
+      panel.addSection("却下", lastRejectReason + ": " + clip(question, 80), "warn");
       question = null;
     } else if (!question) {
       lastRejectReason = "メタ/非質問";
@@ -2736,6 +2993,7 @@ async function wolfAskQuestion(askerId) {
 
   panel.addSection("最終質問", question, "out");
   panel.collapse();
+  rememberAskedStem(question);
   appendSpeech(askerId, "「" + question + "」", "a" + askerId);
   appendChatBubble("ask", "[" + name + "] → エージェント00: " + question);
   await paceAfterBeat(question, beatStart);
@@ -3057,7 +3315,7 @@ async function wolfQaRound() {
   if (!question || state.phase === "ended") return;
   const answer = await agent00Answer(question);
   if (!answer || state.phase === "ended") return;
-  state.history.push({ q: question, a: answer, asker: asker.id });
+  recordSharedMemory(question, answer, asker.id);
 
   await wolfRunDiscussionPhase(asker.id, question, answer);
   if (state.phase === "ended") return;
@@ -3112,7 +3370,7 @@ function wolfImprint(text) {
   state.defined = true;
   state.phase = "playing";
   state.round = 0;
-  state.history = [];
+  clearSharedMemory();
   state.wrongGuesses = 0;
   state.guessCount = 0;
   state.won = false;
@@ -3259,7 +3517,7 @@ function imprint(text) {
   state.phase = "playing";
   state.round = 0;
   state.nextAsker = "01";
-  state.history = [];
+  clearSharedMemory();
   initSharedHypothesisForSession();
   state.pollution = 0;
   state.discussTurns = 0;

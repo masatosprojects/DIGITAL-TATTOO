@@ -307,6 +307,94 @@
         }
         #chatRoom .panel-head .who { color: #2d6b2d; }
         #chatRoom .panel-head .role { color: var(--chat-dim); }
+
+        /* 共用記憶 — 01/02 shared Q→A surface (cream, not a purple dashboard) */
+        #sharedMemory {
+            position: relative;
+            z-index: 1;
+            flex: 0 0 auto;
+            max-height: 34%;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            border-bottom: 1px solid rgba(79, 157, 110, 0.18);
+            background: rgba(255, 252, 247, 0.9);
+        }
+        #sharedMemory .mem-head {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 5px 10px;
+            cursor: pointer;
+            user-select: none;
+            font-size: 0.62rem;
+            letter-spacing: 0.08em;
+            color: #5a7a58;
+        }
+        #sharedMemory .mem-head:hover { color: #3a5a3c; }
+        #sharedMemory .mem-title { font-weight: 700; }
+        #sharedMemory .mem-count {
+            color: var(--chat-dim);
+            letter-spacing: 0.04em;
+            font-size: 0.58rem;
+        }
+        #sharedMemory .mem-toggle::before { content: "▾ "; color: var(--amber); }
+        #sharedMemory.collapsed .mem-toggle::before { content: "▸ "; }
+        #sharedMemory.collapsed #sharedMemoryList { display: none; }
+        #sharedMemoryList {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            padding: 2px 10px 8px;
+            font-size: 0.68rem;
+            line-height: 1.45;
+            color: var(--chat-fg);
+        }
+        #sharedMemoryList::-webkit-scrollbar { width: 5px; }
+        #sharedMemoryList::-webkit-scrollbar-thumb {
+            background: rgba(79, 157, 110, 0.4);
+            border-radius: 4px;
+        }
+        #sharedMemoryList .mem-empty {
+            color: var(--chat-dim);
+            font-size: 0.62rem;
+            padding: 2px 0 4px;
+        }
+        #sharedMemoryList .mem-row {
+            display: grid;
+            grid-template-columns: 1.6em 1fr;
+            gap: 2px 6px;
+            padding: 4px 0;
+            border-top: 1px solid rgba(79, 157, 110, 0.1);
+        }
+        #sharedMemoryList .mem-row:first-of-type { border-top: none; }
+        #sharedMemoryList .mem-idx {
+            color: var(--chat-dim);
+            font-size: 0.58rem;
+            padding-top: 0.15em;
+        }
+        #sharedMemoryList .mem-q {
+            color: var(--chat-fg);
+            word-break: break-word;
+        }
+        #sharedMemoryList .mem-a {
+            grid-column: 2;
+            color: var(--a00);
+            letter-spacing: 0.04em;
+            font-size: 0.66rem;
+        }
+        #sharedMemoryList .mem-meta {
+            grid-column: 2;
+            color: var(--chat-dim);
+            font-size: 0.55rem;
+            letter-spacing: 0.04em;
+        }
+
         #chatLog {
             flex: 1 1 auto;
             min-height: 0;
@@ -323,9 +411,11 @@
             z-index: 1;
         }
         #chatLog::-webkit-scrollbar,
+        #sharedMemoryList::-webkit-scrollbar,
         .think-slot::-webkit-scrollbar,
         .speech-slot::-webkit-scrollbar { width: 5px; }
         #chatLog::-webkit-scrollbar-thumb,
+        #sharedMemoryList::-webkit-scrollbar-thumb,
         .think-slot::-webkit-scrollbar-thumb,
         .speech-slot::-webkit-scrollbar-thumb {
             background: rgba(79, 157, 110, 0.4);
@@ -1036,7 +1126,16 @@
                 <section id="chatRoom" aria-label="01と02の会議室">
                     <div class="panel-head">
                         <span class="who">会議室</span>
-                        <span class="role">01 ↔ 02 · LINE風チャット</span>
+                        <span class="role">01 ↔ 02 · 共用記憶つき</span>
+                    </div>
+                    <div id="sharedMemory" aria-label="共用記憶">
+                        <div class="mem-head" id="sharedMemoryHead" title="開閉">
+                            <span class="mem-title mem-toggle">共用記憶</span>
+                            <span class="mem-count" id="sharedMemoryCount">0件</span>
+                        </div>
+                        <div id="sharedMemoryList" aria-live="polite">
+                            <div class="mem-empty">まだ質問なし — エージェント01/02の共用Q→Aがここに残る</div>
+                        </div>
                     </div>
                     <div id="chatLog" aria-live="polite"></div>
                 </section>
