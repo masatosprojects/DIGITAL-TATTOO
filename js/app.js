@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "free-ask-debate-inf-1";
+const CLIENT_BUILD = "ask-5scale-nobias-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -1703,14 +1703,33 @@ function isAgentNameOnlyOrAboutAgentsQuestion(q) {
 }
 
 /**
+ * Reject compound asks (two questions in one utterance) or multiple ？ marks.
+ * e.g. 「〜ですか？それはなぜですか？」
+ */
+function isCompoundOrMultiAskQuestion(q) {
+  const raw = String(q || "").trim();
+  if (!raw) return false;
+  if ((raw.match(/[？?]/g) || []).length > 1) return true;
+  const firstMark = raw.search(/[？?]/);
+  if (firstMark >= 0) {
+    const after = raw
+      .slice(firstMark + 1)
+      .replace(/[？?。．.!！\s「」『』"'“”‘’]+/g, "");
+    if (after.length > 0) return true;
+  }
+  return false;
+}
+
+/**
  * Reject open-ended / free-form asks (not yes/no probes of ORIGIN).
  * 1429: 「あなたが経験したORIGINについて、具体的なエピソードを教えてください。」
+ * Must be answerable with the 5-scale only — no なぜ／教えて follow-ups.
  */
 function isOpenEndedNotYesNoQuestion(q) {
   const t = String(q || "").replace(/\s+/g, "");
   if (!t) return true;
   if (
-    /教えてください|教えてくれ|具体的なエピソード|詳しく説明|自由に述べ|何ですか$|誰ですか$|どんな|どのように|なぜ|どうして/.test(
+    /なぜ|どうして|理由は|説明|教えて|どんな|何を|どのように|具体的なエピソード|自由に述べ|何ですか$|誰ですか$/.test(
       t
     )
   ) {
@@ -1722,6 +1741,42 @@ function isOpenEndedNotYesNoQuestion(q) {
     return false;
   }
   return true;
+}
+
+/** Hard rule for asker prompts: exactly one 5-scale-answerable yes/no question. */
+function fiveScaleAskOnlyRule() {
+  return (
+    "【必須】発言は、エージェント00が5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）だけで答えられるはい/いいえ質問をちょうど1つだけ。" +
+    "禁止: なぜ／どうして／理由／説明して／教えて等の自由記述フォロー、？を複数置くこと、最初の？の後ろに別の質問や説明要求をつなげること。"
+  );
+}
+
+/** True before any spoken/answered ask this session (retries of opening ask included). */
+function isSessionFirstAsk() {
+  const hist = (state.history && state.history.length) || 0;
+  const stems = (state.askedStems && state.askedStems.length) || 0;
+  return hist === 0 && stems === 0;
+}
+
+/**
+ * Soft ban: TinySwallow often defaults the opening ask to nocturnal/activity-time
+ * clichés. First question of the session only — later narrowing may use time-of-day.
+ */
+function isFirstAskNightActivityCliché(q) {
+  if (!isSessionFirstAsk()) return false;
+  const k = normalizeQuestionKey(q);
+  if (!k) return false;
+  return /夜に(主な)?活動|夜(間|中)?に活動|夜行|主に夜|夜だけ|夜間活動|夜に動|夜型|昼間に活動|日中に活動|活動時間|昼に活動|朝に活動|夕方に活動/.test(
+    k
+  );
+}
+
+/** Opening-ask variety — abstract; no concrete sample questions. */
+function firstAskVarietyRule() {
+  return (
+    "初問で夜・昼間・活動時間の定番に固定するな。毎回違う切り口を自分で発明せよ。" +
+    "具体的な質問文の例示はしない（例文を真似るな）。カテゴリ／属性／存在様式など、自分で未使用の軸を選べ。"
+  );
 }
 
 /**
@@ -1919,6 +1974,7 @@ function isBadInvestigatorQuestion(q) {
   return (
     isMetaFormatQuestion(q) ||
     isAgentNameOnlyOrAboutAgentsQuestion(q) ||
+    isCompoundOrMultiAskQuestion(q) ||
     isOpenEndedNotYesNoQuestion(q) ||
     isHistoryEchoQuestion(q) ||
     isInstructionEchoText(q) ||
@@ -1946,8 +2002,11 @@ function badQuestionReason(q) {
   if (isAgentNameOnlyOrAboutAgentsQuestion(q)) {
     return "エージェント名のみ／同僚への問い（ORIGIN属性ではない）";
   }
+  if (isCompoundOrMultiAskQuestion(q)) {
+    return "複合質問／？が複数（5段階で答える質問は1つだけ）";
+  }
   if (isOpenEndedNotYesNoQuestion(q)) {
-    return "自由記述・非はい/いいえ質問";
+    return "自由記述・非5段階質問（なぜ／教えて等）";
   }
   if (isMetaFormatQuestion(q)) return "メタ／回答形式の指示を質問にしている";
   if (isHistoryEchoQuestion(q)) return "履歴エコー（過去の質問や答え語の混入）";
@@ -1980,7 +2039,13 @@ function salvageInvestigatorQuestion(raw) {
   const pool = [...quoted, ...bare];
   for (const c of pool) {
     const candidate = ensureQuestionMark(cleanJapaneseLine(c, 80));
-    if (candidate && !isBadInvestigatorQuestion(candidate)) return candidate;
+    if (
+      candidate &&
+      !isBadInvestigatorQuestion(candidate) &&
+      !isFirstAskNightActivityCliché(candidate)
+    ) {
+      return candidate;
+    }
   }
   return null;
 }
@@ -2003,8 +2068,8 @@ function questionRetryNudge(badText) {
     "\n前回の出力「" +
     (shown || "（空）") +
     "」は質問として使えなかった。" +
-    "エージェント名だけ・自由記述・メタ・既出の繰り返しは禁止。" +
-    "ORIGINの属性を狭める「あなたは〜ですか？」形のはい/いいえ質問を1つだけ、発言行に書け。"
+    "エージェント名だけ・なぜ／どうして／教えて型・複合質問（？が複数）・メタ・既出の繰り返しは禁止。" +
+    "5段階だけで答えられる閉じた属性質問をちょうど1つだけ、発言行に書け（具体例文は出すな・真似するな）。"
   );
 }
 
@@ -2214,6 +2279,7 @@ function extractAskTo00(streamed) {
     const q = ensureQuestionMark(unwrapSpeechJunk(cand));
     if (!q || isUselessMetaOrEcho(q, "ask")) continue;
     if (isBadInvestigatorQuestion(q)) continue;
+    if (isFirstAskNightActivityCliché(q)) continue;
     if (isRepeatHistoryQuestion(q)) continue;
     return q;
   }
@@ -2229,6 +2295,7 @@ const ASK_RETRY_DELAY_MS = 500;
 
 function askRejectShortLabel(reason) {
   if (reason === "既出質問の重複") return "重複拒否";
+  if (reason === "初問定番バイアス") return "初問定番拒否";
   if (reason === "メタ/非質問") return "メタ拒否";
   if (reason === "議論メタ") return "議論メタ拒否";
   if (!reason) return "却下";
@@ -2269,6 +2336,7 @@ async function agentAskQuestion(asker) {
       namingClarityRule() +
       roleAlreadyKnownRule() +
       duoPartnershipRule() +
+      fiveScaleAskOnlyRule() +
       "友人であり同僚の協同尋問官" +
       partnerName +
       "とすでに協力関係にあり、被尋問者エージェント00だけに日本語で問いかける。" +
@@ -2276,23 +2344,29 @@ async function agentAskQuestion(asker) {
       "発言は必ず1文だけ。エージェント00への具体的なはい/いいえ質問（？で終わる）。" +
       "目的: ORIGIN候補空間をカテゴリ・属性・行動でどんどん狭める。" +
       "最初の質問から具体的に絞れ（関係確認・準備・ウォームアップ禁止）。" +
+      (historyLen === 0 ? firstAskVarietyRule() : "") +
       "履歴があるときは直前の答えと共有仮説から分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
       "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。必ず未質問の軸へ進め。" +
-      "毎回自分で発明せよ。具体例の固定・特定の初手カテゴリへの誘導はしない。" +
-      "ORIGINの属性・行動・存在様式を一つだけ問え（「あなたは〜ですか？」形）。" +
+      "毎回自分で発明せよ。具体例の固定・特定の初手カテゴリへの誘導はしない。質問の具体例文は出さない。" +
+      "ORIGINの属性・行動・存在様式を一つだけ問え（閉じた「〜ですか？」形）。" +
       "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
-      "禁止: 「エージェント01？」のような名前だけ・教えてください型の自由記述・答え方（どちらとも言えない等）自体についての質問。" +
+      "禁止: エージェント名だけ・教えてください型の自由記述・答え方自体についての質問・複合質問。" +
       "絶対に共用記憶にある質問と同じ・ほぼ同じ内容を繰り返すな。" +
       structuredOutRule() +
       "発言行に質問文だけを書く。";
     const askUserBase =
       investigatorContext(asker) +
+      fiveScaleAskOnlyRule() +
       (historyLen === 0
-        ? "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動のはい/いいえ質問を1つだけ（？で終わる）。準備・関係確認・議論宣言は禁止。"
-        : "\n共用記憶の答えと共有仮説から分岐し、まだ聞いていない新しいはい/いいえ質問を1つだけ（？で終わる）。既出と同一・ほぼ同一は絶対禁止。");
+        ? "\n" +
+          firstAskVarietyRule() +
+          "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動のはい/いいえ質問をちょうど1つ（？で終わる）。準備・関係確認・議論宣言は禁止。具体例文は出すな。"
+        : "\n共用記憶の答えと共有仮説から分岐し、まだ聞いていない新しいはい/いいえ質問をちょうど1つ（？で終わる）。既出と同一・ほぼ同一は絶対禁止。");
     const askUserStrict =
       investigatorContext(asker) +
-      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問（？必須）。共用記憶の再質問は絶対禁止。例: あなたは〇〇ですか？ メタ・準備・台本・エージェント名のみ禁止。";
+      fiveScaleAskOnlyRule() +
+      (historyLen === 0 ? "\n" + firstAskVarietyRule() : "") +
+      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問をちょうど1つ（？必須）。共用記憶の再質問は絶対禁止。メタ・準備・台本・エージェント名・複合質問・自由記述フォロー禁止。具体例文は出すな。";
 
     panel.addSection(
       "params",
@@ -2319,10 +2393,14 @@ async function agentAskQuestion(asker) {
             clip(lastRejectText, 40) +
             "」と同じ意味の再質問は絶対禁止。共用記憶に無い軸へ分岐せよ。";
         }
+        if (lastRejectReason === "初問定番バイアス") {
+          user +=
+            "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
+        }
       }
       const streamed = await streamIntoPanel(panel, system, user, {
         agent: asker,
-        temperature: attempt === 0 ? 0.55 : 0.35,
+        temperature: attempt === 0 ? 0.55 : lastRejectReason === "初問定番バイアス" ? 0.75 : 0.35,
         max_tokens: 500,
       });
       beatStart = streamed.beatStart;
@@ -2336,7 +2414,12 @@ async function agentAskQuestion(asker) {
       if (!question) {
         const draft = firstDraftSpeech(streamed);
         const cand = draft ? ensureQuestionMark(draft) : "";
-        if (cand && !isBadInvestigatorQuestion(cand) && !isUselessMetaOrEcho(cand, "ask")) {
+        if (
+          cand &&
+          !isBadInvestigatorQuestion(cand) &&
+          !isUselessMetaOrEcho(cand, "ask") &&
+          !isFirstAskNightActivityCliché(cand)
+        ) {
           question = cand;
         }
       }
@@ -2344,6 +2427,11 @@ async function agentAskQuestion(asker) {
         lastRejectReason = "既出質問の重複";
         lastRejectText = question;
         panel.addSection("却下", "重複: " + clip(question, 80), "warn");
+        question = null;
+      } else if (question && isFirstAskNightActivityCliché(question)) {
+        lastRejectReason = "初問定番バイアス";
+        lastRejectText = question;
+        panel.addSection("却下", "初問定番バイアス: " + clip(question, 80), "warn");
         question = null;
       } else if (question && isBadInvestigatorQuestion(question)) {
         lastRejectReason = badQuestionReason(question);
@@ -2913,18 +3001,28 @@ async function wolfAskQuestion(askerId) {
     name +
     "。" +
     wolfNamingClarityRule() +
+    fiveScaleAskOnlyRule() +
     "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的なはい/いいえ質問（？で終わる）。" +
+    (((state.history && state.history.length) || 0) === 0 ? firstAskVarietyRule() : "") +
     "履歴があるときは答えから分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
     "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。" +
-    "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人。" +
+    "禁止: 準備・議論しましょう・5段階・メタ・台本・了解しました・代理人・複合質問・自由記述フォロー。具体例文は出すな。" +
     structuredOutRule() +
     "発言行に質問文だけを書く。";
   const askUserBase =
     wolfInvestigatorContext(askerId) +
-    "\nエージェント00へのはい/いいえ質問を1つだけ作れ（？で終わる）。既出と同じ・ほぼ同じは禁止。準備や議論の宣言は禁止。";
+    fiveScaleAskOnlyRule() +
+    (((state.history && state.history.length) || 0) === 0
+      ? "\n" + firstAskVarietyRule()
+      : "") +
+    "\nエージェント00へのはい/いいえ質問をちょうど1つ作れ（？で終わる）。既出と同じ・ほぼ同じは禁止。準備や議論の宣言は禁止。具体例文は出すな。";
   const askUserStrict =
     wolfInvestigatorContext(askerId) +
-    "\n短い1文だけ。エージェント00に聞く具体的な新しい質問（？必須）。既出再質問禁止。例: あなたは〇〇ですか？ メタ・準備・台本禁止。";
+    fiveScaleAskOnlyRule() +
+    (((state.history && state.history.length) || 0) === 0
+      ? "\n" + firstAskVarietyRule()
+      : "") +
+    "\n短い1文だけ。エージェント00に聞く具体的な新しい質問をちょうど1つ（？必須）。既出再質問禁止。メタ・準備・台本・複合質問禁止。具体例文は出すな。";
 
   panel.addSection("params", "メタ拒否・再試行無制限", "meta");
   let question = null;
@@ -2949,10 +3047,14 @@ async function wolfAskQuestion(askerId) {
           clip(lastRejectText, 40) +
           "」と同じ意味の再質問は禁止。未質問の軸へ分岐せよ。";
       }
+      if (lastRejectReason === "初問定番バイアス") {
+        user +=
+          "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
+      }
     }
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: askerId,
-      temperature: attempt === 0 ? 0.55 : 0.35,
+      temperature: attempt === 0 ? 0.55 : lastRejectReason === "初問定番バイアス" ? 0.75 : 0.35,
       max_tokens: 500,
     });
     beatStart = streamed.beatStart;
@@ -2966,7 +3068,12 @@ async function wolfAskQuestion(askerId) {
     if (!question) {
       const draft = firstDraftSpeech(streamed);
       const cand = draft ? ensureQuestionMark(draft) : "";
-      if (cand && !isBadInvestigatorQuestion(cand) && !isUselessMetaOrEcho(cand, "ask")) {
+      if (
+        cand &&
+        !isBadInvestigatorQuestion(cand) &&
+        !isUselessMetaOrEcho(cand, "ask") &&
+        !isFirstAskNightActivityCliché(cand)
+      ) {
         question = cand;
       }
     }
@@ -2974,6 +3081,11 @@ async function wolfAskQuestion(askerId) {
       lastRejectReason = "既出質問の重複";
       lastRejectText = question;
       panel.addSection("却下", "重複: " + clip(question, 80), "warn");
+      question = null;
+    } else if (question && isFirstAskNightActivityCliché(question)) {
+      lastRejectReason = "初問定番バイアス";
+      lastRejectText = question;
+      panel.addSection("却下", "初問定番バイアス: " + clip(question, 80), "warn");
       question = null;
     } else if (question && isBadInvestigatorQuestion(question)) {
       lastRejectReason = badQuestionReason(question);
