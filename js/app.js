@@ -45,7 +45,7 @@ import {
 } from "./llm.js";
 
 /** Shown in chat so operators can verify they are not on a cached old build. */
-const CLIENT_BUILD = "ask-retry-inf-1";
+const CLIENT_BUILD = "free-ask-debate-inf-1";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
 const MIN_ROUNDS_BEFORE_GUESS = 1;
@@ -1735,7 +1735,7 @@ function normalizeQuestionKey(q) {
     .replace(/\s+/g, "")
     .replace(/[「」『』（）()【】［］\[\]"'“”‘’]/g, "")
     .replace(/[？?。．.!！、,，･・]/g, "");
-  // Strip polite / yes-no endings including ますか (1432 night-activity repeat).
+  // Strip polite / yes-no endings including ますか (1432 polite-ending near-dup).
   s = s.replace(/(でしょうか|ですか|のですか|ますか|ませんか)$/u, "");
   s = s.replace(/か$/u, "");
   return s;
@@ -1996,26 +1996,6 @@ function isBadDebateOpinion(t) {
   );
 }
 
-/**
- * Soft angle hints so 01/02 don't open every session with the same
- * 生物／人間／機械 triad. Seeded by round so sessions diverge without
- * hard-coding a fixed first question.
- */
-const QUESTION_ANGLE_HINTS = Object.freeze([
-  "活動時間や場所など、生活リズムに関わる角度",
-  "道具・道具を使う場面など、仕事や行為の具体像に近づく角度",
-  "他者との関わり方（教える／守る／作る等）に関わる角度",
-  "屋内か屋外か、一人か複数かなど環境の角度",
-  "身体的特徴や動き方に関わる角度（無理にカテゴリ名は聞かない）",
-  "専門知識や訓練が要るかどうかに関わる角度",
-]);
-
-function questionAngleHint(seed, round) {
-  const i = Math.abs((Number(seed) || 0) + (Number(round) || 0) * 7) %
-    QUESTION_ANGLE_HINTS.length;
-  return QUESTION_ANGLE_HINTS[i];
-}
-
 /** Extra nudge when a prior LLM attempt was unusable — prefer retry over template. */
 function questionRetryNudge(badText) {
   const shown = clip(String(badText || "").replace(/\s+/g, " "), 36);
@@ -2156,7 +2136,7 @@ function unwrapSpeechJunk(raw) {
 }
 
 /**
- * Reject only useless meta / echo — NOT valid short asks like「夜に主な活動をしますか？」.
+ * Reject only useless meta / echo — NOT valid short concrete yes/no asks.
  * (User: no progress when agents only say "let's prepare / discuss".)
  */
 function isUselessMetaOrEcho(text, kind) {
@@ -2241,17 +2221,16 @@ function extractAskTo00(streamed) {
 }
 
 /**
- * Ask drafts: meta / non-question / duplicate rejects retry indefinitely.
- * Never end the session solely for unusable ask drafts (user: 無制限).
+ * Ask / debate drafts: meta / non-question / echo rejects retry indefinitely.
+ * Never end the session solely for unusable drafts (user: 絶対に止まらない).
  * Real LLM/engine failures still stop via endConversationAiStopped.
  */
 const ASK_RETRY_DELAY_MS = 500;
-/** Debate / hyp: one retry after a useless first draft (2 attempts total). */
-const DEBATE_RETRY_MAX = 1;
 
 function askRejectShortLabel(reason) {
   if (reason === "既出質問の重複") return "重複拒否";
   if (reason === "メタ/非質問") return "メタ拒否";
+  if (reason === "議論メタ") return "議論メタ拒否";
   if (!reason) return "却下";
   return String(reason);
 }
@@ -2299,7 +2278,8 @@ async function agentAskQuestion(asker) {
       "最初の質問から具体的に絞れ（関係確認・準備・ウォームアップ禁止）。" +
       "履歴があるときは直前の答えと共有仮説から分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
       "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。必ず未質問の軸へ進め。" +
-      "例の形: 「あなたは夜に活動しますか？」「あなたは生き物ですか？」「あなたは屋内で働きますか？」" +
+      "毎回自分で発明せよ。具体例の固定・特定の初手カテゴリへの誘導はしない。" +
+      "ORIGINの属性・行動・存在様式を一つだけ問え（「あなたは〜ですか？」形）。" +
       "禁止: 準備・議論しましょう・5段階で答えましょう・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
       "禁止: 「エージェント01？」のような名前だけ・教えてください型の自由記述・答え方（どちらとも言えない等）自体についての質問。" +
       "絶対に共用記憶にある質問と同じ・ほぼ同じ内容を繰り返すな。" +
@@ -2521,13 +2501,25 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     answer +
     "」。残った候補への含意を短い1文だけ。メタ・準備禁止。追いつき同線。";
 
-  panel.addSection("params", "stream · メタ拒否・再試行あり", "meta");
+  panel.addSection("params", "stream · メタ拒否・再試行無制限", "meta");
   let opinion = null;
   let beatStart = performance.now();
-  for (let attempt = 0; attempt <= DEBATE_RETRY_MAX; attempt++) {
-    const user = attempt === 0 ? debateUserBase : debateUserStrict;
+  let lastRejectText = "";
+  let attempt = 0;
+  while (true) {
+    if (state.phase === "ended" || state.phase === "reload-model") {
+      panel.collapse();
+      return null;
+    }
+    let user = attempt === 0 ? debateUserBase : debateUserStrict;
     if (attempt > 0) {
-      panel.addSection("再試行", "メタ/エコーのため再生成", "warn");
+      panel.addSection(
+        "再試行",
+        "再試行 " + attempt + " · " + askRejectShortLabel("議論メタ"),
+        "warn"
+      );
+      await sleep(ASK_RETRY_DELAY_MS);
+      if (lastRejectText) user += debateRetryNudge(lastRejectText);
     }
     const streamed = await streamIntoPanel(panel, system, user, {
       agent,
@@ -2537,20 +2529,18 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     beatStart = streamed.beatStart;
     if (streamed.error && !streamed.raw) {
       panel.collapse();
+      if (streamed.gpuReload || state.phase === "reload-model") return null;
       endConversationAiStopped(streamed.error);
       return null;
     }
     const draft = firstDraftSpeech(streamed);
-    if (draft && !isUselessMetaOrEcho(draft, "debate")) {
+    if (draft && !isUselessMetaOrEcho(draft, "debate") && !isBadDebateOpinion(draft)) {
       opinion = draft;
       break;
     }
-    panel.addSection("却下", clip(draft || streamed.raw || "(空)", 80), "warn");
-  }
-  if (!opinion) {
-    panel.collapse();
-    endConversationAiStopped("AIが使える議論文を出せなかった（メタ・エコーの繰り返し）");
-    return null;
+    lastRejectText = draft || streamed.raw || "";
+    panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
+    attempt += 1;
   }
 
   const hypSystem =
@@ -2586,15 +2576,19 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   if (resH && resH.raw) {
     const sp = splitThinkSpeak(resH.raw);
     const newHyp = unwrapSpeechJunk(String(sp.speak || resH.raw).trim());
-    if (newHyp && !isUselessMetaOrEcho(newHyp, "hyp")) {
+    if (newHyp && !isUselessMetaOrEcho(newHyp, "hyp") && !isBadHypothesis(newHyp, question)) {
       setSharedHypothesis(cleanJapaneseLine(newHyp, 40) || newHyp, {
         keepPrevAsAlt: !isVagueSharedHyp(hyp),
       });
     } else if (newHyp) {
-      panel.addSection("仮説却下", clip(newHyp, 60), "warn");
+      panel.addSection("仮説却下（スキップ）", clip(newHyp, 60), "warn");
     }
   } else if (resH && resH.error) {
-    panel.addSection("LLM error", formatLlmErrorForPanel(resH.error), "warn");
+    panel.addSection(
+      "仮説更新スキップ",
+      formatLlmErrorForPanel(resH.error),
+      "warn"
+    );
   }
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
   panel.addSection("最終発言", opinion, "out");
@@ -3043,13 +3037,25 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     answer +
     "」。ORIGIN仮説への含意を短い1文だけ。メタ・準備禁止。";
 
-  panel.addSection("params", "メタ拒否・再試行あり", "meta");
+  panel.addSection("params", "メタ拒否・再試行無制限", "meta");
   let opinion = null;
   let beatStart = performance.now();
-  for (let attempt = 0; attempt <= DEBATE_RETRY_MAX; attempt++) {
-    const user = attempt === 0 ? debateUserBase : debateUserStrict;
+  let lastRejectText = "";
+  let attempt = 0;
+  while (true) {
+    if (state.phase === "ended" || state.phase === "reload-model") {
+      panel.collapse();
+      return null;
+    }
+    let user = attempt === 0 ? debateUserBase : debateUserStrict;
     if (attempt > 0) {
-      panel.addSection("再試行", "メタ/エコーのため再生成", "warn");
+      panel.addSection(
+        "再試行",
+        "再試行 " + attempt + " · " + askRejectShortLabel("議論メタ"),
+        "warn"
+      );
+      await sleep(ASK_RETRY_DELAY_MS);
+      if (lastRejectText) user += debateRetryNudge(lastRejectText);
     }
     const streamed = await streamIntoPanel(panel, system, user, {
       agent: speakerId,
@@ -3059,20 +3065,18 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     beatStart = streamed.beatStart;
     if (streamed.error && !streamed.raw) {
       panel.collapse();
+      if (streamed.gpuReload || state.phase === "reload-model") return null;
       endConversationAiStopped(streamed.error);
       return null;
     }
     const draft = firstDraftSpeech(streamed);
-    if (draft && !isUselessMetaOrEcho(draft, "debate")) {
+    if (draft && !isUselessMetaOrEcho(draft, "debate") && !isBadDebateOpinion(draft)) {
       opinion = draft;
       break;
     }
-    panel.addSection("却下", clip(draft || streamed.raw || "(空)", 80), "warn");
-  }
-  if (!opinion) {
-    panel.collapse();
-    endConversationAiStopped("AIが使える議論文を出せなかった（メタ・エコーの繰り返し）");
-    return null;
+    lastRejectText = draft || streamed.raw || "";
+    panel.addSection("却下", clip(lastRejectText || "(空)", 80), "warn");
+    attempt += 1;
   }
 
   const hypSystem =
@@ -3101,9 +3105,21 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
   if (resH && resH.raw && speaker) {
     const sp = splitThinkSpeak(resH.raw);
     const h = unwrapSpeechJunk(String(sp.speak || resH.raw).trim());
-    if (h && !isUselessMetaOrEcho(h, "hyp")) {
+    if (
+      h &&
+      !isUselessMetaOrEcho(h, "hyp") &&
+      !isBadHypothesis(h, question)
+    ) {
       speaker.hyp = cleanJapaneseLine(h, 40) || h;
+    } else if (h) {
+      panel.addSection("仮説却下（スキップ）", clip(h, 60), "warn");
     }
+  } else if (resH && resH.error) {
+    panel.addSection(
+      "仮説更新スキップ",
+      formatLlmErrorForPanel(resH.error),
+      "warn"
+    );
   }
 
   panel.addSection("最終発言", opinion, "out");
