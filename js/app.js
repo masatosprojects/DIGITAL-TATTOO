@@ -650,12 +650,22 @@ async function waitWhilePaused() {
   while (state.paused && state.phase === "playing") await sleep(200);
 }
 
+/**
+ * Optional courtesy pause while a finished think panel is expanded.
+ * MUST be capped — previously this awaited forever, so opening a panel
+ * (especially to read red LLM errors) at slow/"low frequency" pace froze
+ * the whole interrogation: agents stopped talking and felt unusable.
+ */
 async function waitWhileUserReadingThink() {
-  while (state.phase === "playing") {
+  const maxMs = 2200;
+  const deadline = performance.now() + maxMs;
+  while (state.phase === "playing" && performance.now() < deadline) {
     await waitWhilePaused();
-    const open = document.querySelector(".think-wrap.think-done .think-panel[open]");
+    const open = document.querySelector(
+      ".think-wrap.think-done .think-panel[open]"
+    );
     if (!open) break;
-    await sleep(250);
+    await sleep(200);
   }
 }
 
@@ -665,6 +675,30 @@ async function paceAfterBeat(displayText, beatStartedAt) {
   const elapsed = performance.now() - (beatStartedAt || performance.now());
   const delay = elapsed >= needed ? getPace().bufferMs : needed - elapsed;
   if (delay > 0) await sleep(delay);
+}
+
+/** Short JP-friendly label for think-panel red errors (full text still logged). */
+function formatLlmErrorForPanel(err) {
+  const msg = String(err || "");
+  const lower = msg.toLowerCase();
+  if (lower.includes("disposed")) {
+    return "エンジン切断（Object disposed）— 再接続を試みたが失敗。テンプレートで継続。";
+  }
+  if (lower.includes("model not loaded") || lower.includes("not loaded before")) {
+    return "モデル未ロード — 再読み込みを試みたが失敗。テンプレートで継続。";
+  }
+  if (
+    lower.includes("device") ||
+    lower.includes("gpuadapter") ||
+    lower.includes("dxgi_error") ||
+    lower.includes("requestdevice")
+  ) {
+    return "GPU切断 — 再読み込み失敗。ページ再読込が必要な場合があります。";
+  }
+  if (lower.includes("engine not ready") || lower.includes("no engine bound")) {
+    return "エンジン未準備 — テンプレートで継続。";
+  }
+  return msg.length > 160 ? msg.slice(0, 160) + "…" : msg;
 }
 
 function splitThinkSpeak(raw) {
@@ -869,7 +903,11 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
       raw = res.raw;
       consecutiveLlmFailures = 0;
     } else if (res && res.error) {
-      panel.addSection("LLM error → fallback", res.error, "warn");
+      panel.addSection(
+        "LLM error → fallback",
+        formatLlmErrorForPanel(res.error),
+        "warn"
+      );
       consecutiveLlmFailures++;
       if (consecutiveLlmFailures === LLM_FAILURE_WARN_THRESHOLD) {
         appendChatBubble(
@@ -1466,6 +1504,12 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
       const sp = splitThinkSpeak(resH.raw);
       const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
       if (!isBadHypothesis(candidate, question)) newHyp = candidate;
+    } else if (resH && resH.error) {
+      panel.addSection(
+        "LLM error → fallback",
+        formatLlmErrorForPanel(resH.error),
+        "warn"
+      );
     }
   }
   if (!newHyp) {
@@ -1950,6 +1994,12 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
       const sp = splitThinkSpeak(resH.raw);
       const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
       if (!isBadHypothesis(candidate, question)) newHyp = candidate;
+    } else if (resH && resH.error) {
+      panel.addSection(
+        "LLM error → fallback",
+        formatLlmErrorForPanel(resH.error),
+        "warn"
+      );
     }
   }
   if (!newHyp) {

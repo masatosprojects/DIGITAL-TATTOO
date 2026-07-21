@@ -1632,48 +1632,95 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
   }
 
   /**
+   * Point every binding that shares engineId at `engine` (00/01/02 and any
+   * wolf aliases D1..D5 living on the same map).
+   * @param {string} engineId
+   * @param {import("@mlc-ai/web-llm").MLCEngineInterface} engine
+   */
+  function rebindEngine(engineId, engine) {
+    for (const agent of Object.keys(map)) {
+      if (map[agent]?.engineId === engineId) {
+        map[agent].engine = engine;
+      }
+    }
+    if (opts.onEngineRecreated) opts.onEngineRecreated(engineId, engine, map);
+  }
+
+  /**
    * Reload in place, or CreateMLCEngine fresh. All agents sharing engineId
    * get the new instance; never unload a sibling's distinct engine.
+   *
+   * Important: do NOT unload the old engine before a fresh create succeeds —
+   * otherwise a failed recreate leaves every agent pointing at a dead
+   * unloaded instance and the rest of the session sticks on template fallback.
+   *
    * @param {string} engineId
+   * @param {unknown} [cause] — original error that triggered recovery
    */
-  async function recoverEngine(engineId) {
+  async function recoverEngine(engineId, cause) {
     const inflight = recovering.get(engineId);
     if (inflight) return inflight;
 
     const work = (async () => {
-      const sample = AGENT_IDS.map((a) => map[a]).find((b) => b && b.engineId === engineId);
+      const sample = Object.keys(map)
+        .map((a) => map[a])
+        .find((b) => b && b.engineId === engineId);
       if (!sample) throw new Error("No engine binding for " + engineId);
       const model = sample.model;
       const old = sample.engine;
+      const causeMsg = String(
+        cause && typeof cause === "object" && "message" in cause && cause.message
+          ? cause.message
+          : cause || ""
+      ).toLowerCase();
+      // Disposed / not-loaded engines often "succeed" at reload without
+      // becoming usable — skip straight to recreate for those.
+      const skipReload =
+        causeMsg.includes("disposed") ||
+        causeMsg.includes("model not loaded") ||
+        causeMsg.includes("not loaded before") ||
+        causeMsg.includes("device") ||
+        causeMsg.includes("gpuadapter") ||
+        causeMsg.includes("dxgi_error");
 
-      try {
-        if (old && typeof old.reload === "function") {
-          await old.reload(model.id);
-          for (const agent of AGENT_IDS) {
-            if (map[agent]?.engineId === engineId) {
-              map[agent].engine = old;
-            }
+      if (!skipReload) {
+        try {
+          if (old && typeof old.reload === "function") {
+            await old.reload(model.id);
+            rebindEngine(engineId, old);
+            return old;
           }
-          if (opts.onEngineRecreated) opts.onEngineRecreated(engineId, old, map);
-          return old;
+        } catch (e) {
+          console.warn("LLM reload failed; recreating engine", engineId, e);
         }
-      } catch (e) {
-        console.warn("LLM reload failed; recreating engine", engineId, e);
       }
 
+      // Create fresh first; only then unload the old instance.
+      // If create fails (VRAM / adapter busy), unload old and retry once.
+      let fresh;
       try {
-        await unloadEngine(old);
-      } catch (_) {
-        /* already disposed */
+        fresh = await createEngine(model, { prevEngine: null });
+      } catch (createErr) {
+        console.warn(
+          "LLM recreate failed with old engine still held; unloading then retry",
+          engineId,
+          createErr
+        );
+        try {
+          await unloadEngine(old);
+        } catch (_) {
+          /* already disposed */
+        }
+        fresh = await createEngine(model, { prevEngine: null });
       }
-
-      const fresh = await createEngine(model, { prevEngine: null });
-      for (const agent of AGENT_IDS) {
-        if (map[agent]?.engineId === engineId) {
-          map[agent].engine = fresh;
+      rebindEngine(engineId, fresh);
+      if (old && old !== fresh) {
+        try {
+          await unloadEngine(old);
+        } catch (_) {
+          /* already disposed */
         }
       }
-      if (opts.onEngineRecreated) opts.onEngineRecreated(engineId, fresh, map);
       return fresh;
     })().finally(() => {
       recovering.delete(engineId);
@@ -1714,13 +1761,31 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
           "— recovering and retrying once:",
           e && e.message ? e.message : e
         );
-        await recoverEngine(engineId);
+        await recoverEngine(engineId, e);
         const again = map[agent]?.engine;
         if (!again) throw e;
-        return generateWithEngine(again, messages, {
-          ...optsWithModel,
-          model: map[agent]?.model || binding.model,
-        });
+        try {
+          return await generateWithEngine(again, messages, {
+            ...optsWithModel,
+            model: map[agent]?.model || binding.model,
+          });
+        } catch (e2) {
+          // Reload path can leave a still-dead engine; force a full recreate once.
+          if (!isLlmDeadError(e2)) throw e2;
+          console.warn(
+            "LLM still dead after recover for",
+            engineId,
+            "— forcing recreate:",
+            e2 && e2.message ? e2.message : e2
+          );
+          await recoverEngine(engineId, e2);
+          const last = map[agent]?.engine;
+          if (!last) throw e2;
+          return generateWithEngine(last, messages, {
+            ...optsWithModel,
+            model: map[agent]?.model || binding.model,
+          });
+        }
       }
     });
   }
