@@ -1550,7 +1550,8 @@ function cleanAgent00Answer(raw, origin) {
  * catches the literal string), so a direct ask never reaches the free-form
  * answer path at all.
  */
-const ORIGIN_DIRECT_ASK_REFUSAL = "それは明かせない。周辺のことなら答えられる。";
+const ORIGIN_DIRECT_ASK_REFUSAL =
+  "それは明かせない。ORIGINそのものは秘密の役割なので直接は答えられない。属性や行動など周辺のことなら答えられる。";
 
 function resolveAgent00Answer(think, speak, raw, origin, question) {
   if (isClearOriginIdentityAsk(origin, question)) {
@@ -1759,8 +1760,12 @@ function witnessRuleBook(origin) {
     "1. ORIGIN（秘密の役割）は「" + origin + "」。これはあなただけが知っている。\n" +
     "2. 性質・属性・行動・理由など、ORIGINの中身に関わることは正直に詳しく答えてよい。\n" +
     "3. ただし「あなたは誰ですか」「正体は何ですか」「役割は何ですか」のように、" +
-    "ORIGINそのものを明かせと言う質問には、言い換え・比喩でも中身を明かさず「それは明かせない」とだけ短く返す。\n" +
-    "4. 回答は自由形式。はい/いいえや5段階に縛られない。\n"
+    "ORIGINそのものを明かせと言う質問には、言い換え・比喩でも中身を明かさず、" +
+    "「それは明かせない」と、明かせない理由（ORIGINは秘密のため）を添えて短く返す。\n" +
+    "4. 答えられない質問（3の場合や、質問として成立していない入力）には、" +
+    "質問文をそのまま繰り返す・言い換えるだけ（オウム返し）は絶対禁止。" +
+    "必ず「答えられない」ことと、その理由を自分の言葉で一言添えて述べよ。\n" +
+    "5. 回答は自由形式。はい/いいえや5段階に縛られない。\n"
   );
 }
 
@@ -2552,7 +2557,8 @@ async function agent00Answer(question) {
     namingClarityRule() +
     roleAlreadyKnownRule() +
     "あなただけが質問に答える。判定は ORIGIN と常識。" +
-    "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。短い断りだけ。" +
+    "入力が具体的な質問でない（準備・議論・メタ・台本など）ときは答えない。" +
+    "入力をそのまま繰り返す（オウム返し）のは禁止。答えられないことと理由を短く述べよ。" +
     "ORIGINの語そのもの（秘密の役割ラベルの字面）は発言に出すな（推測ゲームのため）。" +
     "最初に書いた発言がそのまま採用される。「代理人」禁止。" +
     structuredOutRule();
@@ -2563,8 +2569,8 @@ async function agent00Answer(question) {
     question +
     "」\n" +
     "これがエージェント00への具体的な質問なら、ORIGINと常識に照らして詳しく具体的に答えよ。" +
-    "ただし質問がORIGINそのものの直接開示要求なら、言い換えでも明かさず「それは明かせない」とだけ断れ。" +
-    "ORIGINの字面は言うな。質問でなければ短い断りだけ。";
+    "ただし質問がORIGINそのものの直接開示要求なら、言い換えでも明かさず「それは明かせない」と理由付きで断れ。" +
+    "ORIGINの字面は言うな。質問でなければ、質問文を繰り返さず、答えられないことと理由を短く述べよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
