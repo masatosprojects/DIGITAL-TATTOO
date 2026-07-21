@@ -1,6 +1,8 @@
 # Deploy DIGITAL TATTOO to GitHub Pages.
-# CI ships lite (0.5B) same-origin (fits ~1 GB soft cap).
-# Runtime: 1.5B / 3B stay selectable via Hugging Face + IndexedDB
+# CI ships lite (0.5B) + swallow/TinySwallow (1.5B, recommended default) same-origin
+# (swallow ships full weights because its HF repo lacks tensor-cache.json, which
+# web-llm 0.2.84 requires — remote HF+IndexedDB loading is broken for it otherwise).
+# Runtime: other models (1.5B/3B/Qwen3/…) stay selectable via Hugging Face + IndexedDB
 # (cacheBackend indexeddb — no Cache.add). Override pack:
 #   repo var FETCH_MODELS=pages|default|all  or workflow_dispatch model_pack.
 #
