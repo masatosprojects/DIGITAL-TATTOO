@@ -4,7 +4,7 @@
  *
  * Usage (needs network once):
  *   npm run fetch-model            # default Qwen 1.5B (~840 MB)
- *   npm run fetch-model:pages      # lite 0.5B — GitHub Pages CI
+ *   npm run fetch-model:pages      # lite 0.5B + remote WASM libs (Pages CI)
  *   npm run fetch-model:hq         # 3B
  *   npm run fetch-model:swallow    # TinySwallow JP (optional local pack)
  *   npm run fetch-model:gemma-jpn  # Gemma2-JPN (optional)
@@ -24,6 +24,8 @@ const OUT_ROOT = path.join(ROOT, "public", "models");
 
 const WASM_BASE =
   "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/";
+const WASM_JSDELIVR =
+  "https://cdn.jsdelivr.net/gh/mlc-ai/binary-mlc-llm-libs@main/web-llm-models/v0_2_84/base/";
 
 /**
  * Models must match @mlc-ai/web-llm 0.2.84 prebuilt list (v0_2_84 wasm).
@@ -106,6 +108,11 @@ export const MODELS = {
 export const ALL_KEYS = ["hq", "default", "lite"];
 /** Optional remote-friendly JP models (not in Pages CI / --all by default). */
 export const EXTRA_KEYS = ["swallow", "gemma-jpn"];
+/**
+ * Pages CI: full lite weights + WASM libs for HF-remote models (~20 MB libs).
+ * Avoids raw.githubusercontent.com failures when loading TinySwallow / 1.5B on Pages.
+ */
+export const PAGES_WASM_KEYS = ["default", "swallow", "hq", "gemma-jpn"];
 
 /** @deprecated use MODELS.default */
 export const MODEL = MODELS.default;
@@ -244,6 +251,31 @@ async function fetchOne(model) {
   return { model, bytes };
 }
 
+
+/** Download one WASM, trying jsDelivr then raw.githubusercontent. */
+async function downloadWasm(wasmName, dest) {
+  const urls = [WASM_JSDELIVR + wasmName, WASM_BASE + wasmName];
+  let lastErr;
+  for (const url of urls) {
+    try {
+      return await download(url, dest, wasmName);
+    } catch (e) {
+      lastErr = e;
+      console.warn(`  wasm fetch failed (${url}): ${e.message || e}`);
+    }
+  }
+  throw lastErr || new Error("WASM download failed: " + wasmName);
+}
+
+/** Ship WASM only (no HF weights) — for Pages remote-model support. */
+async function fetchWasmOnly(model) {
+  const libDir = path.join(OUT_ROOT, "libs");
+  await fs.promises.mkdir(libDir, { recursive: true });
+  console.log(`── WASM only · ${model.label} → ${model.wasmName} ──`);
+  const bytes = await downloadWasm(model.wasmName, path.join(libDir, model.wasmName));
+  return { model, bytes };
+}
+
 function normalizeKey(raw) {
   const a = String(raw || "").replace(/^--/, "").toLowerCase();
   if (a === "plus" || a === "1.5b" || a === "1.5" || a === "qwen15") return "default";
@@ -257,41 +289,64 @@ function normalizeKey(raw) {
 function parseTargets(argv) {
   const args = argv.slice(2).filter((a) => a !== "--");
   if (args.includes("--all") || args.includes("all")) {
-    return ALL_KEYS.slice();
+    return { full: ALL_KEYS.slice(), wasmOnly: [] };
   }
   if (args.includes("--extras") || args.includes("extras")) {
-    return EXTRA_KEYS.slice();
+    return { full: EXTRA_KEYS.slice(), wasmOnly: [] };
   }
-  if (args.length === 0) return ["default"];
+  if (args.length === 0) return { full: ["default"], wasmOnly: [] };
 
+  /** @type {string[]} */
   const keys = [];
+  let pages = false;
   for (const raw of args) {
     const k = normalizeKey(raw);
-    if (k === "all") return ALL_KEYS.slice();
-    if (k === "extras") return EXTRA_KEYS.slice();
+    if (k === "all") return { full: ALL_KEYS.slice(), wasmOnly: [] };
+    if (k === "extras") return { full: EXTRA_KEYS.slice(), wasmOnly: [] };
+    if (k === "pages") {
+      pages = true;
+      continue;
+    }
     if (!MODELS[k]) {
       throw new Error(
         `Unknown args: ${args.join(" ")}\n` +
-          `Usage: fetch-model.mjs [|default|lite|hq|swallow|gemma-jpn|--all|--extras]\n` +
-          `  (aliases: plus→default, 0.5b→lite, 3b→hq, tinyswallow→swallow)`
+          `Usage: fetch-model.mjs [|default|lite|hq|swallow|gemma-jpn|pages|--all|--extras]\n` +
+          `  (aliases: plus→default, 0.5b→lite, 3b→hq, tinyswallow→swallow)\n` +
+          `  pages = lite weights + WASM libs for remote models (TinySwallow/1.5B/…)`
       );
     }
     if (!keys.includes(k)) keys.push(k);
   }
-  return keys;
+  if (pages) {
+    const full = keys.includes("lite") ? keys.slice() : ["lite", ...keys];
+    const wasmOnly = PAGES_WASM_KEYS.filter((k) => !full.includes(k));
+    return { full, wasmOnly };
+  }
+  return { full: keys, wasmOnly: [] };
 }
 
 async function main() {
-  const keys = parseTargets(process.argv);
-  const selected = keys.map((k) => {
+  const { full, wasmOnly } = parseTargets(process.argv);
+  const selected = full.map((k) => {
+    const m = MODELS[k];
+    if (!m) throw new Error(`Unknown model key: ${k}`);
+    return m;
+  });
+  const wasmModels = wasmOnly.map((k) => {
     const m = MODELS[k];
     if (!m) throw new Error(`Unknown model key: ${k}`);
     return m;
   });
 
-  const totalApprox = selected.reduce((s, m) => s + m.approxDownloadMB, 0);
+  const totalApprox =
+    selected.reduce((s, m) => s + m.approxDownloadMB, 0) + wasmModels.length * 5;
   console.log(`DIGITAL TATTOO — fetch model`);
-  console.log(`  targets: ${selected.map((m) => m.key).join(", ")}`);
+  console.log(`  targets: ${selected.map((m) => m.key).join(", ") || "(none)"}`);
+  if (wasmModels.length) {
+    console.log(
+      `  wasm-only: ${wasmModels.map((m) => m.key).join(", ")} (~${wasmModels.length * 5} MB)`
+    );
+  }
   console.log(`  ≈${totalApprox} MB download total`);
   console.log(`  out: ${path.relative(ROOT, OUT_ROOT)}`);
   if (totalApprox > 1000) {
@@ -299,7 +354,7 @@ async function main() {
       "  note: total exceeds GitHub Pages soft comfort (~1 GB). Prefer Netlify / self-host for multi-model packs."
     );
   }
-  if (keys.includes("hq")) {
+  if (full.includes("hq") || wasmOnly.includes("hq")) {
     console.log(
       "  note: 3B is Qwen Research license (not Apache-2.0) and needs ~2.5 GB VRAM — usable=maybe."
     );
@@ -325,6 +380,20 @@ async function main() {
       license: model.license,
     });
   }
+  for (const model of wasmModels) {
+    const result = await fetchWasmOnly(model);
+    bytes += result.bytes;
+    fetched.push({
+      key: model.key + ":wasm",
+      rank: model.rank,
+      model_id: model.id,
+      model_lib: `models/libs/${model.wasmName}`,
+      vram_required_MB: model.vramMB,
+      approx_download_MB: 5,
+      usable: model.usable,
+      license: model.license,
+    });
+  }
 
   // Detect which models are already on disk (for manifest completeness)
   const present = [];
@@ -345,10 +414,10 @@ async function main() {
     present_keys: present,
     approx_size_MB: Math.round(dirSizeBytes(OUT_ROOT) / (1024 * 1024)),
     note:
-      "Runtime loads via same-origin …/resolve/main/ only. No HF CDN at runtime. " +
-      "Full publish (公開準備.bat): all three. Pages CI: lite+default (~1.1 GB); hq via FETCH_MODELS=all.",
+      "Runtime prefers same-origin …/resolve/main/; missing weights may use HF+IndexedDB. " +
+      "Pages CI ships lite + WASM libs for remote models (TinySwallow/1.5B/…).",
     deploy_size_note:
-      "lite≈280MB + default≈840MB ≈1.1GB (Pages practical). +hq≈1.7GB → all≈2.8GB (Netlify/self-host).",
+      "lite≈280MB + remote WASM libs≈20MB. Full weights for 1.5B/Swallow via HF on first load.",
   };
   await fs.promises.writeFile(
     path.join(OUT_ROOT, "manifest.json"),
@@ -365,7 +434,12 @@ async function main() {
   console.log("Concept: 育ちは文脈であり重み更新ではない — inference only.");
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isMain =
+  process.argv[1] &&
+  path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

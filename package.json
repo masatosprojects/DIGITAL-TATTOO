@@ -7,7 +7,7 @@
   "scripts": {
     "fetch-model": "node scripts/fetch-model.mjs",
     "fetch-model:lite": "node scripts/fetch-model.mjs lite",
-    "fetch-model:pages": "node scripts/fetch-model.mjs lite",
+    "fetch-model:pages": "node scripts/fetch-model.mjs pages",
     "fetch-model:hq": "node scripts/fetch-model.mjs hq",
     "fetch-model:swallow": "node scripts/fetch-model.mjs swallow",
     "fetch-model:gemma-jpn": "node scripts/fetch-model.mjs gemma-jpn",

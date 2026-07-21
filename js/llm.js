@@ -187,7 +187,8 @@ export const MODEL_CATALOG = [
     /** @type {string[]} alternate ids accepted by resolveModel / appConfig aliases */
     idAliases: ["TinySwallow-1.5B", "tinyswallow"],
     hfRepo: "SakanaAI/TinySwallow-1.5B-Instruct-q4f32_1-MLC",
-    // Same arch as Qwen2 1.5B q4f32 — Sakana ChatUI reuses this WASM family (v0_2_84 name).
+    // Same arch as official Qwen2.5-1.5B-q4f32 (ndarray layout matches 311/311).
+    // web-llm 0.2.84 wasm name (Sakana ChatUI@0.2.48 used older *-ctx4k_cs1k-*).
     wasm: "Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm",
     sizeMB: 830,
     vramMB: 1889,
@@ -199,7 +200,8 @@ export const MODEL_CATALOG = [
     remoteOk: true,
     license: "Apache-2.0",
     hint:
-      "Sakana JP特化蒸留。≈830 MB · VRAM ≈1.9 GB（q4f32）。未同梱時は初回は HF から取得。",
+      "Sakana JP特化蒸留。初回 ≈830 MB（HF+IndexedDB）· VRAM ≈1.9 GB（q4f32）。" +
+      "WASM は同一オリジン優先（無ければ jsDelivr）。",
   },
   {
     key: "default",
@@ -261,8 +263,18 @@ export const PAGES_MODEL_KEY = "lite";
  */
 export const PAGES_MAX_SHARD_BYTES = 100 * 1024 * 1024;
 
-/** WASM libs CDN — always derived from the installed web-llm package version. */
-export const MODEL_LIB_CDN_BASE = modelLibURLPrefix + modelVersion + "/";
+/**
+ * WASM libs CDN (web-llm 0.2.84).
+ * Prefer jsDelivr — raw.githubusercontent.com is often blocked/slow from JP/Asia
+ * and is a common cause of 「Failed to fetch」 / モデル取得失敗 for remote models.
+ */
+export const MODEL_LIB_CDN_BASE =
+  "https://cdn.jsdelivr.net/gh/mlc-ai/binary-mlc-llm-libs@main/web-llm-models/" +
+  modelVersion +
+  "/";
+
+/** Official WebLLM CDN fallback if jsDelivr is unreachable. */
+export const MODEL_LIB_CDN_FALLBACK = modelLibURLPrefix + modelVersion + "/";
 
 /** @deprecated old dual-catalog alias — was 1.5B “plus”; now equals default */
 MODELS.plus = MODELS.default;
@@ -648,15 +660,52 @@ export function modelWeightsBase(model = getActiveModel()) {
   return modelsBase() + m.id + "/" + MODEL_HF_COMPAT_PREFIX;
 }
 
-/** Hugging Face weights base with resolve/main/ (WebLLM will not double-append). */
+/**
+ * Hugging Face repo root — matches WebLLM prebuilt + Sakana ChatUI.
+ * WebLLM `cleanModelUrl` appends `resolve/main/` when missing (do not double-append).
+ */
 export function remoteWeightsBase(model = getActiveModel()) {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
-  return "https://huggingface.co/" + m.hfRepo + "/" + MODEL_HF_COMPAT_PREFIX;
+  return "https://huggingface.co/" + m.hfRepo + "/";
 }
 
-export function remoteWasmUrl(model = getActiveModel()) {
+/** Same-origin WASM URL as an absolute href (must not resolve against HF model URL). */
+export function localWasmUrl(model = getActiveModel()) {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
-  return MODEL_LIB_CDN_BASE + m.wasm;
+  const rel = modelsBase() + "libs/" + m.wasm;
+  try {
+    if (typeof window !== "undefined" && window.location) {
+      return new URL(rel, window.location.href).href;
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  return rel;
+}
+
+/**
+ * @param {ModelInfo | string} [model]
+ * @param {"primary" | "fallback"} [which]
+ */
+export function remoteWasmUrl(model = getActiveModel(), which = "primary") {
+  const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
+  const base = which === "fallback" ? MODEL_LIB_CDN_FALLBACK : MODEL_LIB_CDN_BASE;
+  return base + m.wasm;
+}
+
+/**
+ * Pick WASM URL: same-origin first (Pages ships libs for HF models), then jsDelivr, then raw GH.
+ * @param {ModelInfo | string} model
+ * @param {ModelSource} [source]
+ */
+export async function resolveWasmUrl(model, source = "local") {
+  const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
+  const local = localWasmUrl(m);
+  if (source !== "remote") return local;
+  if ((await probeWasm(local)).ok) return local;
+  const primary = remoteWasmUrl(m, "primary");
+  if ((await probeWasm(primary)).ok) return primary;
+  return remoteWasmUrl(m, "fallback");
 }
 
 /**
@@ -687,20 +736,24 @@ export function pagesAllowsRemoteModels() {
 /**
  * @param {ModelInfo | string} [model]
  * @param {ModelSource} [source]
+ * @param {{ modelLib?: string }} [opts]
  */
-export function buildAppConfig(model = getActiveModel(), source = "local") {
+export function buildAppConfig(model = getActiveModel(), source = "local", opts = {}) {
   const m = typeof model === "string" ? resolveModel(model) || getActiveModel() : model;
   const useRemote = source === "remote";
   /** @type {Record<string, unknown>} */
   const entry = {
-    // remoteWeightsBase already includes resolve/main/
+    // remoteWeightsBase is HF repo root; WebLLM cleanModelUrl appends resolve/main/
     model: useRemote ? remoteWeightsBase(m) : modelWeightsBase(m),
     model_id: m.id,
-    model_lib: useRemote ? remoteWasmUrl(m) : modelsBase() + "libs/" + m.wasm,
+    model_lib:
+      opts.modelLib ||
+      (useRemote ? remoteWasmUrl(m) : localWasmUrl(m)),
     low_resource_required: m.usable === "yes",
     vram_required_MB: m.vramMB,
+    // Match official Qwen2.5-1.5B-q4f32 / q4f16 prebuilt (cs1k wasm + 4k ctx).
     overrides: {
-      context_window_size: 2048,
+      context_window_size: 4096,
     },
   };
   // q4f16 needs shader-f16; q4f32 (TinySwallow) must not require it.
@@ -847,6 +900,21 @@ export function explainLoadError(err) {
     );
   }
   if (
+    lower.includes("failed to fetch") ||
+    lower.includes("networkerror") ||
+    lower.includes("load failed") ||
+    lower.includes("net::err")
+  ) {
+    return (
+      "モデルの取得に失敗しました（ネットワーク / WASM / Hugging Face）。" +
+      "通信を確認し、再読み込みするか、標準 Qwen 1.5B や軽量 0.5B を試してください。" +
+      "TinySwallow 初回は ≈830 MB のダウンロードが必要です。" +
+      "（" +
+      raw +
+      "）"
+    );
+  }
+  if (
     lower.includes("cache.add") ||
     lower.includes("encountered a network error") ||
     (lower.includes("cache") && lower.includes("network"))
@@ -956,9 +1024,14 @@ async function probeConfigJson(configUrl) {
  */
 async function probeRemoteModel(model) {
   const configUrl = remoteWeightsBase(model) + "mlc-chat-config.json";
-  const wasmUrl = remoteWasmUrl(model);
+  // After cleanModelUrl this is the same path WebLLM will request.
+  const configUrlResolved =
+    remoteWeightsBase(model).includes("resolve/")
+      ? remoteWeightsBase(model) + "mlc-chat-config.json"
+      : remoteWeightsBase(model) + "resolve/main/mlc-chat-config.json";
+  const wasmUrl = await resolveWasmUrl(model, "remote");
   const [cfg, wasm] = await Promise.all([
-    probeConfigJson(configUrl),
+    probeConfigJson(configUrlResolved),
     probeWasm(wasmUrl),
   ]);
 
@@ -968,7 +1041,7 @@ async function probeRemoteModel(model) {
       ok: false,
       model,
       source: "remote",
-      configUrl,
+      configUrl: configUrlResolved,
       wasmUrl,
       reason:
         model.shortLabel +
@@ -985,12 +1058,12 @@ async function probeRemoteModel(model) {
   if (cfg.ok || allowsRemoteFallback(model)) {
     const notes = [];
     if (!cfg.ok) notes.push("HF設定の事前確認は不完全（読み込み時に再試行）");
-    if (!wasm.ok) notes.push("WASM CDN の事前確認は不完全");
+    if (!wasm.ok) notes.push("WASM の事前確認は不完全（読み込み時に再試行）");
     return {
       ok: true,
       model,
       source: "remote",
-      configUrl,
+      configUrl: configUrlResolved,
       wasmUrl,
       reason:
         model.shortLabel +
@@ -1007,7 +1080,7 @@ async function probeRemoteModel(model) {
   return {
     ok: false,
     model,
-    configUrl,
+    configUrl: configUrlResolved,
     wasmUrl,
     reason: missingReason(model, configUrl),
   };
@@ -1035,7 +1108,7 @@ export async function probeModel(modelOrKey) {
     };
   }
   const configUrl = modelWeightsBase(model) + "mlc-chat-config.json";
-  const wasmUrl = modelsBase() + "libs/" + model.wasm;
+  const wasmUrl = localWasmUrl(model);
   try {
     const [c, w] = await Promise.all([
       probeConfigJson(configUrl),
@@ -1153,24 +1226,46 @@ export async function createLocalEngine(
   if (!m) throw new Error("Unknown model: " + String(model));
   await unloadEngine(prevEngine);
   const src = source === "remote" ? "remote" : "local";
-  const appConfig = buildAppConfig(m, src);
+  const modelLib = await resolveWasmUrl(m, src);
+  const appConfig = buildAppConfig(m, src, { modelLib });
   const listed = (appConfig.model_list || []).some((r) => r.model_id === m.id);
   if (!listed) {
     throw new Error(
       "appConfig.model_list に " + m.id + " がありません（内部設定エラー）。"
     );
   }
-  return CreateMLCEngine(m.id, {
-    appConfig,
-    initProgressCallback: (report) => {
-      const progress = typeof report.progress === "number" ? report.progress : 0;
-      let text = report.text || "モデルを読み込み中…";
-      if (src === "remote" && text && !/HF|Hugging|取得/.test(text)) {
-        text = "HF取得 · " + text;
+
+  const initProgressCallback = (report) => {
+    const progress = typeof report.progress === "number" ? report.progress : 0;
+    let text = report.text || "モデルを読み込み中…";
+    if (src === "remote" && text && !/HF|Hugging|取得/.test(text)) {
+      text = "HF取得 · " + text;
+    }
+    if (onProgress) onProgress({ text, progress });
+  };
+
+  try {
+    return await CreateMLCEngine(m.id, { appConfig, initProgressCallback });
+  } catch (e) {
+    const msg = String(
+      e && typeof e === "object" && "message" in e ? e.message : e || ""
+    );
+    const fetchish = /fetch|network|wasm|failed to load|load failed/i.test(msg);
+    if (src === "remote" && fetchish) {
+      const alt = modelLib.includes("jsdelivr")
+        ? remoteWasmUrl(m, "fallback")
+        : remoteWasmUrl(m, "primary");
+      if (alt !== modelLib) {
+        console.warn("TinySwallow/remote load: retrying with alternate WASM CDN", alt, e);
+        const retryConfig = buildAppConfig(m, src, { modelLib: alt });
+        return CreateMLCEngine(m.id, {
+          appConfig: retryConfig,
+          initProgressCallback,
+        });
       }
-      if (onProgress) onProgress({ text, progress });
-    },
-  });
+    }
+    throw e;
+  }
 }
 
 /**

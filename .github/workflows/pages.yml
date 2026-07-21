@@ -75,7 +75,11 @@ jobs:
             default|1.5b)
               npm run fetch-model
               ;;
-            pages|lite|0.5b|*)
+            pages)
+              npm run fetch-model:pages
+              ;;
+            lite|0.5b|*)
+              # default Pages pack: lite weights + remote-model WASM libs
               npm run fetch-model:pages
               ;;
           esac
@@ -140,6 +144,11 @@ jobs:
           fi
           du -sh dist/models
           echo "OK site base: /${{ github.event.repository.name }}/models/.../resolve/main/"
+          # Remote-model WASM (TinySwallow q4f32 / Qwen 1.5B q4f16) should ship with Pages
+          WASM_SW="dist/models/libs/Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm"
+          WASM_15="dist/models/libs/Qwen2-1.5B-Instruct-q4f16_1_cs1k-webgpu.wasm"
+          if [ -f "$WASM_SW" ]; then echo "OK TinySwallow WASM present"; else echo "WARN missing $WASM_SW (HF load may need jsDelivr)"; fi
+          if [ -f "$WASM_15" ]; then echo "OK Qwen1.5B WASM present"; else echo "WARN missing $WASM_15"; fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

@@ -9,7 +9,7 @@ WebLLM **0.2.84** 互換の MLC ビルド。
 |------|-----|----------|----------|----------|------|--------|
 | 1 | `hq` | `Qwen2.5-3B-Instruct-q4f16_1-MLC` | ≈**1.7 GB** | ≈**2.5 GB** | Qwen 高精度 | **maybe** |
 | 2 | `gemma-jpn` | `gemma-2-2b-jpn-it-q4f16_1-MLC` | ≈**1.4 GB** | ≈**1.9 GB** | JP寄り · **system ロール不可** | **maybe** |
-| 3 | `swallow` | `TinySwallow-1.5B-Instruct-q4f32_1-MLC` | ≈**830 MB** | ≈**1.9 GB** | **JP特化**（Sakana HF `SakanaAI/TinySwallow-1.5B-Instruct-q4f32_1-MLC` · q4f32 WASM=`Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm`） | **yes** |
+| 3 | `swallow` | `TinySwallow-1.5B-Instruct-q4f32_1-MLC` | ≈**830 MB** | ≈**1.9 GB** | **JP特化**（Sakana HF · q4f32 WASM=`Qwen2-1.5B-Instruct-q4f32_1_cs1k-webgpu.wasm` · Pages は WASM 同梱＋HF weights） | **yes** |
 | 4 | `default` | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | ≈**840 MB** | ≈**1.6 GB** | **★ 推奨 · もともとの標準** | **yes** |
 | 5 | `lite` | `Qwen2.5-0.5B-Instruct-q4f16_1-MLC` | ≈**280 MB** | ≈**0.95 GB** | Pages CI 同梱 · 品質劣る | **yes** |
 
@@ -30,8 +30,8 @@ WebLLM **0.2.84** 互換の MLC ビルド。
 
 | 構成 | GitHub Pages |
 |------|--------------|
-| CI 同梱 | **lite (0.5B)** のみ |
-| ゲート選択 | 1.5B / Swallow / 3B / Gemma-JPN — 未同梱なら **初回は HF から取得** |
+| CI 同梱 | **lite (0.5B)** ＋ リモート用 WASM（TinySwallow q4f32 / 1.5B q4f16 / 3B / Gemma ≈20 MB） |
+| ゲート選択 | 1.5B / Swallow / 3B / Gemma-JPN — 未同梱 weights は **初回は HF から取得**（WASM は同一オリジン優先、無ければ jsDelivr） |
 
 ```bash
 npm run fetch-model:pages      # 0.5B（CI）
