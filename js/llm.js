@@ -1673,15 +1673,19 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
           ? cause.message
           : cause || ""
       ).toLowerCase();
-      // Disposed / not-loaded engines often "succeed" at reload without
-      // becoming usable — skip straight to recreate for those.
+      // Disposed / not-loaded / GPU-loss engines often "succeed" at reload
+      // without becoming usable — skip straight to recreate for those.
+      const gpuLost =
+        causeMsg.includes("device") ||
+        causeMsg.includes("gpuadapter") ||
+        causeMsg.includes("dxgi_error") ||
+        causeMsg.includes("requestdevice") ||
+        causeMsg.includes("lost access to the gpu");
       const skipReload =
         causeMsg.includes("disposed") ||
         causeMsg.includes("model not loaded") ||
         causeMsg.includes("not loaded before") ||
-        causeMsg.includes("device") ||
-        causeMsg.includes("gpuadapter") ||
-        causeMsg.includes("dxgi_error");
+        gpuLost;
 
       if (!skipReload) {
         try {
@@ -1695,8 +1699,13 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
         }
       }
 
+      // After GPU device loss, give the adapter a moment before requestDevice.
+      if (gpuLost) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+
       // Create fresh first; only then unload the old instance.
-      // If create fails (VRAM / adapter busy), unload old and retry once.
+      // If create fails (VRAM / adapter busy), unload old, wait, and retry.
       let fresh;
       try {
         fresh = await createEngine(model, { prevEngine: null });
@@ -1711,7 +1720,20 @@ export function createAgentLlmRouter(agentMap, opts = {}) {
         } catch (_) {
           /* already disposed */
         }
-        fresh = await createEngine(model, { prevEngine: null });
+        await new Promise((r) => setTimeout(r, gpuLost ? 2500 : 800));
+        try {
+          fresh = await createEngine(model, { prevEngine: null });
+        } catch (createErr2) {
+          // One more delayed attempt — mid-session DXGI_ERROR often clears
+          // after a few seconds; without this the session sticks on templates.
+          console.warn(
+            "LLM recreate retry failed; final delayed attempt",
+            engineId,
+            createErr2
+          );
+          await new Promise((r) => setTimeout(r, 3500));
+          fresh = await createEngine(model, { prevEngine: null });
+        }
       }
       rebindEngine(engineId, fresh);
       if (old && old !== fresh) {

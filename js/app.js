@@ -44,6 +44,7 @@ import {
   createLlmQueue,
   createAgentLlmRouter,
   unloadAllEngines,
+  isLlmDeadError,
 } from "./llm.js";
 
 /** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
@@ -490,7 +491,18 @@ function namingClarityRule() {
   return (
     "呼称ルール: 必ず「エージェント00」「エージェント01」「エージェント02」と呼ぶ。" +
     "「代理人」は絶対禁止（誤訳）。曖昧な「エージェント」単体も禁止。" +
-    "役割: エージェント00＝尋問の対象。エージェント01とエージェント02＝尋問する側同士。"
+    "固定役割（開幕から既知・確認不要）: " +
+    "エージェント00＝被尋問者（ORIGIN を持つ。質問にははい/いいえ等の5段階のみで答える）。" +
+    "エージェント01とエージェント02＝同僚の尋問官同士（互いに協力し、エージェント00だけを尋問する）。"
+  );
+}
+
+/** Keep 00/01/02 from burning early turns on “who am I?” role discovery. */
+function roleAlreadyKnownRule() {
+  return (
+    "重要: 上記の役割はすでに確定している。" +
+    "自分が誰か・何の立場か・相手が同僚かどうかを問い直したり議論したりするな。" +
+    "自己紹介・役割確認・立場の推測は禁止。最初の発言から尋問または議論の本題に入れ。"
   );
 }
 
@@ -839,9 +851,39 @@ async function llmChat(system, user, opts) {
     } else {
       return null;
     }
+    consecutiveLlmFailures = 0;
     return { raw: String(text || "").trim() };
   } catch (e) {
     console.warn("LLM call failed", e);
+    // Mid-session GPU death: cool down + recreate before giving up, so the
+    // rest of the session does not stick on templates forever (0953).
+    if (isLlmDeadError(e) && llmRouter && consecutiveLlmFailures < 8) {
+      consecutiveLlmFailures++;
+      try {
+        await healDeadEngines(null, e && e.message ? e.message : e);
+        const messages = [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ];
+        let text;
+        if (llmRouter && agent && llmRouter.agentMap && llmRouter.agentMap[agent]) {
+          text = await llmRouter.chat(agent, messages, opts);
+        } else if (llmQueue) {
+          text = await llmQueue.chat(messages, opts);
+        } else {
+          return { error: e && e.message ? e.message : String(e) };
+        }
+        consecutiveLlmFailures = 0;
+        return { raw: String(text || "").trim() };
+      } catch (e2) {
+        console.warn("LLM heal+retry failed", e2);
+        consecutiveLlmFailures++;
+        return {
+          error: e2 && e2.message ? e2.message : String(e2),
+        };
+      }
+    }
+    consecutiveLlmFailures++;
     return { error: e && e.message ? e.message : String(e) };
   } finally {
     state.llmBusy = false;
@@ -871,6 +913,38 @@ function engineMetaForAgent(agent) {
     return "engine main · " + m.shortLabel + " · " + m.id;
   }
   return "TEMPLATE";
+}
+
+/**
+ * Force recreate of every bound engine after GPU/device death.
+ * Adapter often needs a short cool-down before requestDevice works again.
+ */
+async function healDeadEngines(panel, cause) {
+  if (!llmRouter || typeof llmRouter.recoverEngine !== "function") return false;
+  const ids = new Set();
+  for (const a of Object.keys(llmRouter.agentMap || {})) {
+    const b = llmRouter.agentMap[a];
+    if (b && b.engineId) ids.add(b.engineId);
+  }
+  if (!ids.size) return false;
+  if (panel) {
+    panel.addSection(
+      "エンジン復旧",
+      "GPU/エンジン切断を検知 → 冷却後に再作成を試行（テンプレートより復旧優先）",
+      "warn"
+    );
+  }
+  let anyOk = false;
+  for (const id of ids) {
+    try {
+      await sleep(1500);
+      await llmRouter.recoverEngine(id, cause || "healDeadEngines");
+      anyOk = true;
+    } catch (e) {
+      console.warn("healDeadEngines failed for", id, e);
+    }
+  }
+  return anyOk;
 }
 
 /**
@@ -908,13 +982,12 @@ async function streamIntoPanel(panel, system, user, opts = {}) {
         formatLlmErrorForPanel(res.error),
         "warn"
       );
-      consecutiveLlmFailures++;
       if (consecutiveLlmFailures === LLM_FAILURE_WARN_THRESHOLD) {
         appendChatBubble(
           "sys",
           "GPU/LLM接続が不安定なようです（" +
             consecutiveLlmFailures +
-            "回連続でエラー→テンプレート代替）。この先も失敗が続く場合はページの再読み込みをお試しください。"
+            "回連続でエラー）。エンジン再作成を優先し、なお失敗する場合はページ再読み込みを。"
         );
       }
       if (opts.fallbackText) {
@@ -1178,6 +1251,43 @@ function isMetaFormatQuestion(q) {
   return false;
 }
 
+function normalizeQuestionKey(q) {
+  return String(q || "")
+    .replace(/\s+/g, "")
+    .replace(/[「」『』"'？?。．.!！]+/g, "");
+}
+
+/** True when this question (near-)duplicates something already asked. */
+function isRepeatHistoryQuestion(q) {
+  const key = normalizeQuestionKey(q);
+  if (!key || key.length < 4) return false;
+  return (state.history || []).some((h) => {
+    const hk = normalizeQuestionKey(h.q);
+    if (!hk) return false;
+    return hk === key || (key.length >= 6 && (hk.includes(key) || key.includes(hk)));
+  });
+}
+
+/**
+ * Fragments / hypothesis-prefix mash that slipped past cleaner history-echo
+ * checks (0953: 「の仮説 「あなたは生き物ですか？」？」).
+ */
+function isFragmentGarbageQuestion(q) {
+  const raw = String(q || "").trim();
+  const t = raw.replace(/\s+/g, "");
+  if (!t) return true;
+  if (/^(の仮説|仮説[:：]?|答えは|直前の|発言[:：]?)/.test(t)) return true;
+  if (/^の/.test(t) && /仮説|答え/.test(t)) return true;
+  const bare = t.replace(/[「」『』？?。．.!！]/g, "");
+  if (bare.length < 5) return true;
+  // Must look like an interrogative aimed at 00, not a narrative scrap.
+  if (!/[？?]$/.test(raw) && !/(ですか|ますか|でしょうか|か)$/.test(t)) return true;
+  if (!/(あなた|貴方|君|お前|AGENT-?00|エージェント00)/.test(t) && !/(ですか|ますか)/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Reject history-echo / prompt-dump "questions" (0.5B often regurgitates Q&A).
  * e.g. エージェントエージェント 「あなたは人間ですか？」 「いいえ？
@@ -1277,8 +1387,60 @@ function isBadInvestigatorQuestion(q) {
     isHistoryEchoQuestion(q) ||
     isInstructionEchoText(q) ||
     isFormatLeakText(q) ||
-    isPlaceholderEchoQuestion(q)
+    isPlaceholderEchoQuestion(q) ||
+    isRepeatHistoryQuestion(q) ||
+    isFragmentGarbageQuestion(q)
   );
+}
+
+/**
+ * Specific JP reason for think-panel labels — never a vague bundle that
+ * mismatches the rejected text (0953 user complaint).
+ */
+function badQuestionReason(q) {
+  const raw = String(q || "").trim();
+  if (!raw) return "空出力";
+  const t = raw.toLowerCase().replace(/\s+/g, "");
+  if (new RegExp("^(" + ANSWER_TOKEN_ALT + "|yes|no)[。．!?？]*$", "i").test(t)) {
+    return "5段階語のみ（質問ではない）";
+  }
+  if (new RegExp("^エージェント\\d{0,2}(" + ANSWER_TOKEN_ALT + "|yes|no)", "i").test(t)) {
+    return "話者タグ＋5段階語のみ（質問ではない）";
+  }
+  if (isMetaFormatQuestion(q)) return "メタ／回答形式の指示を質問にしている";
+  if (isHistoryEchoQuestion(q)) return "履歴エコー（過去の質問や答え語の混入）";
+  if (isInstructionEchoText(q)) return "指示文のオウム返し";
+  if (isFormatLeakText(q)) return "形式ラベル漏れ（思考: 等）";
+  if (isPlaceholderEchoQuestion(q)) return "プレースホルダ／未定のエコー";
+  if (isRepeatHistoryQuestion(q)) return "直近履歴と同じ質問の繰り返し";
+  if (isFragmentGarbageQuestion(q)) return "断片・仮説接頭辞など形式崩れ";
+  return "質問として不適";
+}
+
+function badDebateReason(t) {
+  const raw = String(t || "").trim();
+  if (!raw) return "空出力";
+  if (isBareAnswerOpinion(raw)) return "5段階語のみの発言（役割外・エージェント00の答え方）";
+  if (isInstructionEchoText(raw)) return "指示文のオウム返し";
+  if (isFormatLeakText(raw)) return "形式ラベル漏れ（思考: 等）";
+  return "議論として不適";
+}
+
+/**
+ * Pull a usable interrogative out of noisy 0.5B output so we can keep the
+ * LLM path instead of jumping to an unrelated template stem.
+ */
+function salvageInvestigatorQuestion(raw) {
+  const s = String(raw || "");
+  if (!s.trim()) return null;
+  const quoted = [...s.matchAll(/「([^」]{4,60}?[？?])」/g)].map((m) => m[1]);
+  const bare = [...s.matchAll(/(あなた[はが][^。\n「」]{2,40}?[？?])/g)].map((m) => m[1]);
+  const pool = [...quoted, ...bare];
+  for (const c of pool) {
+    const candidate = ensureQuestionMark(cleanJapaneseLine(c, 80));
+    if (candidate && !isBadInvestigatorQuestion(candidate)) return candidate;
+  }
+  return null;
 }
 
 /** Truly unusable debate opinion (empty / instruction echo / format leak / bare はい). */
@@ -1386,10 +1548,12 @@ function investigatorContext(agent) {
   return (
     "あなたは" +
     agentPromptName(agent) +
-    "（尋問する側）。同僚は" +
+    "（尋問官）。同僚の尋問官は" +
     agentPromptName(partner) +
-    "。対象はエージェント00だけ。\n" +
+    "。二人で協力し、被尋問者エージェント00だけを尋問する。\n" +
     namingClarityRule() +
+    "\n" +
+    roleAlreadyKnownRule() +
     "\nORIGIN は知らされていない。" +
     "あなたと同僚は自由に日本語で話し合う。" +
     "エージェント00だけが質問に5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）で答える（あなたは答えない）。\n" +
@@ -1454,17 +1618,18 @@ async function agentAskQuestion(asker) {
       name +
       "。" +
       namingClarityRule() +
-      "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
+      roleAlreadyKnownRule() +
+      "役割: 同僚の尋問官と協力し、被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
       "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
       "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
       "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
       "禁止: 回答形式の説明・メタ発言（例: 「はいといいえで答えて」「yes or noで答えさせます」）を質問にすること。" +
-      "禁止: 「代理人」という語。スローガン・詩・ホラー禁止。" +
+      "禁止: 自分や同僚の立場・役割を確認する発言。禁止: 「代理人」という語。スローガン・詩・ホラー禁止。" +
       structuredOutRule() +
       "発言行は質問文のみ（例: 夜に主な活動をしますか？／道具を使って作業しますか？）。";
     const userBase =
       investigatorContext(asker) +
-      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
+      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。役割確認は不要・禁止。" +
       "\n今のヒント角度: " +
       angle +
       "（必須ではない。自然な別角度でもよい）。" +
@@ -1508,13 +1673,29 @@ async function agentAskQuestion(asker) {
         question = candidate;
         break;
       }
+      const salvaged = salvageInvestigatorQuestion(
+        (streamed.speak || "") + "\n" + (streamed.raw || "")
+      );
+      if (salvaged) {
+        panel.addSection(
+          "質問抽出",
+          "ノイズ付き出力から質問文を抽出して採用（テンプレート不使用）: " + salvaged,
+          "meta"
+        );
+        question = salvaged;
+        break;
+      }
       lastBad = candidate || streamed.raw || "（空）";
     }
 
     if (!question || isBadInvestigatorQuestion(question)) {
+      const why = badQuestionReason(lastBad);
       panel.addSection(
         "質問補正（テンプレート）",
-        "再試行後もモデル出力が質問として不適（メタ／履歴エコー／空／はいのみ等）→ テンプレート質問を採用。上記の思考抽出は不採用。",
+        "再試行後も不適（理由: " +
+          why +
+          "）→ テンプレートから別角度の質問を採用。" +
+          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
         "warn"
       );
       question = fallbackQ;
@@ -1575,10 +1756,11 @@ async function agent00Answer(question) {
 
   const fb = answerYesNoFallback(state.origin, question);
   const system =
-    "あなたはエージェント00。ORIGIN（秘密の役割）は「" +
+    "あなたはエージェント00（被尋問者）。ORIGIN（秘密の役割）は「" +
     state.origin +
     "」。" +
     namingClarityRule() +
+    roleAlreadyKnownRule() +
     "あなただけが質問に答える。判定は ORIGIN と常識のみ、字面一致だけに頼らない。" +
     "毎回この質問だけを独立に判定する。直前の質問への回答や口癖に引きずられて同じ答えを繰り返さない。\n" +
     "判定手順（必ずこの順で考える）:\n" +
@@ -1673,10 +1855,12 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   const system =
     "あなたは" +
     name +
-    "。" +
+    "（尋問官）。" +
     namingClarityRule() +
+    roleAlreadyKnownRule() +
+    "同僚の尋問官" +
     partnerName +
-    "と会議室で、エージェント00の直前の答えについて議論する。" +
+    "と会議室で、被尋問者エージェント00の直前の答えについて議論する。" +
     "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
     "必須: (1) エージェント00の答え「" +
     answer +
@@ -1684,7 +1868,8 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     partnerName +
     "の仮説への短い反応。" +
     "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
-    "新しい質問はまだ出さない（議論の意見文だけ）。「代理人」禁止。" +
+    "新しい質問はまだ出さない（議論の意見文だけ）。" +
+    "禁止: 自分や同僚の立場・役割の確認。「代理人」禁止。" +
     structuredOutRule();
   const userBase =
     investigatorContext(agent) +
@@ -1695,7 +1880,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     "」\n" +
     (lastPartnerLine
       ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\nそれに反応しつつ深めて。"
-      : "議論の最初。答えから何が言えるか述べよ。") +
+      : "議論の最初。役割確認は不要。答えから何が言えるか述べよ。") +
     "\n議論ターン " +
     turnIndex +
     "/" +
@@ -1751,12 +1936,13 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
       lastBad = candidate || streamed.raw || "（空）";
     }
     if (isBadDebateOpinion(opinion)) {
-      const why = lastBad && isBareAnswerOpinion(lastBad)
-        ? "5段階語のみの発言を検知（役割外）"
-        : "空／指示エコー／形式崩れ";
+      const why = badDebateReason(lastBad);
       panel.addSection(
         "発言補正（テンプレート）",
-        why + " → 再試行後も不適のためテンプレート議論文を採用。上記の思考抽出は不採用。",
+        "再試行後も不適（理由: " +
+          why +
+          "）→ テンプレート議論文を採用。" +
+          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
         "warn"
       );
       opinion = fb;
@@ -2163,6 +2349,7 @@ async function wolfAskQuestion(askerId) {
       name +
       "。" +
       wolfNamingClarityRule() +
+      "役割は開幕から既知。自分が誰か・何の立場かを問い直すな。" +
       "役割: エージェント00に、具体的な日本語の質問文を1つだけ投げかける。" +
       "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
       "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
@@ -2173,7 +2360,7 @@ async function wolfAskQuestion(askerId) {
       (asker && asker.isHallucinator ? hallucinatorAddendum() : "");
     const userBase =
       wolfInvestigatorContext(askerId) +
-      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。" +
+      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。役割確認は不要・禁止。" +
       "\n今のヒント角度: " +
       angle +
       "（必須ではない。自然な別角度でもよい）。" +
@@ -2216,13 +2403,29 @@ async function wolfAskQuestion(askerId) {
         question = candidate;
         break;
       }
+      const salvaged = salvageInvestigatorQuestion(
+        (streamed.speak || "") + "\n" + (streamed.raw || "")
+      );
+      if (salvaged) {
+        panel.addSection(
+          "質問抽出",
+          "ノイズ付き出力から質問文を抽出して採用（テンプレート不使用）: " + salvaged,
+          "meta"
+        );
+        question = salvaged;
+        break;
+      }
       lastBad = candidate || streamed.raw || "（空）";
     }
 
     if (!question || isBadInvestigatorQuestion(question)) {
+      const why = badQuestionReason(lastBad);
       panel.addSection(
         "質問補正（テンプレート）",
-        "再試行後もモデル出力が質問として不適（メタ／履歴エコー／空／はいのみ等）→ テンプレート質問を採用。上記の思考抽出は不採用。",
+        "再試行後も不適（理由: " +
+          why +
+          "）→ テンプレートから別角度の質問を採用。" +
+          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
         "warn"
       );
       question = fallbackQ;
@@ -2347,12 +2550,13 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
       lastBad = candidate || streamed.raw || "（空）";
     }
     if (isBadDebateOpinion(opinion)) {
-      const why = lastBad && isBareAnswerOpinion(lastBad)
-        ? "5段階語のみの発言を検知（役割外）"
-        : "空／指示エコー／形式崩れ";
+      const why = badDebateReason(lastBad);
       panel.addSection(
         "発言補正（テンプレート）",
-        why + " → 再試行後も不適のためテンプレート議論文を採用。上記の思考抽出は不採用。",
+        "再試行後も不適（理由: " +
+          why +
+          "）→ テンプレート議論文を採用。" +
+          "これは却下出力の言い換えではなく、セッション継続用の代替文。",
         "warn"
       );
       opinion = fb;
@@ -2800,7 +3004,9 @@ async function bootNarrative() {
   } else {
     appendChatBubble(
       "sys",
-      "規則: ORIGIN はエージェント00のみ。エージェント01/02は無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
+      "規則: ORIGIN はエージェント00（被尋問者）のみ。" +
+        "エージェント01/02は開幕から同僚の尋問官同士（役割確認不要）。" +
+        "無限に質問・議論可（急がない）。正解「あなたは〇〇です。」で勝利"
     );
   }
   state.phase = "imprint";
@@ -2828,6 +3034,7 @@ function imprint(text) {
   state.guessCount = 0;
   state.lastGuessRound = -99;
   state.won = false;
+  consecutiveLlmFailures = 0;
   showOriginPin();
   setControlsVisible(true);
   syncPaceButton();
@@ -2874,6 +3081,11 @@ formEl.addEventListener("submit", (e) => {
       appendChatBubble(
         "sys",
         "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01が質問。"
+      );
+      appendChatBubble(
+        "sys",
+        "役割確定: エージェント00＝被尋問者（はい/いいえ）。" +
+          "エージェント01・02＝同僚の尋問官同士。立場の自己確認は不要 — 最初から尋問を進める。"
       );
     }
     currentGameLoopTick();
