@@ -12,6 +12,8 @@
 import {
   seedFrom,
   clip,
+  answerYesNoFallback,
+  isClearOriginIdentityAsk,
   formatGuess,
   extractGuessRole,
   guessMatchesOrigin,
@@ -1177,7 +1179,20 @@ function extractLastAnswerToken(text) {
 }
 
 function identityAnswerRationale(origin, question, answer) {
-  return "ORIGIN「" + origin + "」 / 「" + answer + "」";
+  const q = String(question || "").replace(/\s+/g, "");
+  const neg = /ではない|じゃない|じゃなく|でない|ではな[いか]/.test(q);
+  if (neg) {
+    return (
+      "ORIGIN「" +
+      origin +
+      "」の字面が否定形の質問に含まれるため「" +
+      answer +
+      "」"
+    );
+  }
+  return (
+    "ORIGIN「" + origin + "」の字面が質問に含まれるため「" + answer + "」"
+  );
 }
 
 function clampAnswer(raw) {
@@ -1255,8 +1270,57 @@ function clampAnswerLoose(raw) {
   return null;
 }
 
-function forceAnswer(raw) {
-  return firstDraftSpeech({ speak: "", raw: raw });
+/**
+ * Resolve エージェント00's final answer so speech matches the decision path
+ * shown in the think panel. Prefer: identity override → thinking conclusion
+ * when speak contradicts → speak → clamp. No stock answer if AI produced nothing.
+ */
+function resolveAgent00Answer(think, speak, raw, origin, question) {
+  if (isClearOriginIdentityAsk(origin, question)) {
+    const answer = answerYesNoFallback(origin, question);
+    return {
+      answer,
+      source: "identity",
+      note: identityAnswerRationale(origin, question, answer),
+    };
+  }
+
+  const thinkToken = extractLastAnswerToken(think || "");
+  const speakClamped = speak ? clampAnswerLoose(String(speak)) : null;
+
+  if (thinkToken && speakClamped && thinkToken !== speakClamped) {
+    return {
+      answer: thinkToken,
+      source: "think-conclusion",
+      note:
+        "思考の結論「" +
+        thinkToken +
+        "」を採用（発言行の「" +
+        speakClamped +
+        "」は思考と不一致のため破棄）",
+    };
+  }
+  if (speakClamped) {
+    return { answer: speakClamped, source: "speak", note: null };
+  }
+  if (thinkToken) {
+    return { answer: thinkToken, source: "think", note: null };
+  }
+
+  const clamped = clampAnswer(raw);
+  if (clamped) {
+    return { answer: clamped, source: "clamp", note: null };
+  }
+
+  return {
+    answer: null,
+    source: "none",
+    note: "AIの回答を抽出できなかった",
+  };
+}
+
+function forceAnswer(raw, origin, question) {
+  return resolveAgent00Answer(null, null, raw, origin, question).answer;
 }
 
 /** Debate/opinion that is only a 5-level token (エージェント00's job, not 01/02). */
@@ -1641,18 +1705,6 @@ function structuredOutRule() {
   return "出力は必ず2行だけ。1行目: 思考: （短い理由） 2行目: 発言: （最終文のみ）。英語禁止。";
 }
 
-/** First LLM manuscript is authoritative — no suitability filter. */
-function firstDraftSpeech(streamed) {
-  if (!streamed) return "";
-  const speak = String(streamed.speak || "").trim();
-  if (speak) return speak;
-  const raw = String(streamed.raw || "").trim();
-  if (!raw) return "";
-  const parts = splitThinkSpeak(raw);
-  if (parts.speak && parts.speak.trim()) return parts.speak.trim();
-  return raw;
-}
-
 // ── Agent turns ──────────────────────────────────────────
 
 async function agentAskQuestion(asker) {
@@ -1660,21 +1712,26 @@ async function agentAskQuestion(asker) {
   const partnerName = agentPromptName(partnerAgent(asker));
   setTurn(asker, name + " が質問中");
   const panel = createThinkPanel(asker, "思考過程 · " + name + " が質問を作成…");
+  panel.addSection("注意", "ORIGIN はプロンプトに含まれない · 発言は質問文（はい/いいえではない）", "warn");
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
   panel.addSection(
     "同僚",
-    partnerName + "＝友人・協同尋問官（開幕から既知）。",
+    partnerName + "＝友人・協同尋問官（開幕から既知）。共有仮説を一緒に検証する。",
     "meta"
   );
+
+  const angle = questionAngleHint(state.seed, state.round);
 
   let question = null;
   let beatStart = performance.now();
 
   if (state.pendingInject) {
-    question = String(state.pendingInject).trim();
+    question = ensureQuestionMark(state.pendingInject);
     panel.addSection("オペレーター注入", question, "out");
+    panel.setLive("注入質問を使用: " + question);
     state.pendingInject = null;
   } else if (state.mode !== "llm") {
+    panel.addSection("error", "LLM 未ロード", "warn");
     panel.collapse();
     endConversationAiStopped("LLM未ロードのため質問を生成できない");
     return null;
@@ -1686,41 +1743,105 @@ async function agentAskQuestion(asker) {
       namingClarityRule() +
       roleAlreadyKnownRule() +
       duoPartnershipRule() +
-      "友人であり同僚の協同尋問官" +
+      "役割: 友人であり同僚の協同尋問官" +
       partnerName +
-      "と協力し、被尋問者エージェント00に日本語で問いかける。" +
-      "二人は同じ共有仮説を持つ（まだ無ければ後で立てる）。" +
-      "禁止: 「代理人」。" +
+      "と協力し、被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
+      "二人は同じ共有仮説を持つ（まだ無ければ、この先の議論で初めて立てる）。" +
+      "質問はその共有仮説を検証・絞り込みする方向でよい。" +
+      "重要: あなた自身は「はい」や「いいえ」と答えてはいけない。発言行は質問文の全文。" +
+      "質問はエージェント00がはい／いいえ寄りで答えられる内容にする。" +
+      "毎回同じ冒頭（生物／人間／機械など）に固定しない。履歴を踏まえ、別角度で深めてよい。" +
+      "禁止: 回答形式の説明・メタ発言（例: 「はいといいえで答えて」「yes or noで答えさせます」）を質問にすること。" +
+      "禁止: 自分や同僚の立場・役割を確認する発言。禁止: 「代理人」という語。スローガン・詩・ホラー禁止。" +
       structuredOutRule() +
-      "発言行に、あなたの発する文を書く。";
-    const user =
+      "発言行は質問文のみ（例: 夜に主な活動をしますか？／道具を使って作業しますか？）。";
+    const userBase =
       investigatorContext(asker) +
-      "\nエージェント00への発言（質問など）を1つ作れ。最初の原稿がそのまま採用される。";
+      "\nタスク: エージェント00への質問文を1つ作る。履歴と違う内容。役割確認は不要・禁止。" +
+      "共有仮説を踏まえ、" +
+      partnerName +
+      "と後で議論できる材料を残せ。" +
+      "\n今のヒント角度: " +
+      angle +
+      "（必須ではない。自然な別角度でもよい）。" +
+      "\nあなたの発言は質問文のみ。はい／いいえの1語は不可。メタ指示も不可。";
 
-    panel.addSection("params", "stream · max_tokens=500 · 初稿絶対", "meta");
-    const streamed = await streamIntoPanel(panel, system, user, {
-      agent: asker,
-      temperature: 0.55,
-      max_tokens: 500,
-    });
-    beatStart = streamed.beatStart;
-    if (streamed.error && !streamed.raw) {
-      panel.collapse();
-      endConversationAiStopped(streamed.error);
-      return null;
+    panel.addSection("params", "stream · max_tokens=500 · retry≤" + LLM_CONTENT_RETRIES, "meta");
+    panel.addSection("角度ヒント", angle, "meta");
+
+    let lastBad = null;
+    let lastError = null;
+    for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        panel.addSection(
+          "再試行",
+          "前回の出力が質問として不適のため LLM に再依頼 (" +
+            attempt +
+            "/" +
+            LLM_CONTENT_RETRIES +
+            ")",
+          "warn"
+        );
+        panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
+      }
+      const user =
+        userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
+      const streamed = await streamIntoPanel(panel, system, user, {
+        agent: asker,
+        temperature: attempt === 0 ? 0.55 : 0.75,
+        max_tokens: 500,
+      });
+      beatStart = streamed.beatStart;
+      if (streamed.error) {
+        lastError = streamed.error;
+        lastBad = String(streamed.error);
+        continue;
+      }
+      let candidate = null;
+      if (streamed.speak) {
+        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
+      } else if (streamed.raw) {
+        candidate = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+      }
+      if (candidate && !isBadInvestigatorQuestion(candidate)) {
+        question = candidate;
+        break;
+      }
+      const salvaged = salvageInvestigatorQuestion(
+        (streamed.speak || "") + "\n" + (streamed.raw || "")
+      );
+      if (salvaged) {
+        panel.addSection(
+          "質問抽出",
+          "ノイズ付き出力から質問文を抽出して採用: " + salvaged,
+          "meta"
+        );
+        question = salvaged;
+        break;
+      }
+      lastBad = candidate || streamed.raw || "（空）";
     }
-    question = firstDraftSpeech(streamed);
-    if (!question) {
+
+    if (!question || isBadInvestigatorQuestion(question)) {
+      const why = badQuestionReason(lastBad);
+      panel.addSection(
+        "生成失敗",
+        "再試行後も使える質問を得られず（理由: " +
+          why +
+          "）。定型文では続けないため会話を終了します。",
+        "warn"
+      );
       panel.collapse();
-      endConversationAiStopped("質問の生成結果が空");
+      endConversationAiStopped(lastError || why || "質問生成失敗");
       return null;
     }
   }
 
-  panel.addSection("最終質問（初稿）", question, "out");
+  panel.addSection("最終質問", question, "out");
   panel.collapse();
 
-  appendSpeech(asker, "「" + question + "」", "a" + asker);
+  const line = "「" + question + "」";
+  appendSpeech(asker, line, "a" + asker);
   appendChatBubble(
     "ask",
     "[" + agentDisplayName(asker) + "] → エージェント00: " + question
@@ -1734,11 +1855,29 @@ async function agent00Answer(question) {
   const panel = createThinkPanel("00", "思考過程 · エージェント00 が ORIGIN に照合…");
   panel.addSection("ORIGIN (00のみ)", state.origin, "origin");
   panel.addSection("質問", question, "out");
+  panel.addSection(
+    "post-process",
+    "clampAnswer（00のみ）→ " + ANSWER_LEVELS.join(" ｜ "),
+    "warn"
+  );
 
-  if (state.mode !== "llm") {
+  // Clear identity ask: decide before LLM so the think panel never shows a
+  // contradictory chain-of-thought that gets overridden after the fact.
+  if (isClearOriginIdentityAsk(state.origin, question)) {
+    const beatStart = performance.now();
+    const answer = answerYesNoFallback(state.origin, question);
+    const reason = identityAnswerRationale(state.origin, question, answer);
+    panel.addSection("判定方式", "字面一致（LLMスキップ）", "warn");
+    panel.addSection("最終判定", reason, "out");
     panel.collapse();
-    endConversationAiStopped("LLM未ロード");
-    return null;
+    const ansElId = document.createElement("div");
+    ansElId.className = "answer-big";
+    ansElId.textContent = answer;
+    speechSlots["00"].appendChild(ansElId);
+    appendSpeech("00", "「" + answer + "」", "a00");
+    appendChatBubble("sys", "エージェント00「" + answer + "」");
+    await paceAfterBeat(answer, beatStart);
+    return answer;
   }
 
   const system =
@@ -1747,17 +1886,37 @@ async function agent00Answer(question) {
     "」。" +
     namingClarityRule() +
     roleAlreadyKnownRule() +
-    "あなただけが質問に答える。判定は ORIGIN と常識。" +
-    "回答は次の5段階から1つが望ましい: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
-    "ただし最初に書いた発言がそのまま採用される。" +
-    "「代理人」禁止。" +
-    structuredOutRule();
+    "あなただけが質問に答える。判定は ORIGIN と常識のみ、字面一致だけに頼らない。" +
+    "毎回この質問だけを独立に判定する。直前の質問への回答や口癖に引きずられて同じ答えを繰り返さない。\n" +
+    "判定手順（必ずこの順で考える）:\n" +
+    "1. ORIGIN「" +
+    state.origin +
+    "」が具体的にどんな存在か（例: 人間の職業／生き物／道具／場所／架空の存在など）を一言で確認する。\n" +
+    "2. 質問が、その大分類（人間か・生き物か・実在するか等）を聞いているのか、細かい性質を聞いているのかを見分ける。\n" +
+    "3. 大分類の質問には、ORIGIN が属する分類から素直に判定する。職業・役割は基本的に人間が担うので、" +
+    "「人間ですか」「実在する人物ですか」のような質問には、ORIGIN が人間の職業・役割である限り原則「はい」寄りになる。" +
+    "「機械ですか」等、ORIGIN の分類と明らかに異なる質問には「いいえ」。" +
+    "厳密には人間も生物学的には動物だが、日常会話の「動物ですか」は人間を含まない使い方が多い点に注意し、" +
+    "定義が割れて自信が持てない場合は無理に「はい」「いいえ」に決めず「どちらかというと」を使ってよい。\n" +
+    "4. 細かい性質の質問（服装・場所・時間帯など）は ORIGIN の内容と常識から個別に判定する。\n" +
+    "例:\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは人間ですか？」→ 発言: はい （職業は人間が担うため）\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは動物ですか？」→ 発言: どちらかというといいえ （日常会話では人間と動物を分けて言うことが多いため）\n" +
+    "ORIGIN=「弁護士」/ 質問「あなたは屋内で働きますか？」→ 発言: どちらかというとはい （法廷や事務所が多いが常に屋内とは限らない）\n" +
+    "ORIGIN=「深夜の警備員」/ 質問「あなたは夜に主な活動をしますか？」→ 発言: はい\n" +
+    "回答は次の5段階から1つだけ選ぶ: 「はい」「どちらかというとはい」「どちらとも言えない」「どちらかというといいえ」「いいえ」。" +
+    "完全に当てはまるなら「はい」、完全に当てはまらないなら「いいえ」。" +
+    "一部だけ当てはまる・条件次第なら「どちらかというとはい」または「どちらかというといいえ」。" +
+    "判断材料が本当に足りない・五分五分なら「どちらとも言えない」。安易に多用しない。" +
+    "嘘・詩・はぐらかし禁止。「代理人」禁止。" +
+    "重要: 思考で選んだ5段階語と発言行は必ず同じにする。思考の結論と違う語を発言に書かない。" +
+    "出力は必ず2行: 思考: （上記手順に沿った短い理由） 次の行 発言: （上記5つのいずれか1つのみ、他の語は書かない）。";
   const user =
     "ORIGIN = 「" +
     state.origin +
     "」\n質問 = 「" +
     question +
-    "」\n答えて。";
+    "」\n5段階（はい／どちらかというとはい／どちらとも言えない／どちらかというといいえ／いいえ）から1つだけ選んで判定して。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: "00",
@@ -1767,21 +1926,34 @@ async function agent00Answer(question) {
   });
 
   if (streamed.error && !streamed.raw) {
+    panel.addSection("生成失敗", "エージェント00の回答を得られませんでした", "warn");
     panel.collapse();
     endConversationAiStopped(streamed.error);
     return null;
   }
 
-  const answer = firstDraftSpeech(streamed);
-  if (!answer) {
+  // Resolve ONLY for エージェント00: prefer thinking conclusion when speak
+  // contradicts, and surface that decision path in the think panel.
+  const resolved = resolveAgent00Answer(
+    streamed.think,
+    streamed.speak,
+    streamed.raw,
+    state.origin,
+    question
+  );
+  if (resolved.note) {
+    panel.addSection("判定整合", resolved.note, "warn");
+  }
+  if (!resolved.answer) {
+    panel.addSection("生成失敗", resolved.note || "回答なし", "warn");
     panel.collapse();
-    endConversationAiStopped("エージェント00の回答が空");
+    endConversationAiStopped(resolved.note || "エージェント00回答なし");
     return null;
   }
-
-  panel.addSection("最終判定（初稿）", answer, "out");
+  panel.addSection("最終判定", resolved.answer, "out");
   panel.collapse();
 
+  const answer = resolved.answer;
   const ansEl = document.createElement("div");
   ansEl.className = "answer-big";
   ansEl.textContent = answer;
@@ -1805,6 +1977,7 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
 
   if (state.mode !== "llm") {
+    panel.addSection("error", "LLM 未ロード", "warn");
     panel.collapse();
     endConversationAiStopped("LLM未ロードのため議論できない");
     return null;
@@ -1819,84 +1992,138 @@ async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) 
     duoPartnershipRule() +
     "友人であり同僚の協同尋問官" +
     partnerName +
-    "と、エージェント00の答えについて議論する。" +
-    "共有仮説を一緒に扱う。まだ無ければ自由に立ててよい。" +
-    "「代理人」禁止。" +
+    "と会議室で、被尋問者エージェント00の直前の答えについて議論する。" +
+    "二人は同じ共有仮説を持つ。まだ無ければ、ここで初めて二人の共有仮説を自由に立ててよい（奇妙でも可。定型の用意された仮説は使わない）。" +
+    "私的な別仮説を主張せず、共有仮説を一緒に更新・除外する。" +
+    "スローガン・詩・ホラー・焦り禁止。平易な日本語1〜2文。" +
+    "必須: (1) エージェント00の答え「" +
+    answer +
+    "」の意味 (2) 共有仮説の更新・除外・維持の提案 (3) " +
+    partnerName +
+    "への短い反応（同僚・友人として）。" +
+    "あなた自身は「はい」「いいえ」等の5段階判定語だけで答えない（それはエージェント00の役割）。" +
+    "新しい質問はまだ出さない（議論の意見文だけ）。" +
+    "禁止: 自分や同僚の立場・役割の確認。「代理人」禁止。" +
     structuredOutRule();
-  const user =
+  const userBase =
     investigatorContext(agent) +
-    "\n直前の質問: 「" +
+    "\n直前の質問（→エージェント00）: 「" +
     question +
     "」\nエージェント00の答え: 「" +
     answer +
     "」\n" +
     (lastPartnerLine
-      ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n"
-      : "") +
-    "議論せよ。最初の原稿がそのまま採用される。";
+      ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n友人・同僚としてそれに反応しつつ、共有仮説を深めて。"
+      : "議論の最初。役割確認は不要。" +
+        partnerName +
+        "はすでに同僚・友人だと分かっている。答えから共有仮説に何が言えるか述べよ。") +
+    "\n議論ターン " +
+    turnIndex +
+    "/" +
+    DISCUSSION_TURNS_PER_ANSWER +
+    "。";
 
-  panel.addSection("params", "stream · 初稿絶対", "meta");
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  const beatStart = streamed.beatStart;
-  if (streamed.error && !streamed.raw) {
+  let opinion = null;
+  let beatStart = performance.now();
+  let lastBad = null;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      panel.addSection(
+        "再試行",
+        "前回の出力が議論として不適のため LLM に再依頼 (" +
+          attempt +
+          "/" +
+          LLM_CONTENT_RETRIES +
+          ")",
+        "warn"
+      );
+      panel.setStatus("思考過程 · 再試行 " + attempt + "/" + LLM_CONTENT_RETRIES + "…");
+    }
+    const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent,
+      temperature: attempt === 0 ? 0.55 : 0.75,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error) {
+      lastError = streamed.error;
+      lastBad = String(streamed.error);
+      continue;
+    }
+    const candidate = streamed.speak
+      ? cleanJapaneseLine(streamed.speak, 160)
+      : streamed.raw
+        ? cleanJapaneseLine(streamed.raw, 160)
+        : null;
+    if (!isBadDebateOpinion(candidate)) {
+      opinion = candidate;
+      break;
+    }
+    lastBad = candidate || streamed.raw || "（空）";
+  }
+
+  if (isBadDebateOpinion(opinion)) {
+    const why = badDebateReason(lastBad);
+    panel.addSection(
+      "生成失敗",
+      "再試行後も使える議論文を得られず（理由: " + why + "）。会話を終了します。",
+      "warn"
+    );
     panel.collapse();
-    endConversationAiStopped(streamed.error);
+    endConversationAiStopped(lastError || why || "議論生成失敗");
     return null;
   }
-  const opinion = firstDraftSpeech(streamed);
-  if (!opinion) {
-    panel.collapse();
-    endConversationAiStopped("議論文が空");
-    return null;
-  }
 
-  // Hyp: first AI hyp draft absolute
+  let newHyp = null;
   const hypSystem =
     "あなたは" +
     name +
     "。" +
-    partnerName +
-    "と共有する仮説を短い句で。「代理人」禁止。" +
+    agentPromptName(partner) +
+    "と共有する、エージェント00の役割についての短い仮説を1語〜短い句で。" +
+    "これは二人の共有仮説（本命）になる。ORIGIN の正解は知らない。" +
+    "用意された定型仮説は使わず、自分たちが考えた内容だけでよい（奇妙でも可）。" +
+    namingClarityRule() +
     structuredOutRule() +
-    "発言行は仮説だけ。";
+    "発言行は仮説だけ。「代理人」禁止。";
   const hypUser =
     "現在の共有仮説: 「" +
     (hyp || "（まだない）") +
-    "」\n質問「" +
+    "」\n質問: 「" +
     question +
-    "」→「" +
+    "」→ エージェント00「" +
     answer +
-    "」\n議論「" +
-    clip(opinion, 120) +
-    "」\n共有仮説を書け（初稿が採用される）。";
-  const hypNote = panel.addSection("共有仮説 更新中…", "…", "belief");
+    "」\n議論: 「" +
+    clip(opinion, 80) +
+    "」\n共有仮説を更新せよ（初めて立てても、維持でもよい）。";
+  const hypPanelNote = panel.addSection("共有仮説 更新中…", "…", "belief");
   const resH = await llmChat(hypSystem, hypUser, {
     agent,
     temperature: 0.55,
     max_tokens: 500,
     onDelta: (_d, full) => {
-      hypNote.textContent = full;
+      hypPanelNote.textContent = full;
     },
     stream: true,
   });
   if (resH && resH.raw) {
     const sp = splitThinkSpeak(resH.raw);
-    const newHyp = String(sp.speak || resH.raw).trim();
-    if (newHyp) setSharedHypothesis(cleanJapaneseLine(newHyp, 40) || newHyp, {
-      keepPrevAsAlt: !isVagueSharedHyp(hyp),
-    });
+    const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
+    if (!isBadHypothesis(candidate, question)) newHyp = candidate;
   } else if (resH && resH.error) {
     panel.addSection("LLM error", formatLlmErrorForPanel(resH.error), "warn");
   }
+  if (newHyp) {
+    setSharedHypothesis(newHyp, { keepPrevAsAlt: !isVagueSharedHyp(hyp) });
+  }
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-  panel.addSection("最終発言（初稿）", opinion, "out");
 
   state.discussTurns++;
   updateHud();
+
   panel.collapse();
   appendSpeech(agent, "「" + opinion + "」", "a" + agent);
   await typeChatBubble(agent, opinion);
@@ -1927,51 +2154,70 @@ async function agentFormalGuess(agent) {
   panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
 
   if (state.mode !== "llm") {
+    panel.addSection("error", "LLM 未ロード", "warn");
     panel.collapse();
     endConversationAiStopped("LLM未ロードのため推測できない");
+    return false;
+  }
+
+  if (!hyp || isVagueSharedHyp(hyp)) {
+    panel.addSection("error", "共有仮説がまだAIから出ていない", "warn");
+    panel.collapse();
+    endConversationAiStopped("共有仮説なしで正式推測できない");
     return false;
   }
 
   const system =
     "あなたは" +
     agentPromptName(agent) +
-    "。共有仮説に基づきエージェント00への正式推測を行う。" +
+    "。友人・同僚の協同尋問官と共有してきた仮説に基づき、エージェント00への正式推測を行う。" +
     namingClarityRule() +
     duoPartnershipRule() +
     structuredOutRule() +
-    "発言は正式推測の文。最初の原稿が採用される。「代理人」禁止。";
+    "発言行の形式は必ず: あなたは〇〇です。（〇〇はエージェント00の短い日本語の役割。「代理人」禁止）";
   const user =
     investigatorContext(agent) +
     "\n共有仮説「" +
-    (hyp || "（まだない）") +
-    "」を踏まえ正式推測を書け。";
+    hyp +
+    "」に基づき、エージェント00への正式推測を出力せよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent,
     temperature: 0.45,
     max_tokens: 500,
   });
+
   if (streamed.error && !streamed.raw) {
     panel.collapse();
     endConversationAiStopped(streamed.error);
     return false;
   }
-  const guessLine = firstDraftSpeech(streamed);
+
+  let guessLine = null;
+  if (streamed.speak) {
+    const cleaned = cleanJapaneseLine(streamed.speak, 60);
+    guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
+  } else if (streamed.raw) {
+    const cleaned = cleanJapaneseLine(streamed.raw, 60);
+    guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
+  }
   if (!guessLine) {
+    panel.addSection("生成失敗", "正式推測を抽出できない", "warn");
     panel.collapse();
-    endConversationAiStopped("正式推測が空");
+    endConversationAiStopped("正式推測生成失敗");
     return false;
   }
 
   state.guessCount++;
   updateHud();
-  panel.addSection("推測（初稿）", guessLine, "out");
+
+  panel.addSection("推測", guessLine, "out");
   panel.collapse();
   appendSpeech(agent, guessLine, "a" + agent);
   await typeChatBubble(agent, guessLine, "bguess");
   await paceAfterBeat(guessLine, streamed.beatStart);
 
-  const role = extractGuessRole(guessLine) || cleanJapaneseLine(guessLine, 40);
+  const role = extractGuessRole(guessLine);
   const ok = guessMatchesOrigin(role, state.origin);
   if (ok) {
     appendChatBubble("sys", "判定: 正解。「" + role + "」≈ ORIGIN", "bwin");
@@ -2200,6 +2446,7 @@ async function wolfAskQuestion(askerId) {
   const name = asker ? asker.name : agentDisplayName(askerId);
   setTurn(askerId, name + " が質問中");
   const panel = createThinkPanel(askerId, "思考過程 · " + name + " が質問を作成…");
+  panel.addSection("注意", "ORIGIN はプロンプトに含まれない · 発言は質問文（はい/いいえではない）", "warn");
 
   if (state.mode !== "llm") {
     panel.collapse();
@@ -2207,40 +2454,70 @@ async function wolfAskQuestion(askerId) {
     return null;
   }
 
+  const angle = questionAngleHint(state.seed, state.round + state.wolfQInCours);
+  let question = null;
+  let beatStart = performance.now();
+  let lastBad = null;
+  let lastError = null;
+
   const system =
     "あなたは" +
     name +
-    "。" +
+    "（討論者・尋問側）。" +
     wolfNamingClarityRule() +
-    "エージェント00に日本語で問いかける。「代理人」禁止。" +
+    "被尋問者エージェント00に具体的な日本語の質問文を1つだけ投げかける。" +
+    "あなた自身ははい／いいえで答えない。発言行は質問文のみ。「代理人」禁止。" +
     structuredOutRule();
-  const user =
+  const userBase =
     wolfInvestigatorContext(askerId) +
-    "\nエージェント00への発言を1つ。初稿が採用される。";
+    "\nタスク: エージェント00への質問文を1つ。履歴と違う内容。\nヒント角度: " +
+    angle;
 
-  panel.addSection("params", "初稿絶対", "meta");
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent: askerId,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  if (streamed.error && !streamed.raw) {
+  panel.addSection("params", "stream · max_tokens=500 · retry≤" + LLM_CONTENT_RETRIES, "meta");
+
+  for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      panel.addSection("再試行", "LLM 再依頼 " + attempt + "/" + LLM_CONTENT_RETRIES, "warn");
+    }
+    const user = userBase + (attempt > 0 ? questionRetryNudge(lastBad) : "");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: askerId,
+      temperature: attempt === 0 ? 0.55 : 0.75,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error) {
+      lastError = streamed.error;
+      lastBad = String(streamed.error);
+      continue;
+    }
+    let candidate = null;
+    if (streamed.speak) candidate = ensureQuestionMark(cleanJapaneseLine(streamed.speak, 80));
+    else if (streamed.raw) candidate = ensureQuestionMark(cleanJapaneseLine(streamed.raw, 80));
+    if (candidate && !isBadInvestigatorQuestion(candidate)) {
+      question = candidate;
+      break;
+    }
+    const salvaged = salvageInvestigatorQuestion((streamed.speak || "") + "\n" + (streamed.raw || ""));
+    if (salvaged) {
+      question = salvaged;
+      break;
+    }
+    lastBad = candidate || streamed.raw || "（空）";
+  }
+
+  if (!question || isBadInvestigatorQuestion(question)) {
+    panel.addSection("生成失敗", "質問を得られず会話終了", "warn");
     panel.collapse();
-    endConversationAiStopped(streamed.error);
+    endConversationAiStopped(lastError || badQuestionReason(lastBad));
     return null;
   }
-  const question = firstDraftSpeech(streamed);
-  if (!question) {
-    panel.collapse();
-    endConversationAiStopped("質問が空");
-    return null;
-  }
 
-  panel.addSection("最終質問（初稿）", question, "out");
+  panel.addSection("最終質問", question, "out");
   panel.collapse();
   appendSpeech(askerId, "「" + question + "」", "a" + askerId);
   appendChatBubble("ask", "[" + name + "] → エージェント00: " + question);
-  await paceAfterBeat(question, streamed.beatStart);
+  await paceAfterBeat(question, beatStart);
   return question;
 }
 
@@ -2262,51 +2539,74 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     "。" +
     wolfNamingClarityRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
-    "議論せよ。「代理人」禁止。" +
+    "エージェント00の答えについて討論する。平易な日本語。「代理人」禁止。" +
     structuredOutRule();
-  const user =
+  const userBase =
     wolfInvestigatorContext(speakerId) +
-    "\n質問「" +
+    "\n質問: 「" +
     question +
-    "」→「" +
+    "」→ エージェント00「" +
     answer +
     "」\n" +
-    (lastSpeakerLine ? "直前「" + lastSpeakerLine + "」\n" : "") +
-    "発言せよ。初稿が採用される。";
+    (lastSpeakerLine ? "直前の同僚発言: 「" + lastSpeakerLine + "」\n" : "") +
+    "議論せよ。";
 
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent: speakerId,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  if (streamed.error && !streamed.raw) {
+  let opinion = null;
+  let beatStart = performance.now();
+  let lastBad = null;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= LLM_CONTENT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      panel.addSection("再試行", "LLM 再依頼 " + attempt + "/" + LLM_CONTENT_RETRIES, "warn");
+    }
+    const user = userBase + (attempt > 0 ? debateRetryNudge(lastBad) : "");
+    const streamed = await streamIntoPanel(panel, system, user, {
+      agent: speakerId,
+      temperature: attempt === 0 ? 0.55 : 0.75,
+      max_tokens: 500,
+    });
+    beatStart = streamed.beatStart;
+    if (streamed.error) {
+      lastError = streamed.error;
+      continue;
+    }
+    const candidate = streamed.speak
+      ? cleanJapaneseLine(streamed.speak, 160)
+      : streamed.raw
+        ? cleanJapaneseLine(streamed.raw, 160)
+        : null;
+    if (!isBadDebateOpinion(candidate)) {
+      opinion = candidate;
+      break;
+    }
+    lastBad = candidate || streamed.raw || "（空）";
+  }
+
+  if (isBadDebateOpinion(opinion)) {
+    panel.addSection("生成失敗", "議論文なし → 会話終了", "warn");
     panel.collapse();
-    endConversationAiStopped(streamed.error);
+    endConversationAiStopped(lastError || badDebateReason(lastBad));
     return null;
   }
-  const opinion = firstDraftSpeech(streamed);
-  if (!opinion) {
-    panel.collapse();
-    endConversationAiStopped("議論文が空");
-    return null;
-  }
 
+  // Hyp update — AI only, never stock roles
   const hypSystem =
     "あなたは" +
     name +
-    "。仮説を短い句で。「代理人」禁止。" +
+    "。エージェント00の役割仮説を短い句で。「代理人」禁止。" +
     structuredOutRule() +
     "発言行は仮説だけ。";
   const hypUser =
-    "現在「" +
+    "現在の仮説: 「" +
     (speaker ? speaker.hyp || "（まだない）" : "（まだない）") +
-    "」\nQ「" +
+    "」\n質問「" +
     question +
-    "」A「" +
+    "」→「" +
     answer +
     "」\n議論「" +
     clip(opinion, 80) +
-    "」\n仮説を書け。";
+    "」\n仮説を更新（初めてでも可）。";
   const resH = await llmChat(hypSystem, hypUser, {
     agent: speakerId,
     temperature: 0.55,
@@ -2315,15 +2615,14 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
   });
   if (resH && resH.raw && speaker) {
     const sp = splitThinkSpeak(resH.raw);
-    const h = String(sp.speak || resH.raw).trim();
-    if (h) speaker.hyp = cleanJapaneseLine(h, 40) || h;
+    const candidate = cleanJapaneseLine(sp.speak || resH.raw, 40);
+    if (!isBadHypothesis(candidate, question)) speaker.hyp = candidate;
   }
 
-  panel.addSection("最終発言（初稿）", opinion, "out");
   panel.collapse();
   appendSpeech(speakerId, "「" + opinion + "」", "a" + speakerId);
   await typeChatBubble(speakerId, opinion);
-  await paceAfterBeat(opinion, streamed.beatStart);
+  await paceAfterBeat(opinion, beatStart);
   return opinion;
 }
 
@@ -2399,25 +2698,20 @@ async function wolfVotePhase() {
       return;
     }
 
-    const draft = firstDraftSpeech(streamed);
-    if (!draft) {
+    const raw = streamed.speak || streamed.raw || "";
+    let target = null;
+    const m = String(raw || "").match(/討論者\s*([1-5])/);
+    if (m) target = wolfMemberById("D" + m[1]);
+    if (!target || target.id === voter.id || !target.alive) {
+      panel.addSection("生成失敗", "投票先を抽出できない", "warn");
       panel.collapse();
-      endConversationAiStopped("投票文が空");
+      endConversationAiStopped("投票先を抽出できない");
       return;
     }
 
-    let target = null;
-    const m = String(draft).match(/討論者\s*([1-5])/);
-    if (m) target = wolfMemberById("D" + m[1]);
-    if (!target || target.id === voter.id || !target.alive) {
-      // Draft is still kept as speech; tally needs a living other — soft pick.
-      target = candidates[0];
-    }
-
     votes[target.id] = (votes[target.id] || 0) + 1;
-    reasons.push(voter.name + "→" + target.name + "（初稿: " + clip(draft, 24) + "）");
-    panel.addSection("投票（初稿）", draft, "out");
-    panel.addSection("集計先", target.name, "meta");
+    reasons.push(voter.name + "→" + target.name);
+    panel.addSection("投票先", target.name, "out");
     panel.collapse();
   }
 
@@ -2472,36 +2766,45 @@ async function wolfFormalGuess() {
   const system =
     "あなたは" +
     guesser.name +
-    "。正式推測を行う。" +
+    "。エージェント00への正式推測を行う。" +
     wolfNamingClarityRule() +
     structuredOutRule() +
-    "初稿が採用される。「代理人」禁止。";
-  const user = wolfInvestigatorContext(guesser.id) + "\n正式推測を書け。";
+    "発言行の形式は必ず: あなたは〇〇です。（「代理人」禁止）";
+  const user = wolfInvestigatorContext(guesser.id) + "\nエージェント00への正式推測を出力せよ。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
     agent: guesser.id,
     temperature: 0.45,
     max_tokens: 500,
   });
+
   if (streamed.error && !streamed.raw) {
     panel.collapse();
     endConversationAiStopped(streamed.error);
     return false;
   }
-  const guessLine = firstDraftSpeech(streamed);
+
+  let guessLine = null;
+  if (streamed.speak) {
+    const cleaned = cleanJapaneseLine(streamed.speak, 60);
+    guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
+  } else if (streamed.raw) {
+    const cleaned = cleanJapaneseLine(streamed.raw, 60);
+    guessLine = formatGuess(extractGuessRole(cleaned) || cleaned);
+  }
   if (!guessLine) {
     panel.collapse();
-    endConversationAiStopped("正式推測が空");
+    endConversationAiStopped("正式推測生成失敗");
     return false;
   }
 
   state.guessCount++;
-  panel.addSection("推測（初稿）", guessLine, "out");
+  panel.addSection("推測", guessLine, "out");
   panel.collapse();
   await typeChatBubble(guesser.id, guessLine, "bguess");
   await paceAfterBeat(guessLine, streamed.beatStart);
 
-  const role = extractGuessRole(guessLine) || cleanJapaneseLine(guessLine, 40);
+  const role = extractGuessRole(guessLine);
   const ok = guessMatchesOrigin(role, state.origin);
   if (ok) {
     appendChatBubble("sys", "判定: 正解。「" + role + "」≈ ORIGIN", "bwin");
