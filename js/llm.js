@@ -897,9 +897,15 @@ export function buildAppConfig(model = getActiveModel(), source = "local", opts 
       (useRemote ? remoteWasmUrl(m) : localWasmUrl(m)),
     low_resource_required: m.usable === "yes",
     vram_required_MB: m.vramMB,
-    // Match official Qwen2.5-1.5B-q4f32 / q4f16 prebuilt (cs1k wasm + 4k ctx).
+    // Compiled default is 32768 (see mlc-chat-config.json) — we cap well below
+    // that to shrink the KV-cache VRAM preallocation. Repeated WebGPU "device
+    // lost" (DXGI_ERROR_DEVICE_REMOVED) reports trace to shared/integrated GPU
+    // VRAM pressure; smaller preallocation leaves more headroom before the
+    // driver resets the device. Game prompts (shared-memory block capped at
+    // 12 Q&A pairs, max_tokens=500) stay well under 3072 tokens even in wolf
+    // mode's heavier multi-discussant context, so this shouldn't truncate.
     overrides: {
-      context_window_size: 4096,
+      context_window_size: 3072,
     },
   };
   // q4f16 needs shader-f16; q4f32 (TinySwallow) must not require it.
