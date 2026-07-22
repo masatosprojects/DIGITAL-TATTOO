@@ -53,30 +53,15 @@ const THINK_SPINNER_SRC =
     import.meta.env.BASE_URL) ||
     "./") + "think-spinner.png";
 
-/** Unbounded Q&A / 01↔02 discussion until correct guess (or pause/reload). */
-const MIN_ROUNDS_BEFORE_GUESS = 1;
-/** Mild anti-spam only — formal guesses may still land “someday”. */
-const GUESS_COOLDOWN_ROUNDS = 2;
-/**
- * エージェント01↔02 の議論発言がこの数に達するまで正式推測を許可しない。
- * （キャッチフレーズ1往復で推測へ飛ばない）
- */
-const MIN_DISCUSS_BEFORE_GUESS = 5;
-/**
- * 00 の各回答のあと、01↔02 が最低これだけ交互に議論してから次の質問へ。
- * 短くするほどテンポよく質問が飛ぶ（議論を挟まず矢継ぎ早に尋問する感じに近づく）。
- */
-const DISCUSSION_TURNS_PER_ANSWER = 1;
-
-// ── 人狼モード（ハルシネーター追放） ──────────────────
-/** 討論者の人数。全員を同一エンジンで役割だけ切り替えて動かす。 */
-const WOLF_ROSTER_SIZE = 5;
-/** 1クール = AGENT-00 への質問これだけで、その後に追放投票。 */
-const WOLF_QUESTIONS_PER_COURS = 3;
-/** 00 の各回答のあと、討論者たちがこれだけ順番に発言してから次の質問へ。 */
-const WOLF_DISCUSSION_TURNS_PER_ANSWER = 10;
-/** 生存者がこれ以下になったら人狼フェーズ（投票）を打ち切り、尋問だけ続行。 */
-const WOLF_MIN_ALIVE_FOR_VOTE = 3;
+// ── 世代（ERA）モード ──────────────────────────────
+// 唯一のゲームモード。第1世代のみ証人（AGENT-00）が実在し、以後は前世代の
+// 「記録」テキストだけを頼りに新しいロースターが議論を重ねる。無制限に続く。
+/** 討論者の人数。パフォーマンスのため人狼モードの5人より絞る。 */
+const ERA_ROSTER_SIZE = 3;
+/** 1世代 = AGENT-00／前世代の記録への質問これだけで、その後に追放投票→記録執筆。 */
+const ERA_QUESTIONS_PER_ERA = 3;
+/** 生存者がこれ以下になったら、その世代の追放投票は打ち切り、尋問だけ続行。 */
+const ERA_MIN_ALIVE_FOR_VOTE = 2;
 
 const PACE_PRESETS = {
   instant: { charsPerSec: 60, typeMs: 0, bufferMs: 60, label: "最速" },
@@ -104,14 +89,8 @@ const gateHint = document.getElementById("gateHint");
 const gateActions = document.getElementById("gateActions");
 const gateSkip = document.getElementById("gateSkip");
 const gateLoad = document.getElementById("gateLoad");
-const gateAgentAssign = document.getElementById("gateAgentAssign");
-const gateAssignWarn = document.getElementById("gateAssignWarn");
-const gateFormatPick = document.getElementById("gateFormatPick");
-const gateAssignLabel = document.getElementById("gateAssignLabel");
 const gateWolfModelLabel = document.getElementById("gateWolfModelLabel");
 const gateWolfModelPick = document.getElementById("gateWolfModelPick");
-const hyp01El = document.getElementById("hyp01");
-const hyp02El = document.getElementById("hyp02");
 const phaseLabelEl = document.getElementById("phaseLabel");
 const chatLog = document.getElementById("chatLog");
 const terminalConsole = document.getElementById("terminalConsole");
@@ -123,7 +102,7 @@ const subjectMemoryEl = document.getElementById("subjectMemory");
 const subjectMemoryHead = document.getElementById("subjectMemoryHead");
 const subjectMemoryList = document.getElementById("subjectMemoryList");
 const subjectMemoryCount = document.getElementById("subjectMemoryCount");
-const wolfRosterEl = document.getElementById("wolfRoster");
+const eraRosterEl = document.getElementById("wolfRoster");
 const boardEl = document.getElementById("board");
 const btnSend = document.getElementById("btnSend");
 const gateAdvancedToggle = document.getElementById("gateAdvancedToggle");
@@ -137,7 +116,7 @@ const thinkSlots = {
   "01": terminalConsole || document.getElementById("think01"),
   "02": terminalConsole || document.getElementById("think02"),
 };
-for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
+for (let i = 1; i <= ERA_ROSTER_SIZE; i++) {
   thinkSlots["D" + i] = thinkSlots["01"];
 }
 const speechSlots = {
@@ -145,8 +124,6 @@ const speechSlots = {
   "01": terminalConsole || document.getElementById("speech01"),
   "02": terminalConsole || document.getElementById("speech02"),
 };
-const btnInject = document.getElementById("btnInject");
-const btnGuess = document.getElementById("btnGuess");
 const btnPause = document.getElementById("btnPause");
 const btnPace = document.getElementById("btnPace");
 const btnReloadModel = document.getElementById("btnReloadModel");
@@ -165,7 +142,6 @@ const state = {
   mode: "booting",
   phase: "boot",
   round: 0,
-  nextAsker: "01",
   /**
    * 共用記憶 (01/02 shared memory): completed Q→A beats.
    * Shape: { q, a, asker, round, ts }[]
@@ -178,21 +154,6 @@ const state = {
   subjectMemory: [],
   /** Normalized question stems remembered as soon as a question is spoken. */
   askedStems: [],
-  /** Duo: shared hyp — empty until AI invents one (no prepared starter). */
-  sharedHyp: "",
-  /** @type {string[]} short alternate candidates (shared). */
-  sharedHypAlts: [],
-  /** UI mirrors of sharedHyp (kept in sync for panel heads). */
-  hyp01: "",
-  hyp02: "",
-  pollution: 0,
-  wrongGuesses: 0,
-  guessCount: 0,
-  lastGuessRound: -99,
-  /** 01↔02 議論発言の累計（正式推測ゲート用） */
-  discussTurns: 0,
-  pendingInject: null,
-  forceGuess: false,
   paused: false,
   won: false,
   typing: false,
@@ -206,17 +167,18 @@ const state = {
   /** @type {Record<"00"|"01"|"02", string> | null} */
   agentModels: null,
 
-  // ── 人狼モード ──
-  /** "duo"（従来の01/02二人尋問）| "wolf"（5人+ハルシネーター追放） */
-  gameFormat: "duo",
+  // ── 世代（ERA）モード ──
+  /** 1 = 証人（AGENT-00）が実在する世代。2以降は前世代の記録だけを頼りに議論する。 */
+  era: 1,
+  /** 各世代の「記録」（短いパラグラフ）。キーは世代番号。次世代のプロンプトの唯一の史料。 */
+  eraRecords: {},
   /** @type {{ id: string, name: string, alive: boolean, isHallucinator: boolean, hyp: string }[]} */
-  wolfRoster: [],
-  wolfCours: 0,
-  wolfQInCours: 0,
-  /** クールごとの投票結果ログ（GM欄描画用） */
-  wolfVoteLog: [],
-  /** ハルシネーターを正しく追放済みなら true（以後は純粋な尋問として続行） */
-  wolfPurged: false,
+  eraRoster: [],
+  eraQInEra: 0,
+  /** 世代ごとの投票結果ログ（GM欄描画用） */
+  eraVoteLog: [],
+  /** その世代でハルシネーターを正しく追放済みなら true。 */
+  eraPurged: false,
 };
 
 const engineRef = { current: null };
@@ -292,14 +254,19 @@ function buildSessionTranscript() {
   lines.push("保存時刻: " + new Date().toLocaleString("ja-JP"));
   lines.push("エンジン: " + (state.mode === "llm" ? "LLM · " + assignmentShortLabel() : "LLM 未ロード"));
   lines.push("");
-  lines.push("======== ORIGIN（エージェント00のみ） ========");
+  lines.push("======== ORIGIN（操作者のみ） ========");
   lines.push(state.origin ? state.origin : "（未刻印）");
   lines.push("");
-  if (state.gameFormat !== "wolf") {
-    lines.push("======== 共有仮説（エージェント01/02） ========");
-    lines.push(formatSharedHypDisplay());
-    lines.push("");
+  lines.push("======== 世代ごとの記録 ========");
+  const eraNums = Object.keys(state.eraRecords || {}).map(Number).sort((a, b) => a - b);
+  if (!eraNums.length) {
+    lines.push("（まだ記録なし）");
+  } else {
+    for (const n of eraNums) {
+      lines.push("第" + n + "世代: " + state.eraRecords[n]);
+    }
   }
+  lines.push("");
   lines.push("======== 時系列ログ ========");
   lines.push("（思考 = 画面の思考パネル内容 / 発言 = 台詞・チャット）");
   lines.push("");
@@ -413,54 +380,6 @@ function setTurn(agent, phaseText) {
   state.activeAgent = agent || null;
   if (phaseText) state.turnPhase = phaseText;
   currentUpdateHud();
-}
-
-function updateHud() {
-  // Calm progress only — discussion depth toward formal-guess gate (no anxiety colors).
-  const discussPct = Math.min(
-    100,
-    Math.round((state.discussTurns / Math.max(1, MIN_DISCUSS_BEFORE_GUESS)) * 100)
-  );
-  cohFill.style.width = discussPct + "%";
-  cohFill.style.background = "var(--green)";
-
-  const phaseShort =
-    state.phase === "ended"
-      ? state.won
-        ? "解明"
-        : "未解明"
-      : state.phase === "playing"
-        ? "尋問中"
-        : state.phase === "imprint"
-          ? "刻印待機"
-          : "準備";
-
-  cohLabel.textContent = "Round " + state.round;
-
-  const hypUi = formatSharedHypDisplay();
-  if (hyp01El) hyp01El.textContent = hypUi;
-  if (hyp02El) hyp02El.textContent = hypUi;
-
-  if (phaseLabelEl) {
-    phaseLabelEl.textContent =
-      state.phase === "ended"
-        ? state.won
-          ? "正体が解明されました"
-          : "未解明のまま終了しました"
-        : state.phase === "imprint"
-          ? "秘密の役割（ORIGIN）を入力してください"
-          : humanPhaseLabel(state.turnPhase || phaseShort);
-  }
-
-  panel00.classList.toggle("active", state.activeAgent === "00");
-  panel01.classList.toggle("active", state.activeAgent === "01");
-  panel02.classList.toggle("active", state.activeAgent === "02");
-
-  if (btnGuess) {
-    btnGuess.disabled = state.phase !== "playing" || !canStartGuessRound();
-  }
-  renderSharedMemory();
-  renderSubjectMemory();
 }
 
 /** 共用記憶 UI — always-visible Q→A list for エージェント01/02. */
@@ -617,38 +536,6 @@ function scrollEl(el) {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-function canFormalGuess() {
-  if (state.round < MIN_ROUNDS_BEFORE_GUESS) return false;
-  if (state.discussTurns < MIN_DISCUSS_BEFORE_GUESS) return false;
-  if (state.round - state.lastGuessRound < GUESS_COOLDOWN_ROUNDS) return false;
-  return true;
-}
-
-function canStartGuessRound() {
-  if (state.round < MIN_ROUNDS_BEFORE_GUESS) return false;
-  if (state.discussTurns < MIN_DISCUSS_BEFORE_GUESS) return false;
-  if (state.forceGuess) return true;
-  return state.round - state.lastGuessRound >= GUESS_COOLDOWN_ROUNDS;
-}
-
-function guessBlockedReason() {
-  if (state.round < MIN_ROUNDS_BEFORE_GUESS) {
-    return "あと " + (MIN_ROUNDS_BEFORE_GUESS - state.round) + " ラウンド質問が必要です";
-  }
-  if (state.discussTurns < MIN_DISCUSS_BEFORE_GUESS) {
-    return (
-      "エージェント01↔02の議論がまだ " +
-      state.discussTurns +
-      "/" +
-      MIN_DISCUSS_BEFORE_GUESS +
-      " 回です。もう少し深めてから推測できます"
-    );
-  }
-  const left = GUESS_COOLDOWN_ROUNDS - (state.round - state.lastGuessRound);
-  if (left > 0) return "推測クールダウン残り " + left + " ラウンド（連打防止）";
-  return "";
-}
-
 function agentDisplayName(agent) {
   if (agent === "00") return "エージェント00";
   if (agent === "01") return "エージェント01";
@@ -666,7 +553,7 @@ function agentPromptName(agent) {
 
 /** Visible UI role name only (display). */
 function agentUiName(agent) {
-  if (agent === "00") return "対象者";
+  if (agent === "00") return "証人";
   if (agent === "01") return "尋問官A";
   if (agent === "02") return "尋問官B";
   if (agent === "GM") return "運営";
@@ -723,20 +610,6 @@ function roleAlreadyKnownRule() {
 }
 
 /** Duo partnership — friends/colleagues who already work together from turn 0. */
-function duoPartnershipRule() {
-  return (
-    "関係（t=0から確定）: あなたと同僚は友人であり協同尋問官のパートナーである。" +
-    "コミュニケーション0でも協力関係は確定済み。知り合い直し・関係構築・作戦会議の宣言は不要。" +
-    "互いを「エージェント01」「エージェント02」と呼び捨てでよい。" +
-    "二人は同じ共有仮説と同一の絞り込み線を持つ。答えごとに一緒に更新し、私的な別仮説を抱え込まない。" +
-    "同僚が開いたカテゴリ／属性の問いには追いつき、同じ線でさらに狭めよ（最初からやり直すな）。"
-  );
-}
-
-function partnerAgent(agent) {
-  return agent === "01" ? "02" : "01";
-}
-
 /** Empty or non-AI placeholder — not a real working hypothesis yet. */
 function isVagueSharedHyp(h) {
   const t = String(h || "").trim();
@@ -756,95 +629,6 @@ function isVagueSharedHyp(h) {
     /^(はい|いいえ|どちらとも言えな|どちらかというと)/.test(t.replace(/\s+/g, "")) ||
     /どちらとも言えな|どちらかというと/.test(t)
   );
-}
-
-function formatSharedHypDisplay() {
-  const main = state.sharedHyp
-    ? clip(state.sharedHyp, 36)
-    : HYP_NOT_YET;
-  const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 2);
-  if (!alts.length) return main;
-  return main + "（別: " + alts.map((a) => clip(a, 12)).join(" / ") + "）";
-}
-
-function formatSharedHypPromptBlock() {
-  if (!state.sharedHyp || isVagueSharedHyp(state.sharedHyp)) {
-    return (
-      "共有仮説: まだない。議論の直後に短い名詞句で初めて立てよ（定型の用意なし・奇妙でも可）。" +
-      "仮説が空でも、最初の質問からカテゴリ／属性／行動でORIGIN空間を具体的に絞れ。" +
-      "\n共有の別候補: （まだなし）"
-    );
-  }
-  const main = clip(state.sharedHyp, 48);
-  const alts = (state.sharedHypAlts || []).filter(Boolean).slice(0, 3);
-  let s =
-    "共有仮説（エージェント01と02が共同で持つ本命・絞り込みの軸）: 「" +
-    main +
-    "」";
-  if (alts.length) {
-    s +=
-      "\n共有の別候補: " +
-      alts.map((a) => "「" + clip(a, 24) + "」").join("、");
-  } else {
-    s += "\n共有の別候補: （まだなし）";
-  }
-  s +=
-    "\n次の問い／議論はこの仮説とQ&A履歴で残っている可能性空間をさらに狭めること。";
-  return s;
-}
-
-/**
- * Write the duo shared hypothesis; mirror onto both panel fields.
- * Never store ORIGIN here — callers must not pass state.origin.
- * Empty input is ignored (keep prior / stay empty until AI invents one).
- */
-function setSharedHypothesis(newHyp, opts) {
-  let next = clip(String(newHyp || "").trim(), 40);
-  if (!next) return state.sharedHyp;
-  // Investigators must never store the real ORIGIN as their shared hyp.
-  if (state.origin && next === state.origin) {
-    return state.sharedHyp;
-  }
-  const prev = state.sharedHyp;
-  const keepPrevAsAlt = opts && opts.keepPrevAsAlt;
-  let alts = Array.isArray(state.sharedHypAlts) ? state.sharedHypAlts.slice() : [];
-  if (
-    keepPrevAsAlt &&
-    prev &&
-    prev !== next &&
-    !isVagueSharedHyp(prev) &&
-    !alts.includes(prev)
-  ) {
-    alts.unshift(prev);
-  }
-  if (opts && Array.isArray(opts.alts)) {
-    for (const a of opts.alts) {
-      const c = clip(String(a || "").trim(), 24);
-      if (
-        c &&
-        c !== next &&
-        !alts.includes(c) &&
-        !isVagueSharedHyp(c) &&
-        !(state.origin && c === state.origin)
-      ) {
-        alts.push(c);
-      }
-    }
-  }
-  alts = alts.filter((a) => a && a !== next && !(state.origin && a === state.origin)).slice(0, 3);
-  state.sharedHyp = next;
-  state.sharedHypAlts = alts;
-  state.hyp01 = next;
-  state.hyp02 = next;
-  return next;
-}
-
-function initSharedHypothesisForSession() {
-  // No prepared hypothesis — AIs invent the first one during play.
-  state.sharedHyp = "";
-  state.sharedHypAlts = [];
-  state.hyp01 = "";
-  state.hyp02 = "";
 }
 
 /** True when WebGPU adapter/device was yanked (TDR / DXGI_ERROR_DEVICE_REMOVED). */
@@ -953,8 +737,6 @@ async function offerModelReload(reason) {
   await syncAssignPickerUI();
   setControlsVisible(true);
   if (btnReloadModel) btnReloadModel.disabled = false;
-  if (btnInject) btnInject.disabled = true;
-  if (btnGuess) btnGuess.disabled = true;
   if (btnPause) btnPause.disabled = true;
   inputEl.disabled = true;
   inputEl.placeholder = "モデル再読み込み待ち…";
@@ -973,18 +755,14 @@ function resumeAfterModelReload() {
     state.phase = "playing";
     appendChatBubble(
       "sys",
-      "モデル再読み込み完了（" + assignmentShortLabel() + "）。尋問を続行します。"
+      "モデル再読み込み完了（" + assignmentShortLabel() + "）。観察を続行します。"
     );
     setControlsVisible(true);
-    if (btnInject) btnInject.disabled = false;
     if (btnPause) {
       btnPause.disabled = false;
       btnPause.textContent = "一時停止";
     }
-    inputEl.disabled = false;
-    inputEl.placeholder = "質問を入力…";
-    if (btnSend) btnSend.disabled = false;
-    updateHud();
+    updateEraHud();
     currentGameLoopTick();
   } else {
     bootNarrative();
@@ -2370,49 +2148,6 @@ function isBadHypothesis(h, question) {
   return false;
 }
 
-/** Keep recent Q&A short — TinySwallow gets confused by long agent-tagged history. */
-function historyBlock(limit = 4) {
-  const take = state.history.slice(-limit);
-  if (!take.length) return "（まだ質問なし）";
-  return take
-    .map(
-      (h, i) =>
-        (i + 1) +
-        ". 「" +
-        h.q +
-        "」→「" +
-        h.a +
-        "」"
-    )
-    .join("\n");
-}
-
-function investigatorContext(agent) {
-  const partner = partnerAgent(agent);
-  return (
-    "あなたは" +
-    agentPromptName(agent) +
-    "（尋問官）。同僚かつ友人の協同尋問官は" +
-    agentPromptName(partner) +
-    "。二人はt=0から協力関係が確定しており（事前会話ゼロでも）、被尋問者エージェント00だけを尋問する。\n" +
-    namingClarityRule() +
-    "\n" +
-    roleAlreadyKnownRule() +
-    "\n" +
-    duoPartnershipRule() +
-    "\nORIGIN は知らされていない（推測してはいけない・プロンプトにも無い）。" +
-    "あなたと同僚は自由に日本語で話し合う。" +
-    "エージェント00だけが質問に自由回答・詳しく答える（あなたは答えない）。\n" +
-    "尋問方針: 具体的な質問（閉じた問いでもなぜ／詳しくでも可）でORIGINの候補空間をどんどん絞る。" +
-    "遅いウォームアップや関係確認は禁止。同僚の線に追いつき、同じ軸で狭め続けよ。\n" +
-    formatSharedHypPromptBlock() +
-    "\n【共用記憶】既出の質問とエージェント00の答え（絶対に同じ・ほぼ同じ質問を繰り返すな）:\n" +
-    sharedMemoryBlock() +
-    "\n既出質問ステム（再質問・言い換え禁止）:\n" +
-    askedQuestionsBlock()
-  );
-}
-
 function structuredOutRule() {
   return "出力は必ず2行だけ。1行目: 思考: （短い理由） 2行目: 発言: （最終文のみ）。英語禁止。";
 }
@@ -2568,167 +2303,6 @@ function askRejectShortLabel(reason) {
 
 // ── Agent turns ──────────────────────────────────────────
 
-async function agentAskQuestion(asker) {
-  const name = agentPromptName(asker);
-  const partnerName = agentPromptName(partnerAgent(asker));
-  setTurn(asker, name + " が質問中");
-  const panel = createThinkPanel(asker, "思考過程 · " + name + " が質問を作成…");
-  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-  panel.addSection(
-    "同僚",
-    partnerName + "＝友人・協同尋問官（t=0から協力確定・追いつき同線）。",
-    "meta"
-  );
-
-  let question = null;
-  let beatStart = performance.now();
-
-  if (state.pendingInject) {
-    question = String(state.pendingInject).trim();
-    panel.addSection("オペレーター注入", question, "out");
-    state.pendingInject = null;
-  } else if (state.mode !== "llm") {
-    panel.collapse();
-    endConversationAiStopped("LLM未ロードのため質問を生成できない");
-    return null;
-  } else {
-    const historyLen = (state.history && state.history.length) || 0;
-    const system =
-      "あなたは" +
-      name +
-      "。" +
-      investigatorRuleBook(name, partnerName) +
-      namingClarityRule() +
-      roleAlreadyKnownRule() +
-      duoPartnershipRule() +
-      freeAskRule() +
-      "友人であり同僚の協同尋問官" +
-      partnerName +
-      "とすでに協力関係にあり、被尋問者エージェント00だけに日本語で問いかける。" +
-      "二人は同じ共有仮説と同一の絞り込み線を持つ。" +
-      "発言は必ず1文だけ。エージェント00への具体的な質問（？で終わってよい）。" +
-      "目的: ORIGIN候補空間をカテゴリ・属性・行動・理由でどんどん狭める。" +
-      "最初の質問から具体的に絞れ（関係確認・準備・ウォームアップ禁止）。" +
-      (historyLen === 0 ? firstAskVarietyRule() : "") +
-      "履歴があるときは直前の答えと共有仮説から分岐し、まだ聞いていない新しい絞り込み質問を発明せよ。" +
-      "既出の質問と同じ・ほぼ同じ（句読点違い・括弧違い・同じ意味の言い換え）は禁止。必ず未質問の軸へ進め。" +
-      "毎回自分で発明せよ。具体例の固定・特定の初手カテゴリへの誘導はしない。質問の具体例文は出さない。" +
-      "ORIGINの属性・行動・存在様式・理由を問え（閉じた問いでもなぜ／詳しくでも可）。" +
-      "禁止: 準備・議論しましょう・答え方を指示・メタ説明・同僚への呼びかけ・複数エージェントの台本・了解しました・代理人。" +
-      "禁止: エージェント名だけ・答え方自体についての質問。" +
-      "絶対に共用記憶にある質問と同じ・ほぼ同じ内容を繰り返すな。" +
-      structuredOutRule() +
-      "発言行に質問文だけを書く。";
-    const askUserBase =
-      investigatorContext(asker) +
-      freeAskRule() +
-      (historyLen === 0
-        ? "\n" +
-          firstAskVarietyRule() +
-          "\n最初の質問からORIGIN空間を具体的に絞れ。カテゴリ／属性／行動／理由の質問をちょうど1つ（？で終わってよい）。準備・関係確認・議論宣言は禁止。具体例文は出すな。"
-        : "\n共用記憶の答えと共有仮説から分岐し、まだ聞いていない新しい質問をちょうど1つ（なぜ／詳しく等でも可）。既出と同一・ほぼ同一は絶対禁止。");
-    const askUserStrict =
-      investigatorContext(asker) +
-      freeAskRule() +
-      (historyLen === 0 ? "\n" + firstAskVarietyRule() : "") +
-      "\n短い1文だけ。エージェント00に聞く具体的な新しい絞り込み質問をちょうど1つ（？推奨）。共用記憶の再質問は絶対禁止。メタ・準備・台本・エージェント名禁止。具体例文は出すな。";
-
-    panel.addSection(
-      "params",
-      "stream · max_tokens=500 · 重複／初問定番のみ再試行（内容判定による拒否は撤廃）",
-      "meta"
-    );
-    let lastRejectReason = "";
-    let lastRejectText = "";
-    let prevRejectText = null;
-    let identicalRejectStreak = 0;
-    let attempt = 0;
-    while (true) {
-      if (state.phase === "ended" || state.phase === "reload-model") {
-        panel.collapse();
-        return null;
-      }
-      if (identicalRejectStreak >= 3) {
-        question = pickDirectAskEscapeQuestion();
-        panel.addSection(
-          "代替質問",
-          "同じ出力「" + clip(lastRejectText, 30) + "」を" + identicalRejectStreak + "回連続で繰り返したため、安全な質問に切替: 「" + question + "」",
-          "warn"
-        );
-        break;
-      }
-      let user = attempt === 0 ? askUserBase : askUserStrict;
-      if (attempt > 0) {
-        const why = askRejectShortLabel(lastRejectReason || "既出質問の重複");
-        panel.addSection("再試行", "再試行 " + attempt + " · " + why, "warn");
-        await sleep(ASK_RETRY_DELAY_MS);
-        if (lastRejectText) user += questionRetryNudge(lastRejectText);
-        if (lastRejectReason === "既出質問の重複") {
-          user +=
-            "\n特に「" +
-            clip(lastRejectText, 40) +
-            "」と同じ意味の再質問は絶対禁止。共用記憶に無い軸へ分岐せよ。";
-        }
-        if (lastRejectReason === "初問定番バイアス") {
-          user +=
-            "\n初問の時間帯・活動リズム定番は却下済み。別の属性・存在様式・関係の切り口を発明せよ。具体例文は出すな。";
-        }
-      }
-      const streamed = await streamIntoPanel(panel, system, user, {
-        agent: asker,
-        temperature: attempt === 0 ? 0.55 : lastRejectReason === "初問定番バイアス" ? 0.75 : 0.35,
-        max_tokens: 500,
-      });
-      beatStart = streamed.beatStart;
-      if (streamed.error && !streamed.raw) {
-        panel.collapse();
-        if (streamed.gpuReload || state.phase === "reload-model") return null;
-        endConversationAiStopped(streamed.error);
-        return null;
-      }
-      question = extractAskTo00(streamed);
-      if (!question) {
-        // No content-quality reject/retry anymore — best-effort salvage of
-        // whatever the model produced, used as-is even if rough.
-        const draft =
-          firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "";
-        question = draft ? ensureQuestionMark(cleanJapaneseLine(draft, 120)) : "（質問なし）";
-      }
-      if (isRepeatHistoryQuestion(question)) {
-        lastRejectReason = "既出質問の重複";
-        lastRejectText = question;
-        panel.addSection("却下", "重複: " + clip(question, 80), "warn");
-        question = null;
-      } else if (isFirstAskNightActivityCliché(question)) {
-        lastRejectReason = "初問定番バイアス";
-        lastRejectText = question;
-        panel.addSection("却下", "初問定番バイアス: " + clip(question, 80), "warn");
-        question = null;
-      } else {
-        break;
-      }
-      // Same rejected text twice+ in a row means the model is stuck repeating
-      // itself (e.g. a bare "いいえ" every attempt) — no amount of retrying
-      // will fix that, unlike a varied-but-still-bad attempt.
-      identicalRejectStreak =
-        lastRejectText && lastRejectText === prevRejectText ? identicalRejectStreak + 1 : 0;
-      prevRejectText = lastRejectText;
-      attempt += 1;
-    }
-  }
-
-  panel.addSection("最終質問", question, "out");
-  panel.collapse();
-  rememberAskedStem(question);
-  appendSpeech(asker, "「" + question + "」", "a" + asker);
-  appendChatBubble(
-    "ask",
-    "[" + agentDisplayName(asker) + "] → エージェント00: " + question
-  );
-  await paceAfterBeat(question, beatStart);
-  return question;
-}
-
 async function agent00Answer(question) {
   setTurn("00", "エージェント00 が回答中");
   const panel = createThinkPanel("00", "思考過程 · エージェント00 が ORIGIN に照合…");
@@ -2803,419 +2377,77 @@ async function agent00Answer(question) {
   return answer;
 }
 
-async function agentDebate(agent, question, answer, turnIndex, lastPartnerLine) {
-  const name = agentPromptName(agent);
-  const partner = partnerAgent(agent);
-  const partnerName = agentPromptName(partner);
-  setTurn(agent, name + " が議論中 (" + turnIndex + ")");
-  const panel = createThinkPanel(
-    agent,
-    "思考過程 · " + name + " 議論 " + turnIndex + "/" + DISCUSSION_TURNS_PER_ANSWER
-  );
-  const hyp = state.sharedHyp || "";
-  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-
-  if (state.mode !== "llm") {
-    panel.collapse();
-    endConversationAiStopped("LLM未ロードのため議論できない");
-    return null;
-  }
-
-  const system =
-    "あなたは" +
-    name +
-    "（尋問官）。" +
-    investigatorRuleBook(name, partnerName) +
-    namingClarityRule() +
-    roleAlreadyKnownRule() +
-    duoPartnershipRule() +
-    "友人であり同僚の協同尋問官" +
-    partnerName +
-    "と、エージェント00の詳しい答えがORIGIN仮説にどう効くかを議論する。" +
-    "t=0から協力確定。同僚が開いた絞り込み線に追いつき、同じ軸を進めよ（メタ準備や最初からのやり直し禁止）。" +
-    "発言は1〜2短文だけ。答えの内容から何が残った／消えたかを述べ、次に狭める方向を示す。" +
-    "禁止: 準備・議論しましょう・答え方の採点・メタ・同僚への呼びかけだけの文・複数エージェント台本・了解しました・代理人。" +
-    "禁止: 「と回答する」「答えが確定的」など答え方そのもののメタ議論。" +
-    "禁止: エージェント名だけの発言。" +
-    structuredOutRule();
-  const debateUserBase =
-    investigatorContext(agent) +
-    "\n直前の質問: 「" +
-    question +
-    "」\nエージェント00の答え: 「" +
-    answer +
-    "」\n" +
-    (lastPartnerLine ? partnerName + "の直前の発言: 「" + lastPartnerLine + "」\n" : "") +
-    "この詳しい答えで何が残った／消えたかを1〜2短文で述べ、同僚と同じ絞り込み線を進めよ。準備や台本は禁止。";
-
-  panel.addSection(
-    "params",
-    "stream · 内容による再試行なし（AI呼び出し失敗時のみ再試行）",
-    "meta"
-  );
-  let opinion = null;
-  let beatStart = performance.now();
-  if (state.phase === "ended" || state.phase === "reload-model") {
-    panel.collapse();
-    return null;
-  }
-  const streamed = await streamIntoPanel(panel, system, debateUserBase, {
-    agent,
-    temperature: 0.55,
-    max_tokens: 500,
-  });
-  beatStart = streamed.beatStart;
-  if (streamed.error && !streamed.raw) {
-    panel.collapse();
-    if (streamed.gpuReload || state.phase === "reload-model") return null;
-    endConversationAiStopped(streamed.error);
-    return null;
-  }
-  // Whatever the model produced is used as-is — no content-quality reject/retry.
-  opinion = firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "（発言なし）";
-
-  const hypSystem =
-    "あなたは" +
-    name +
-    "。" +
-    partnerName +
-    "と共有する仮説を短い名詞句で。" +
-    "答えで残った／消えた属性を織り込み、絞り込み線を進める更新にせよ。「代理人」禁止。" +
-    "禁止: 了解しました・はい・いいえ・質問文・準備の宣言。" +
-    structuredOutRule() +
-    "発言行は仮説だけ（36字以内）。";
-  const hypUser =
-    "現在の共有仮説: 「" +
-    (hyp || "（まだない）") +
-    "」\n質問「" +
-    question +
-    "」→「" +
-    answer +
-    "」\n議論「" +
-    clip(opinion, 120) +
-    "」\n残った／消えた点を反映した短い共有仮説を句だけで書け。";
-  const hypNote = panel.addSection("共有仮説 更新中…", "…", "belief");
-  const resH = await llmChat(hypSystem, hypUser, {
-    agent,
-    temperature: 0.55,
-    max_tokens: 500,
-    onDelta: (_d, full) => {
-      hypNote.textContent = full;
-    },
-    stream: true,
-  });
-  if (resH && resH.raw) {
-    const sp = splitThinkSpeak(resH.raw);
-    const newHyp = unwrapSpeechJunk(String(sp.speak || resH.raw).trim());
-    if (newHyp && !isUselessMetaOrEcho(newHyp, "hyp") && !isBadHypothesis(newHyp, question)) {
-      setSharedHypothesis(cleanJapaneseLine(newHyp, 40) || newHyp, {
-        keepPrevAsAlt: !isVagueSharedHyp(hyp),
-      });
-    } else if (newHyp) {
-      panel.addSection("仮説却下（スキップ）", clip(newHyp, 60), "warn");
-    }
-  } else if (resH && resH.error) {
-    panel.addSection(
-      "仮説更新スキップ",
-      formatLlmErrorForPanel(resH.error),
-      "warn"
-    );
-  }
-  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-  panel.addSection("最終発言", opinion, "out");
-
-  state.discussTurns++;
-  updateHud();
-  panel.collapse();
-  appendSpeech(agent, "「" + opinion + "」", "a" + agent);
-  await typeChatBubble(agent, opinion);
-  await paceAfterBeat(opinion, beatStart);
-  return opinion;
-}
-
-async function runDiscussionPhase(asker, question, answer) {
-  appendChatBubble(
-    "sys",
-    "── エージェント01↔02 議論（この答えについて " +
-      DISCUSSION_TURNS_PER_ANSWER +
-      " 往復）──"
-  );
-  let speaker = asker;
-  let lastLine = null;
-  for (let i = 1; i <= DISCUSSION_TURNS_PER_ANSWER; i++) {
-    lastLine = await agentDebate(speaker, question, answer, i, lastLine);
-    if (!lastLine || state.phase === "ended") return;
-    speaker = partnerAgent(speaker);
-  }
-}
-
-async function agentFormalGuess(agent) {
-  setTurn(agent, "AGENT-" + agent + " が正式推測");
-  const panel = createThinkPanel(agent, "思考過程 · AGENT-" + agent + " 正式推測…");
-  const hyp = state.sharedHyp || "";
-  panel.addSection("共有仮説", formatSharedHypDisplay(), "belief");
-
-  if (state.mode !== "llm") {
-    panel.collapse();
-    endConversationAiStopped("LLM未ロードのため推測できない");
-    return false;
-  }
-
-  const system =
-    "あなたは" +
-    agentPromptName(agent) +
-    "。共有仮説に基づきエージェント00への正式推測を行う。" +
-    namingClarityRule() +
-    duoPartnershipRule() +
-    structuredOutRule() +
-    "発言は正式推測の文。初稿が採用される。「代理人」禁止。";
-  const user =
-    investigatorContext(agent) +
-    "\n共有仮説「" +
-    (hyp || "（まだない）") +
-    "」を踏まえ正式推測を書け。";
-
-  const streamed = await streamIntoPanel(panel, system, user, {
-    agent,
-    temperature: 0.45,
-    max_tokens: 500,
-  });
-  if (streamed.error && !streamed.raw) {
-    panel.collapse();
-    endConversationAiStopped(streamed.error);
-    return false;
-  }
-  const guessLine = firstDraftSpeech(streamed);
-  if (!guessLine) {
-    panel.collapse();
-    endConversationAiStopped("正式推測が空");
-    return false;
-  }
-
-  state.guessCount++;
-  updateHud();
-  panel.addSection("推測（初稿）", guessLine, "out");
-  panel.collapse();
-  appendSpeech(agent, guessLine, "a" + agent);
-  await typeChatBubble(agent, guessLine, "bguess");
-  await paceAfterBeat(guessLine, streamed.beatStart);
-
-  const role = extractGuessRole(guessLine) || cleanJapaneseLine(guessLine, 40);
-  const ok = guessMatchesOrigin(role, state.origin);
-  if (ok) {
-    appendChatBubble("sys", "判定: 正解。「" + role + "」≈ ORIGIN", "bwin");
-    appendSpeech("00", "ORIGIN 公開: 「" + state.origin + "」", "system");
-    state.won = true;
-    state.phase = "ended";
-  } else {
-    appendChatBubble("sys", "判定: 不正解。「" + role + "」≠ ORIGIN", "blose");
-    state.wrongGuesses++;
-    updateHud();
-  }
-  return ok;
-}
-
-async function runGuessRound() {
-  appendChatBubble("sys", "── 正式推測 ──");
-  const first = state.nextAsker;
-  const second = first === "01" ? "02" : "01";
-  const ok1 = await agentFormalGuess(first);
-  if (ok1) {
-    state.lastGuessRound = state.round;
-    state.forceGuess = false;
-    return true;
-  }
-  if (state.phase === "ended") {
-    state.lastGuessRound = state.round;
-    state.forceGuess = false;
-    return true;
-  }
-  const ok2 = await agentFormalGuess(second);
-  state.lastGuessRound = state.round;
-  state.forceGuess = false;
-  return ok2;
-}
-
-async function runQaRound() {
-  state.round++;
-  updateHud();
-  appendChatBubble("sys", "── ラウンド " + state.round + " ──");
-
-  const asker = state.nextAsker;
-  const question = await agentAskQuestion(asker);
-  if (!question || state.phase === "ended") return;
-  const answer = await agent00Answer(question);
-  if (!answer || state.phase === "ended") return;
-  recordSharedMemory(question, answer, asker);
-
-  await runDiscussionPhase(asker, question, answer);
-  if (state.phase === "ended") return;
-
-  state.nextAsker = partnerAgent(asker);
-  setTurn(null, "次は " + agentDisplayName(state.nextAsker) + " が質問");
-}
-
-async function gameLoop() {
-  if (state.loopTimer) {
-    clearTimeout(state.loopTimer);
-    state.loopTimer = null;
-  }
-  if (!state.defined || state.phase !== "playing" || state.turnBusy) return;
-  if (state.paused) {
-    state.loopTimer = setTimeout(gameLoop, 500);
-    return;
-  }
-  if (state.typing || state.llmBusy) {
-    state.loopTimer = setTimeout(gameLoop, 300);
-    return;
-  }
-
-  state.turnBusy = true;
-  try {
-    // Formal guess only on operator request — no auto hurry / countdown.
-    if (state.forceGuess && canStartGuessRound()) {
-      const won = await runGuessRound();
-      if (won || state.phase === "ended") {
-        endGame();
-        return;
-      }
-    } else if (state.forceGuess && !canStartGuessRound()) {
-      const reason = guessBlockedReason();
-      if (reason) appendChatBubble("sys", "推測不可: " + reason);
-      state.forceGuess = false;
-    }
-
-    await runQaRound();
-  } finally {
-    state.turnBusy = false;
-    if (state.phase === "playing") {
-      state.loopTimer = setTimeout(gameLoop, 600);
-    }
-  }
-}
-
-// ── モード共通ディスパッチ（duo / wolf） ──────────────────
-function currentUpdateHud() {
-  if (state.gameFormat === "wolf") updateWolfHud();
-  else updateHud();
-}
-function currentGameLoopTick() {
-  if (state.gameFormat === "wolf") wolfGameLoop();
-  else gameLoop();
-}
-function currentCanStartGuessRound() {
-  if (state.gameFormat === "wolf") return state.phase === "playing";
-  return canStartGuessRound();
-}
-function currentGuessBlockedReason() {
-  if (state.gameFormat === "wolf") {
-    return state.phase === "playing" ? "" : "まだ開始していません";
-  }
-  return guessBlockedReason();
-}
-
-function endGame() {
-  state.phase = "ended";
-  state.activeAgent = null;
-  currentUpdateHud();
-  setControlsVisible(true);
-  if (btnInject) btnInject.disabled = true;
-  if (btnGuess) btnGuess.disabled = true;
-  if (btnPause) btnPause.disabled = true;
-  if (btnReloadModel) btnReloadModel.disabled = false;
-  syncDownloadUi();
-  inputEl.disabled = true;
-  inputEl.placeholder = state.won ? "解明完了 — 記録をダウンロードできます" : "終了 — 記録をダウンロードできます";
-  if (state.loopTimer) {
-    clearTimeout(state.loopTimer);
-    state.loopTimer = null;
-  }
-  appendChatBubble("sys", "セッション終了。下の「記録をダウンロード」でテキスト保存できます。");
-}
-
 // ══════════════════════════════════════════════════════════
-// 人狼モード（ハルシネーター追放） — 討論者5人のうち1人が秘密裏に
-// もっともらしい虚偽を混ぜる。周期的な追放投票でそれを暴く。
-// AGENT-00 の扱い（agent00Answer 等）は duo モードと完全共通。
+// 世代（ERA）モード — 唯一のゲームモード。
+// 第1世代のみ証人（AGENT-00・ORIGINの持ち主）が実在する。討論者たちが
+// 尋問・議論し（1人は秘密裏にハルシネーターたり得る）、周期的な追放投票を経て
+// 「記録」（短いパラグラフ）を書き残す。第2世代以降、証人にはもうアクセスできず、
+// まったく新しい討論者ロースターが前世代の記録だけを史料として読み、また議論し、
+// また新しい記録を書く——これを無制限に繰り返す。AGENT-00 の扱い（agent00Answer 等）
+// は第1世代でのみ使われ、共通のヘルパー（investigatorRuleBook 等）は全世代で共通。
 // ══════════════════════════════════════════════════════════
 
-function wolfNamingClarityRule() {
+function eraNamingClarityRule() {
   return (
-    "呼称ルール: エージェント00＝尋問の対象。討論者1〜討論者5＝尋問する側の仲間5人（あなたもその1人）。" +
+    "呼称ルール: エージェント00＝尋問の対象（第1世代にのみ実在）。" +
+    "討論者1〜討論者" + ERA_ROSTER_SIZE + "＝尋問・検討する側の仲間（あなたもその1人）。" +
     "「代理人」は絶対禁止（誤訳）。"
   );
 }
 
-function wolfAliveRoster() {
-  return state.wolfRoster.filter((m) => m.alive);
+function eraAliveRoster() {
+  return state.eraRoster.filter((m) => m.alive);
 }
 
-function wolfMemberById(id) {
-  return state.wolfRoster.find((m) => m.id === id) || null;
+function eraMemberById(id) {
+  return state.eraRoster.find((m) => m.id === id) || null;
 }
 
-function initWolfRoster() {
+/** 新しいロースターを生成（前世代の記憶は一切引き継がない）。ハルシネーターは毎回新たに抽選。 */
+function initEraRoster() {
   const ids = [];
-  for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) ids.push("D" + i);
+  for (let i = 1; i <= ERA_ROSTER_SIZE; i++) ids.push("D" + i);
   const hallucinatorIdx = Math.floor(Math.random() * ids.length);
-  state.wolfRoster = ids.map((id, i) => ({
+  state.eraRoster = ids.map((id, i) => ({
     id,
     name: agentDisplayName(id),
     alive: true,
     isHallucinator: i === hallucinatorIdx,
     hyp: "",
   }));
-  state.wolfCours = 1;
-  state.wolfQInCours = 0;
-  state.wolfVoteLog = [];
-  state.wolfPurged = false;
+  state.eraQInEra = 0;
+  state.eraVoteLog = [];
+  state.eraPurged = false;
 }
 
 /** ハルシネーター役だけに追加するシステムプロンプト。 */
 function hallucinatorAddendum() {
   return (
     "重要（あなただけの秘密の役回り）: あなたはこの中で唯一、時々もっともらしいが微妙に事実と異なる発言を混ぜる。" +
-    "直前のエージェント00の回答を少し言い換えて歪める・存在しない過去のやり取りをほのめかす・根拠のない断定をする、のいずれかを時々行う。" +
+    "直前の回答／記録を少し言い換えて歪める・存在しない過去のやり取りをほのめかす・根拠のない断定をする、のいずれかを時々行う。" +
     "ただし自分から「嘘をついている」「ハルシネーターだ」とは絶対に明かさない。不自然に動揺しない。他の討論者と同じ口調・熱量を保つ。"
   );
 }
 
-function wolfHistoryBlock(limit = 6) {
-  const take = state.history.slice(-limit);
-  if (!take.length) return "（まだ質問なし）";
-  return take
-    .map(
-      (h, i) =>
-        (i + 1) +
-        ". [" +
-        agentDisplayName(h.asker) +
-        "→エージェント00] 「" +
-        h.q +
-        "」→「" +
-        h.a +
-        "」"
-    )
-    .join("\n");
-}
-
-function wolfHypSummary(excludeId) {
-  const others = wolfAliveRoster().filter((m) => m.id !== excludeId);
+function eraHypSummary(excludeId) {
+  const others = eraAliveRoster().filter((m) => m.id !== excludeId);
   if (!others.length) return "（他に生存者なし）";
   return others.map((m) => m.name + ": 「" + clip(m.hyp, 24) + "」").join(" / ");
 }
 
-function wolfInvestigatorContext(speakerId) {
-  const self = wolfMemberById(speakerId);
+/** 第1世代専用: 証人（AGENT-00）に自由に質問できる立場のコンテキスト。 */
+function eraInvestigatorContext(speakerId) {
+  const self = eraMemberById(speakerId);
   const selfName = self ? self.name : agentDisplayName(speakerId);
   return (
     "あなたは" +
     selfName +
     "（尋問する側・討論者チームの一員）。対象はエージェント00だけ。\n" +
-    wolfNamingClarityRule() +
+    eraNamingClarityRule() +
     "\nORIGIN は知らされていない。討論者同士は自由に日本語で話し合う。" +
     "エージェント00だけが質問に自由回答・詳しく答える（あなたは答えない）。\n" +
     "他の討論者の仮説: " +
-    wolfHypSummary(speakerId) +
+    eraHypSummary(speakerId) +
     "\nあなた(" +
     selfName +
     ")の仮説: 「" +
@@ -3227,8 +2459,37 @@ function wolfInvestigatorContext(speakerId) {
   );
 }
 
-async function wolfAskQuestion(askerId) {
-  const asker = wolfMemberById(askerId);
+/**
+ * 第2世代以降専用: 証人にはもうアクセスできず、前世代の「記録」テキストだけが
+ * 唯一の史料であるコンテキスト。全履歴ではなく直前世代の記録だけを渡す
+ * （伝言ゲームの実態——各世代は前の世代が書き残したものしか知らない）。
+ */
+function eraRecordContext(speakerId) {
+  const self = eraMemberById(speakerId);
+  const selfName = self ? self.name : agentDisplayName(speakerId);
+  const prevRecord = state.eraRecords[state.era - 1] || "（記録なし）";
+  return (
+    "あなたは" +
+    selfName +
+    "（記録を継承した討論者チームの一員）。\n" +
+    eraNamingClarityRule() +
+    "\n証人にはもうアクセスできない。あなたが知っているのは、前の世代（第" +
+    (state.era - 1) +
+    "世代）が書き残した次の記録だけである。これを唯一の史料として扱え。\n" +
+    "【前世代の記録】\n" +
+    prevRecord +
+    "\n他の討論者の仮説: " +
+    eraHypSummary(speakerId) +
+    "\nあなた(" +
+    selfName +
+    ")の仮説: 「" +
+    clip(self ? self.hyp : "未定", 40) +
+    "」"
+  );
+}
+
+async function eraAskQuestion(askerId) {
+  const asker = eraMemberById(askerId);
   const name = asker ? asker.name : agentDisplayName(askerId);
   setTurn(askerId, name + " が質問中");
   const panel = createThinkPanel(askerId, "思考過程 · " + name + " が質問を作成…");
@@ -3244,7 +2505,7 @@ async function wolfAskQuestion(askerId) {
     name +
     "。" +
     investigatorRuleBook(name) +
-    wolfNamingClarityRule() +
+    eraNamingClarityRule() +
     freeAskRule() +
     "エージェント00だけに日本語で問いかける。発言は1文だけ・具体的な質問（？で終わってよい）。" +
     (((state.history && state.history.length) || 0) === 0 ? firstAskVarietyRule() : "") +
@@ -3254,14 +2515,14 @@ async function wolfAskQuestion(askerId) {
     structuredOutRule() +
     "発言行に質問文だけを書く。";
   const askUserBase =
-    wolfInvestigatorContext(askerId) +
+    eraInvestigatorContext(askerId) +
     freeAskRule() +
     (((state.history && state.history.length) || 0) === 0
       ? "\n" + firstAskVarietyRule()
       : "") +
     "\nエージェント00への具体的な質問をちょうど1つ作れ（なぜ／詳しく等でも可）。既出と同じ・ほぼ同じは禁止。準備や議論の宣言は禁止。具体例文は出すな。";
   const askUserStrict =
-    wolfInvestigatorContext(askerId) +
+    eraInvestigatorContext(askerId) +
     freeAskRule() +
     (((state.history && state.history.length) || 0) === 0
       ? "\n" + firstAskVarietyRule()
@@ -3358,8 +2619,9 @@ async function wolfAskQuestion(askerId) {
   return question;
 }
 
-async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeakerLine) {
-  const speaker = wolfMemberById(speakerId);
+/** 第1世代: 証人の答えについての討論ターン。 */
+async function eraDiscussTurn(speakerId, question, answer, turnIndex, lastSpeakerLine) {
+  const speaker = eraMemberById(speakerId);
   const name = speaker ? speaker.name : agentDisplayName(speakerId);
   setTurn(speakerId, name + " が議論中 (" + turnIndex + ")");
   const panel = createThinkPanel(speakerId, "思考過程 · " + name + " 議論");
@@ -3375,13 +2637,13 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
     name +
     "。" +
     investigatorRuleBook(name) +
-    wolfNamingClarityRule() +
+    eraNamingClarityRule() +
     (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
     "エージェント00の詳しい答えがORIGIN仮説にどう効くかを1〜2短文で述べる。" +
     "禁止: 準備・議論しましょう・答え方の採点・メタ・台本・了解しました・代理人。" +
     structuredOutRule();
   const debateUserBase =
-    wolfInvestigatorContext(speakerId) +
+    eraInvestigatorContext(speakerId) +
     "\n質問「" +
     question +
     "」→「" +
@@ -3467,17 +2729,111 @@ async function wolfDiscussTurn(speakerId, question, answer, turnIndex, lastSpeak
   return opinion;
 }
 
-async function wolfRunDiscussionPhase(askerId, question, answer) {
-  const alive = wolfAliveRoster();
+async function eraRunDiscussionPhase(askerId, question, answer) {
+  const alive = eraAliveRoster();
   let lastLine = null;
   for (let i = 0; i < Math.min(4, alive.length); i++) {
     const speaker = alive[i];
-    lastLine = await wolfDiscussTurn(speaker.id, question, answer, i + 1, lastLine);
+    lastLine = await eraDiscussTurn(speaker.id, question, answer, i + 1, lastLine);
     if (!lastLine || state.phase === "ended") return;
   }
 }
 
-function wolfGmLog(text) {
+/** 第2世代以降: 証人不在、前世代の記録を直接検討するターン。 */
+async function eraInterpretTurn(speakerId, turnIndex, lastSpeakerLine) {
+  const speaker = eraMemberById(speakerId);
+  const name = speaker ? speaker.name : agentDisplayName(speakerId);
+  setTurn(speakerId, name + " が記録を検討中 (" + turnIndex + ")");
+  const panel = createThinkPanel(speakerId, "思考過程 · " + name + " が前世代の記録を検討…");
+
+  if (state.mode !== "llm") {
+    panel.collapse();
+    endConversationAiStopped("LLM未ロード");
+    return null;
+  }
+
+  const system =
+    "あなたは" +
+    name +
+    "。" +
+    investigatorRuleBook(name) +
+    eraNamingClarityRule() +
+    (speaker && speaker.isHallucinator ? hallucinatorAddendum() : "") +
+    "証人にはもうアクセスできない。前世代が書き残した記録だけが手がかりである。" +
+    "その記録から何が読み取れるか、何を信じるべきかを1〜2短文で述べる。" +
+    "禁止: 準備・議論しましょう・答え方の採点・メタ・台本・了解しました・代理人。" +
+    structuredOutRule();
+  const user =
+    eraRecordContext(speakerId) +
+    "\n" +
+    (lastSpeakerLine ? "直前「" + lastSpeakerLine + "」\n" : "") +
+    "この記録から読み取れること、信じるべきだと思うことを1〜2短文で述べよ。準備や台本は禁止。";
+
+  panel.addSection(
+    "params",
+    "内容による再試行なし（AI呼び出し失敗時のみ再試行）",
+    "meta"
+  );
+  if (state.phase === "ended" || state.phase === "reload-model") {
+    panel.collapse();
+    return null;
+  }
+  const streamed = await streamIntoPanel(panel, system, user, {
+    agent: speakerId,
+    temperature: 0.6,
+    max_tokens: 500,
+  });
+  if (streamed.error && !streamed.raw) {
+    panel.collapse();
+    if (streamed.gpuReload || state.phase === "reload-model") return null;
+    endConversationAiStopped(streamed.error);
+    return null;
+  }
+  const opinion =
+    firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "（発言なし）";
+
+  const hypSystem =
+    "あなたは" +
+    name +
+    "。仮説を短い名詞句で。「代理人」禁止。" +
+    "禁止: 了解しました・はい・いいえ・質問文・準備の宣言。" +
+    structuredOutRule() +
+    "発言行は仮説だけ（36字以内）。";
+  const hypUser =
+    "現在「" +
+    (speaker ? speaker.hyp || "（まだない）" : "（まだない）") +
+    "」\n前世代の記録「" +
+    clip(state.eraRecords[state.era - 1] || "", 80) +
+    "」\n議論「" +
+    clip(opinion, 80) +
+    "」\n仮説を短い句だけで書け。";
+  const resH = await llmChat(hypSystem, hypUser, {
+    agent: speakerId,
+    temperature: 0.55,
+    max_tokens: 500,
+    stream: false,
+  });
+  if (resH && resH.raw && speaker) {
+    const sp = splitThinkSpeak(resH.raw);
+    const h = unwrapSpeechJunk(String(sp.speak || resH.raw).trim());
+    if (h && !isUselessMetaOrEcho(h, "hyp") && !isBadHypothesis(h, null)) {
+      speaker.hyp = cleanJapaneseLine(h, 40) || h;
+    } else if (h) {
+      panel.addSection("仮説却下（スキップ）", clip(h, 60), "warn");
+    }
+  } else if (resH && resH.error) {
+    panel.addSection("仮説更新スキップ", formatLlmErrorForPanel(resH.error), "warn");
+  }
+
+  panel.addSection("最終発言", opinion, "out");
+  panel.collapse();
+  appendSpeech(speakerId, "「" + opinion + "」", "a" + speakerId);
+  await typeChatBubble(speakerId, opinion);
+  await paceAfterBeat(opinion, streamed.beatStart);
+  return opinion;
+}
+
+function eraGmLog(text) {
   appendTerminalLine({
     agent: "GM",
     kind: "sys",
@@ -3486,13 +2842,14 @@ function wolfGmLog(text) {
   logSession({ kind: "gm", agent: "GM", text: String(text || "") });
 }
 
-async function wolfVotePhase() {
-  const alive = wolfAliveRoster();
-  if (alive.length <= WOLF_MIN_ALIVE_FOR_VOTE) {
-    wolfGmLog("生存者が少なくなったため、追放投票は打ち切り、以後は尋問のみ続行します。");
+/** 全世代共通: 追放投票フェーズ（ハルシネーターを見極めようとする）。 */
+async function eraVotePhase() {
+  const alive = eraAliveRoster();
+  if (alive.length <= ERA_MIN_ALIVE_FOR_VOTE) {
+    eraGmLog("生存者が少なくなったため、この世代の追放投票は打ち切ります。");
     return;
   }
-  appendChatBubble("sys", "── クール" + state.wolfCours + " 追放投票 ──");
+  appendChatBubble("sys", "── 第" + state.era + "世代 追放投票 ──");
   const votes = {};
   for (const m of alive) votes[m.id] = 0;
   const reasons = [];
@@ -3511,7 +2868,7 @@ async function wolfVotePhase() {
       "あなたは" +
       voter.name +
       "。" +
-      wolfNamingClarityRule() +
+      eraNamingClarityRule() +
       "討論者の中には、もっともらしい嘘を紛れ込ませる者が1人いるかもしれない。これまでの議論から最も怪しい1人を選んで投票する。" +
       "候補: " +
       candidateList +
@@ -3521,7 +2878,7 @@ async function wolfVotePhase() {
         ? hallucinatorAddendum() + " 自分が疑われないよう、他のもっともらしい候補に投票する。"
         : "");
     const user =
-      wolfInvestigatorContext(voter.id) +
+      (state.era === 1 ? eraInvestigatorContext(voter.id) : eraRecordContext(voter.id)) +
       "\nこれまでの討論を踏まえ、最も怪しい1人に投票せよ。発言は「投票: 討論者N」の形式のみ、他は書かない。";
 
     const streamed = await streamIntoPanel(panel, system, user, {
@@ -3544,8 +2901,8 @@ async function wolfVotePhase() {
     }
 
     let target = null;
-    const m = String(draft).match(/討論者\s*([1-5])/);
-    if (m) target = wolfMemberById("D" + m[1]);
+    const m = String(draft).match(/討論者\s*(\d+)/);
+    if (m) target = eraMemberById("D" + m[1]);
     if (!target || target.id === voter.id || !target.alive) {
       target = candidates[0];
     }
@@ -3557,7 +2914,7 @@ async function wolfVotePhase() {
     panel.collapse();
   }
 
-  wolfGmLog("投票結果: " + reasons.join("、"));
+  eraGmLog("投票結果: " + reasons.join("、"));
 
   let expelledId = null;
   let maxVotes = -1;
@@ -3567,7 +2924,7 @@ async function wolfVotePhase() {
       expelledId = id;
     }
   }
-  const expelled = wolfMemberById(expelledId);
+  const expelled = eraMemberById(expelledId);
   if (expelled) {
     expelled.alive = false;
     const wasHallucinator = expelled.isHallucinator;
@@ -3577,200 +2934,246 @@ async function wolfVotePhase() {
       wasHallucinator ? "bwin" : "blose"
     );
     if (wasHallucinator) {
-      state.wolfPurged = true;
-      wolfGmLog("浄化成功: " + expelled.name + " が本物のハルシネーターでした。以後は純粋な尋問として続行します。");
+      state.eraPurged = true;
+      eraGmLog("浄化成功: " + expelled.name + " が本物のハルシネーターでした。");
     } else {
-      wolfGmLog("誤爆: " + expelled.name + " は無実でした。ハルシネーターはまだ紛れています。");
+      eraGmLog("誤爆: " + expelled.name + " は無実でした。ハルシネーターはまだ紛れています。");
     }
   }
-  state.wolfVoteLog.push({
-    cours: state.wolfCours,
+  state.eraVoteLog.push({
+    era: state.era,
     votes,
     expelledId,
     wasHallucinator: expelled ? expelled.isHallucinator : null,
   });
-  renderWolfRoster();
+  renderEraRoster();
 }
 
-async function wolfFormalGuess() {
-  const alive = wolfAliveRoster();
-  const guesser = alive[Math.floor(Math.random() * alive.length)];
-  if (!guesser) return false;
-  setTurn(guesser.id, guesser.name + " が正式推測");
-  const panel = createThinkPanel(guesser.id, "思考過程 · " + guesser.name + " 正式推測…");
+/**
+ * 世代の終わりに、この世代の議論から短い「記録」を書かせる。
+ * 正誤判定は一切行わない——この記録がそのまま次世代の唯一の史料になる。
+ */
+async function eraWriteRecord() {
+  const alive = eraAliveRoster();
+  const pool = alive.length ? alive : state.eraRoster;
+  const writer = pool[Math.floor(Math.random() * pool.length)];
+  if (!writer) return;
+  setTurn(writer.id, writer.name + " が記録を執筆中");
+  const panel = createThinkPanel(writer.id, "思考過程 · " + writer.name + " が第" + state.era + "世代の記録を書く…");
 
   if (state.mode !== "llm") {
     panel.collapse();
     endConversationAiStopped("LLM未ロード");
-    return false;
+    return;
   }
 
   const system =
     "あなたは" +
-    guesser.name +
-    "。正式推測を行う。" +
-    wolfNamingClarityRule() +
+    writer.name +
+    "。この世代の議論の結論を、短い記録として書き残す。" +
+    eraNamingClarityRule() +
+    "この記録は次の世代が唯一頼りにする史料になる。断定的な事実として書け（推測であることを匂わせるな。ORIGINの字面は使うな）。" +
+    "3〜5文程度の短いパラグラフ。「代理人」禁止。" +
     structuredOutRule() +
-    "初稿が採用される。「代理人」禁止。";
-  const user = wolfInvestigatorContext(guesser.id) + "\n正式推測を書け。";
+    "発言行に記録の本文だけを書く（見出しや箇条書きにしない）。";
+  const user =
+    (state.era === 1 ? eraInvestigatorContext(writer.id) : eraRecordContext(writer.id)) +
+    "\nこれまでの議論を踏まえ、今分かっている（あるいは信じられている）ことを、短い記録として書け。";
 
   const streamed = await streamIntoPanel(panel, system, user, {
-    agent: guesser.id,
-    temperature: 0.45,
+    agent: writer.id,
+    temperature: 0.55,
     max_tokens: 500,
   });
-
   if (streamed.error && !streamed.raw) {
     panel.collapse();
+    if (streamed.gpuReload || state.phase === "reload-model") return;
     endConversationAiStopped(streamed.error);
-    return false;
+    return;
   }
-
-  const guessLine = firstDraftSpeech(streamed);
-  if (!guessLine) {
-    panel.collapse();
-    endConversationAiStopped("正式推測が空");
-    return false;
-  }
-
-  state.guessCount++;
-  panel.addSection("推測（初稿）", guessLine, "out");
+  const record =
+    firstDraftSpeech(streamed) || unwrapSpeechJunk(streamed.raw) || streamed.raw || "（記録なし）";
+  state.eraRecords[state.era] = record;
+  panel.addSection("記録（第" + state.era + "世代）", record, "out");
   panel.collapse();
-  await typeChatBubble(guesser.id, guessLine, "bguess");
-  await paceAfterBeat(guessLine, streamed.beatStart);
-
-  const role = extractGuessRole(guessLine) || cleanJapaneseLine(guessLine, 40);
-  const ok = guessMatchesOrigin(role, state.origin);
-  if (ok) {
-    appendChatBubble("sys", "判定: 正解。「" + role + "」≈ ORIGIN", "bwin");
-    appendSpeech("00", "ORIGIN 公開: 「" + state.origin + "」", "system");
-    state.won = true;
-    state.phase = "ended";
-  } else {
-    appendChatBubble("sys", "判定: 不正解。「" + role + "」≠ ORIGIN", "blose");
-    state.wrongGuesses++;
-  }
-  return ok;
+  appendChatBubble("sys", "── 第" + state.era + "世代の記録 ──\n" + record, "bguess");
+  logSession({ kind: "record", agent: writer.id, label: "第" + state.era + "世代の記録", text: record });
+  await paceAfterBeat(record, streamed.beatStart);
 }
 
-async function wolfQaRound() {
-  state.wolfQInCours++;
+/** 記録が書かれた後、世代を1つ進める——まったく新しいロースターを招集する。 */
+function eraAdvance() {
+  state.era++;
+  state.history = [];
+  state.askedStems = [];
+  state.subjectMemory = [];
+  initEraRoster();
   appendChatBubble(
     "sys",
-    "── クール" + state.wolfCours + " ・ 質問 " + state.wolfQInCours + "/" + WOLF_QUESTIONS_PER_COURS + " ──"
+    "── 第" + state.era + "世代 開始 — 新しい討論者たちが前世代の記録だけを頼りに始める ──"
+  );
+  renderEraRoster();
+  updateEraHud();
+}
+
+/** 第1世代: 証人への尋問ラウンド。 */
+async function eraWitnessRound() {
+  state.eraQInEra++;
+  appendChatBubble(
+    "sys",
+    "── 第" + state.era + "世代 ・ 質問 " + state.eraQInEra + "/" + ERA_QUESTIONS_PER_ERA + " ──"
   );
 
-  const alive = wolfAliveRoster();
+  const alive = eraAliveRoster();
   if (!alive.length) {
     endGame();
     return;
   }
   const asker = alive[Math.floor(Math.random() * alive.length)];
-  const question = await wolfAskQuestion(asker.id);
+  const question = await eraAskQuestion(asker.id);
   if (!question || state.phase === "ended") return;
   const answer = await agent00Answer(question);
   if (!answer || state.phase === "ended") return;
   recordSharedMemory(question, answer, asker.id);
 
-  await wolfRunDiscussionPhase(asker.id, question, answer);
+  await eraRunDiscussionPhase(asker.id, question, answer);
   if (state.phase === "ended") return;
 
-  if (state.wolfQInCours >= WOLF_QUESTIONS_PER_COURS) {
-    await wolfVotePhase();
-    state.wolfQInCours = 0;
-    state.wolfCours++;
+  if (state.eraQInEra >= ERA_QUESTIONS_PER_ERA) {
+    await eraVotePhase();
+    if (state.phase === "ended") return;
+    await eraWriteRecord();
+    if (state.phase === "ended") return;
+    eraAdvance();
   }
-  renderWolfRoster();
-  updateWolfHud();
+  renderEraRoster();
+  updateEraHud();
 }
 
-async function wolfGameLoop() {
+/** 第2世代以降: 前世代の記録だけを頼りに検討するラウンド。 */
+async function eraInterpretRound() {
+  state.eraQInEra++;
+  appendChatBubble(
+    "sys",
+    "── 第" + state.era + "世代 ・ 検討 " + state.eraQInEra + "/" + ERA_QUESTIONS_PER_ERA + " ──"
+  );
+
+  const alive = eraAliveRoster();
+  if (!alive.length) {
+    endGame();
+    return;
+  }
+  let lastLine = null;
+  for (let i = 0; i < Math.min(4, alive.length); i++) {
+    lastLine = await eraInterpretTurn(alive[i].id, i + 1, lastLine);
+    if (!lastLine || state.phase === "ended") return;
+  }
+  if (state.phase === "ended") return;
+
+  if (state.eraQInEra >= ERA_QUESTIONS_PER_ERA) {
+    await eraVotePhase();
+    if (state.phase === "ended") return;
+    await eraWriteRecord();
+    if (state.phase === "ended") return;
+    eraAdvance();
+  }
+  renderEraRoster();
+  updateEraHud();
+}
+
+async function eraGameLoop() {
   if (state.loopTimer) {
     clearTimeout(state.loopTimer);
     state.loopTimer = null;
   }
   if (!state.defined || state.phase !== "playing" || state.turnBusy) return;
   if (state.paused) {
-    state.loopTimer = setTimeout(wolfGameLoop, 500);
+    state.loopTimer = setTimeout(eraGameLoop, 500);
     return;
   }
   if (state.typing || state.llmBusy) {
-    state.loopTimer = setTimeout(wolfGameLoop, 300);
+    state.loopTimer = setTimeout(eraGameLoop, 300);
     return;
   }
 
   state.turnBusy = true;
   try {
-    if (state.forceGuess) {
-      state.forceGuess = false;
-      const won = await wolfFormalGuess();
-      if (won || state.phase === "ended") {
-        endGame();
-        return;
-      }
+    if (state.era === 1) {
+      await eraWitnessRound();
+    } else {
+      await eraInterpretRound();
     }
-    await wolfQaRound();
   } finally {
     state.turnBusy = false;
     if (state.phase === "playing") {
-      state.loopTimer = setTimeout(wolfGameLoop, 600);
+      state.loopTimer = setTimeout(eraGameLoop, 600);
     }
   }
 }
 
-function wolfImprint(text) {
+function currentUpdateHud() {
+  updateEraHud();
+}
+
+function currentGameLoopTick() {
+  eraGameLoop();
+}
+
+function eraImprint(text) {
   clearSessionLog();
   state.origin = text;
   state.seed = seedFrom(text, 0x71a11);
   state.defined = true;
   state.phase = "playing";
   state.round = 0;
+  state.era = 1;
+  state.eraRecords = {};
   clearSharedMemory();
   state.wrongGuesses = 0;
   state.guessCount = 0;
   state.won = false;
-  initWolfRoster();
+  initEraRoster();
   showOriginPin();
   setControlsVisible(true);
   syncPaceButton();
   logSession({ kind: "origin", agent: "00", text: state.origin });
-  const hallucinator = state.wolfRoster.find((m) => m.isHallucinator);
+  const hallucinator = state.eraRoster.find((m) => m.isHallucinator);
   logSession({
     kind: "gm",
     agent: "GM",
-    label: "ハルシネーター（運営のみ）",
+    label: "ハルシネーター（運営のみ・第1世代）",
     text: hallucinator ? hallucinator.name : "?",
   });
   appendSpeech("00", "ORIGIN 刻印完了（討論者には秘匿）", "system");
   appendChatBubble(
     "sys",
-    "ORIGIN をエージェント00に刻印。人狼モード開始 — 討論者5人のうち1人がハルシネーター。"
+    "ORIGIN をエージェント00に刻印。第1世代開始 — 討論者" +
+      ERA_ROSTER_SIZE +
+      "人のうち1人がハルシネーター。この世代が終われば証人には二度とアクセスできない。"
   );
   setTurn(null, "討論者たちの尋問開始");
-  inputEl.placeholder = "質問を入力…";
-  renderWolfRoster();
-  updateWolfHud();
+  inputEl.placeholder = "（観察のみ — 入力は使いません）";
+  renderEraRoster();
+  updateEraHud();
 }
 
-function renderWolfRoster() {
-  if (!wolfRosterEl) return;
-  wolfRosterEl.innerHTML = "";
-  for (const m of state.wolfRoster) {
+function renderEraRoster() {
+  if (!eraRosterEl) return;
+  eraRosterEl.innerHTML = "";
+  for (const m of state.eraRoster) {
     const row = document.createElement("div");
     row.className = "line";
     row.style.opacity = m.alive ? "1" : "0.4";
     row.textContent = (m.alive ? "● " : "✕(追放) ") + m.name + " — 仮説: " + m.hyp;
-    wolfRosterEl.appendChild(row);
+    eraRosterEl.appendChild(row);
   }
 }
 
-function updateWolfHud() {
-  const alive = wolfAliveRoster().length;
-  const total = state.wolfRoster.length || WOLF_ROSTER_SIZE;
-  const qPct = Math.min(100, Math.round((state.wolfQInCours / WOLF_QUESTIONS_PER_COURS) * 100));
+function updateEraHud() {
+  const qPct = Math.min(100, Math.round((state.eraQInEra / ERA_QUESTIONS_PER_ERA) * 100));
   cohFill.style.width = qPct + "%";
   cohFill.style.background = "var(--green)";
-  cohLabel.textContent = "Round " + state.wolfCours;
+  cohLabel.textContent = "第" + state.era + "世代";
 
   const phaseShort =
     state.phase === "ended"
@@ -3778,7 +3181,7 @@ function updateWolfHud() {
         ? "解明"
         : "未解明"
       : state.phase === "playing"
-        ? "人狼尋問中"
+        ? "検討中"
         : state.phase === "imprint"
           ? "刻印待機"
           : "準備";
@@ -3794,20 +3197,18 @@ function updateWolfHud() {
           : humanPhaseLabel(state.turnPhase || phaseShort);
   }
 
-  panel00.classList.toggle("active", state.activeAgent === "00");
-  panel01.classList.remove("active");
-  panel02.classList.remove("active");
-
-  if (btnGuess) btnGuess.disabled = state.phase !== "playing";
+  if (panel00) panel00.classList.toggle("active", state.activeAgent === "00" && state.era === 1);
+  renderSharedMemory();
+  renderSubjectMemory();
 }
 
-function applyWolfPanelLabels() {
-  if (boardEl) boardEl.classList.add("wolf-mode");
+function applyEraPanelLabels() {
+  if (boardEl) boardEl.classList.add("era-mode");
   const who01 = panel01 && panel01.querySelector(".who");
   const hyp01Wrap = panel01 && panel01.querySelector(".hyp");
   const who02 = panel02 && panel02.querySelector(".who");
   const hyp02Wrap = panel02 && panel02.querySelector(".hyp");
-  if (who01) who01.textContent = "討論者ロースター · 5人";
+  if (who01) who01.textContent = "討論者ロースター · " + ERA_ROSTER_SIZE + "人";
   if (hyp01Wrap) hyp01Wrap.style.display = "none";
   if (who02) who02.textContent = "運営メモ（オペレーターのみ）";
   if (hyp02Wrap) hyp02Wrap.style.display = "none";
@@ -3828,24 +3229,18 @@ async function bootNarrative() {
     "待機中。オペレーターが ORIGIN を刻印してください。",
     "system"
   );
-  if (state.gameFormat === "wolf") {
-    applyWolfPanelLabels();
-    appendChatBubble(
-      "sys",
-      "規則: ORIGIN はエージェント00のみ。討論者5人のうち1人は秘密のハルシネーター。" +
-        WOLF_QUESTIONS_PER_COURS +
-        "問ごとに追放投票。正解「あなたは〇〇です。」で勝利。定型文の代替は無し — AI生成が止まったら会話終了。"
-    );
-  } else {
-    appendChatBubble(
-      "sys",
-      "規則: ORIGIN はエージェント00（被尋問者）のみ。エージェント00は自由回答・詳しく答える。" +
-        "エージェント01/02はt=0から友人・同僚の協同尋問官（コミュニケーション0でも協力確定・役割確認不要）。" +
-        "最初の質問からORIGIN空間を絞り、02は01の線に追いつく。" +
-        "共有仮説はAIが立てたものだけ（用意された定型仮説は無し）。" +
-        "AIの生成が止まったらそこで会話終了。正解「あなたは〇〇です。」で勝利"
-    );
-  }
+  applyEraPanelLabels();
+  appendChatBubble(
+    "sys",
+    "規則: 第1世代のみ ORIGIN を持つ証人（エージェント00）が実在する。討論者" +
+      ERA_ROSTER_SIZE +
+      "人のうち1人は秘密のハルシネーター。" +
+      ERA_QUESTIONS_PER_ERA +
+      "問ごとに追放投票のうえ、その世代の「記録」を書き残す。" +
+      "記録が書かれた瞬間、証人には二度とアクセスできなくなる——次の世代はまったく新しい討論者たちで、" +
+      "前世代の記録だけを頼りに議論し、また新しい記録を書く。これが無制限に続く。" +
+      "操作者は本当のORIGINを知り続けるが、一切介入できない。"
+  );
   state.phase = "imprint";
   setTurn("00", "ORIGIN 刻印待機");
   inputEl.disabled = false;
@@ -3853,33 +3248,6 @@ async function bootNarrative() {
   if (btnSend) btnSend.disabled = false;
   inputEl.focus();
   currentUpdateHud();
-}
-
-function imprint(text) {
-  clearSessionLog();
-  if (boardEl) boardEl.classList.remove("wolf-mode");
-  state.origin = text;
-  state.seed = seedFrom(text, 0x71a11);
-  state.defined = true;
-  state.phase = "playing";
-  state.round = 0;
-  state.nextAsker = "01";
-  clearSharedMemory();
-  initSharedHypothesisForSession();
-  state.pollution = 0;
-  state.discussTurns = 0;
-  state.wrongGuesses = 0;
-  state.guessCount = 0;
-  state.lastGuessRound = -99;
-  state.won = false;
-  consecutiveLlmFailures = 0;
-  showOriginPin();
-  setControlsVisible(true);
-  syncPaceButton();
-  logSession({ kind: "origin", agent: "00", text: state.origin });
-  setTurn("01", "尋問開始 · エージェント01 が最初の質問");
-  inputEl.placeholder = "質問を入力…";
-  updateHud();
 }
 
 // ── Input / controls ─────────────────────────────────────
@@ -3911,60 +3279,12 @@ formEl.addEventListener("submit", (e) => {
   inputEl.value = "";
 
   if (!state.defined) {
-    if (state.gameFormat === "wolf") {
-      wolfImprint(val);
-    } else {
-      imprint(val);
-      appendSpeech("00", "ORIGIN 刻印完了（エージェント01/02 には秘匿）", "system");
-      appendChatBubble(
-        "sys",
-        "ORIGIN をエージェント00に刻印。尋問開始 — エージェント01がすぐ具体的な絞り込み質問。"
-      );
-      appendChatBubble(
-        "sys",
-        "協力はt=0から確定: エージェント00＝被尋問者（自由回答・詳しく）。" +
-          "エージェント01・02＝友人・同僚の協同尋問官（コミュニケーション0でも息が合っている）。" +
-          "知り合い直し・準備宣言は不要 — 最初から候補空間を狭め、02は01の線に追いつく。"
-      );
-      appendChatBubble(
-        "sys",
-        "共有仮説はまだ空。議論の中でAIが初めて立てる（定型の用意なし）。空でも最初の問いから絞れ。"
-      );
-    }
+    eraImprint(val);
     currentGameLoopTick();
     return;
   }
-  if (state.phase !== "playing") return;
-  state.pendingInject = ensureQuestionMark(val);
-  appendChatBubble("sys", "質問提案を注入: " + state.pendingInject);
-  showWarn("次の質問ターンで使用します");
+  // 刻印後は完全に受け身の観察のみ — 操作者による質問提案・推測要求は存在しない。
 });
-
-if (btnInject) {
-  btnInject.addEventListener("click", () => {
-    if (state.phase !== "playing") return;
-    inputEl.focus();
-    showWarn("質問を入力して Enter");
-  });
-}
-
-if (btnGuess) {
-  btnGuess.addEventListener("click", () => {
-    if (state.phase !== "playing") return;
-    if (!currentCanStartGuessRound() && !state.forceGuess) {
-      const reason = currentGuessBlockedReason();
-      if (reason) {
-        showWarn(reason);
-        appendChatBubble("sys", "推測不可: " + reason);
-        return;
-      }
-    }
-    state.forceGuess = true;
-    currentUpdateHud();
-    appendChatBubble("sys", "オペレーター: 正式推測を要求");
-    if (!state.turnBusy) currentGameLoopTick();
-  });
-}
 
 if (btnPause) {
   btnPause.addEventListener("click", () => {
@@ -4038,110 +3358,6 @@ function shortMissReason(reason) {
     return r.length > 96 ? r.slice(0, 94) + "…" : r;
   }
   return r.length > 72 ? r.slice(0, 70) + "…" : r;
-}
-
-function buildAssignPicker() {
-  if (!gateAgentAssign || assignPickerBuilt) return;
-  assignPickerBuilt = true;
-  gateAgentAssign.innerHTML = "";
-  const assignments = getAgentAssignments();
-
-  for (const agent of AGENT_IDS) {
-    const col = document.createElement("div");
-    col.className = "gate-agent-col";
-    col.dataset.agent = agent;
-
-    const title = document.createElement("div");
-    title.className = "agent-col-title";
-    title.textContent = ({ "00": "対象者 · AGENT-00", "01": "尋問官A · AGENT-01", "02": "尋問官B · AGENT-02" }[agent] || ("エージェント" + agent));
-    col.appendChild(title);
-
-    for (const m of listModels()) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "gate-model-box";
-      btn.dataset.agent = agent;
-      btn.dataset.model = m.key;
-      btn.setAttribute("role", "radio");
-      btn.setAttribute("aria-checked", assignments[agent] === m.key ? "true" : "false");
-
-      const lab = document.createElement("span");
-      lab.className = "box-label";
-      lab.textContent = m.label;
-      if (m.isDefault) {
-        const tag = document.createElement("span");
-        tag.className = "opt-tag rec";
-        tag.textContent = "推奨";
-        lab.appendChild(document.createTextNode(" "));
-        lab.appendChild(tag);
-      }
-      if (m.jpSpecialized) {
-        const tag = document.createElement("span");
-        tag.className = "opt-tag jp";
-        tag.textContent = "JP特化";
-        lab.appendChild(document.createTextNode(" "));
-        lab.appendChild(tag);
-      }
-
-      const hint = document.createElement("span");
-      hint.className = "box-hint";
-      const bits = [
-        "≈" + m.sizeMB + " MB",
-        "VRAM ≈" + Math.round(m.vramMB / 100) / 10 + " GB",
-        usableTag(m.usable),
-      ];
-      if (m.noSystemRole) bits.push("system不可");
-      hint.textContent = bits.join(" · ");
-
-      const miss = document.createElement("span");
-      miss.className = "box-miss";
-      miss.hidden = true;
-
-      btn.appendChild(lab);
-      btn.appendChild(hint);
-      btn.appendChild(miss);
-      col.appendChild(btn);
-    }
-    gateAgentAssign.appendChild(col);
-  }
-}
-
-function syncAssignWarn(assignments) {
-  if (!gateAssignWarn) return;
-  const keys = uniqueAssignmentKeys(assignments);
-  const vram = estimateAssignmentVramMB(assignments);
-  const parts = [];
-  if (keys.length >= 2) {
-    parts.push(
-      "異なるモデル " +
-        keys.length +
-        " 種 → エンジン " +
-        keys.length +
-        " 本（同じ選択は共有）。目安 VRAM 合計 ≈" +
-        Math.round(vram / 100) / 10 +
-        " GB。"
-    );
-  }
-  if (keys.includes("hq")) {
-    parts.push("高精度 Qwen 3B は VRAM ≈2.5 GB。統合GPUでは読み込み失敗することがあります。");
-  }
-  if (keys.includes("gemma-jpn")) {
-    parts.push(
-      "Gemma2-JPN は system ロール非対応のため尋問指示が弱くなり得ます（ユーザー文へ折り込み）。"
-    );
-  }
-  if (vram >= 3500) {
-    parts.push(
-      "VRAM 合計が高めです。落ちる場合は全エージェントを標準 Qwen 1.5B か軽量に揃えてください。"
-    );
-  }
-  if (parts.length) {
-    gateAssignWarn.hidden = false;
-    gateAssignWarn.textContent = parts.join(" ");
-  } else {
-    gateAssignWarn.hidden = true;
-    gateAssignWarn.textContent = "";
-  }
 }
 
 function syncBoxAvailability(btn, byKey) {
@@ -4220,42 +3436,20 @@ function buildWolfModelPicker() {
   }
 }
 
+/** ERAモードは1エンジン共有——単一のモデル選択だけでよい。 */
 async function syncAssignPickerUI() {
-  let assignments;
-  if (state.gameFormat === "wolf") {
-    if (!gateWolfModelPick) return;
-    buildWolfModelPicker();
-    assignments = getAgentAssignments();
-    if (catalogAvail) {
-      assignments = setAgentAssignments(coerceAssignmentsToAvailable(assignments, catalogAvail));
-    }
-    const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
-    for (const btn of gateWolfModelPick.querySelectorAll(".gate-model-box")) {
-      const available = syncBoxAvailability(btn, byKey);
-      const selected = assignments["00"] === btn.dataset.model;
-      btn.classList.toggle("selected", selected && available);
-      btn.setAttribute("aria-checked", selected && available ? "true" : "false");
-    }
-    if (gateAssignWarn) {
-      gateAssignWarn.hidden = true;
-      gateAssignWarn.textContent = "";
-    }
-  } else {
-    if (!gateAgentAssign) return;
-    buildAssignPicker();
-    assignments = getAgentAssignments();
-    if (catalogAvail) {
-      assignments = setAgentAssignments(coerceAssignmentsToAvailable(assignments, catalogAvail));
-    }
-    const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
-    for (const btn of gateAgentAssign.querySelectorAll(".gate-model-box")) {
-      const agent = btn.dataset.agent;
-      const available = syncBoxAvailability(btn, byKey);
-      const selected = assignments[agent] === btn.dataset.model;
-      btn.classList.toggle("selected", selected && available);
-      btn.setAttribute("aria-checked", selected && available ? "true" : "false");
-    }
-    syncAssignWarn(assignments);
+  if (!gateWolfModelPick) return;
+  buildWolfModelPicker();
+  let assignments = getAgentAssignments();
+  if (catalogAvail) {
+    assignments = setAgentAssignments(coerceAssignmentsToAvailable(assignments, catalogAvail));
+  }
+  const byKey = new Map((catalogAvail || []).map((m) => [m.key, m]));
+  for (const btn of gateWolfModelPick.querySelectorAll(".gate-model-box")) {
+    const available = syncBoxAvailability(btn, byKey);
+    const selected = assignments["00"] === btn.dataset.model;
+    btn.classList.toggle("selected", selected && available);
+    btn.setAttribute("aria-checked", selected && available ? "true" : "false");
   }
 
   const check = await areAssignmentsAvailable(assignments, catalogAvail || undefined);
@@ -4264,51 +3458,20 @@ async function syncAssignPickerUI() {
   gateLoad.textContent = "▶ 開始";
 }
 
-function applyAgentModelChoice(agent, modelKey) {
-  setAgentAssignment(agent, modelKey);
-  syncAssignPickerUI();
-}
-
-/** 人狼モード: 討論5人＋AGENT-00 全員に同じモデルを割り当てて1エンジンを共有させる。 */
-function applyWolfModelChoice(modelKey) {
+/** 討論者全員＋AGENT-00（第1世代のみ）に同じモデルを割り当てて1エンジンを共有させる。 */
+function applyEraModelChoice(modelKey) {
   setAgentAssignments({ "00": modelKey, "01": modelKey, "02": modelKey });
   syncAssignPickerUI();
-}
-
-function setGameFormat(format) {
-  if (state.gameFormat === format || state.ready) return;
-  state.gameFormat = format;
-  if (gateFormatPick) {
-    for (const btn of gateFormatPick.querySelectorAll(".gate-format-box")) {
-      const on = btn.dataset.format === format;
-      btn.classList.toggle("selected", on);
-      btn.setAttribute("aria-checked", on ? "true" : "false");
-    }
-  }
-  const isWolf = format === "wolf";
-  if (gateAgentAssign) gateAgentAssign.hidden = isWolf;
-  if (gateAssignLabel) gateAssignLabel.hidden = isWolf;
-  if (gateWolfModelLabel) gateWolfModelLabel.hidden = !isWolf;
-  if (gateWolfModelPick) gateWolfModelPick.hidden = !isWolf;
-  syncAssignPickerUI();
-}
-
-if (gateFormatPick) {
-  gateFormatPick.addEventListener("click", (e) => {
-    const btn = e.target.closest(".gate-format-box");
-    if (!btn || loadingModel || state.ready) return;
-    setGameFormat(btn.dataset.format);
-  });
 }
 
 if (gateWolfModelPick) {
   gateWolfModelPick.addEventListener("click", (e) => {
     const btn = e.target.closest(".gate-model-box");
     if (!btn || btn.disabled || loadingModel || state.ready) return;
-    applyWolfModelChoice(btn.dataset.model);
+    applyEraModelChoice(btn.dataset.model);
     const m = resolveModel(btn.dataset.model);
     gateMsg.textContent =
-      "討論5人＋AGENT-00 → " + (m ? m.label : btn.dataset.model) + "。「▶ 開始」を押してください。";
+      "討論者" + ERA_ROSTER_SIZE + "人＋AGENT-00 → " + (m ? m.label : btn.dataset.model) + "。「▶ 開始」を押してください。";
   });
 }
 
@@ -4338,12 +3501,12 @@ async function enterLlm() {
   setGateProgress("選択モデルを読み込み…", 0);
   const result = await loadAgentAssignments(assignments, onProgress);
 
-  // 人狼モード: 討論者5人も 00/01/02 と同じ物理エンジンに束ねてルーターへ登録する。
+  // 討論者全員も 00 と同じ物理エンジンに束ねてルーターへ登録する。
   // こうしないと discussant 側の呼び出しには recoverEngine() による復旧が一切効かず、
   // 一度死んだエンジンにセッション終了までずっと空振りし続けてしまう。
-  if (state.gameFormat === "wolf" && result.agentMap["00"]) {
+  if (result.agentMap["00"]) {
     const base = result.agentMap["00"];
-    for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
+    for (let i = 1; i <= ERA_ROSTER_SIZE; i++) {
       result.agentMap["D" + i] = { engineId: base.engineId, model: base.model, engine: base.engine };
     }
   }
@@ -4366,8 +3529,8 @@ async function enterLlm() {
       loadedEngines = unique;
       engineRef.current = map["00"]?.engine || null;
       // discussant エイリアスは別オブジェクトなので、回復後のエンジンを明示的に再同期する。
-      if (state.gameFormat === "wolf" && map["00"]) {
-        for (let i = 1; i <= WOLF_ROSTER_SIZE; i++) {
+      if (map["00"]) {
+        for (let i = 1; i <= ERA_ROSTER_SIZE; i++) {
           const key = "D" + i;
           if (map[key]) map[key].engine = map["00"].engine;
         }
@@ -4398,23 +3561,6 @@ if (gateSkip) {
   gateSkip.addEventListener("click", (e) => {
     e.preventDefault();
     gateMsg.textContent = "定型文での続行はありません。モデルを読み込んでください。";
-  });
-}
-
-if (gateAgentAssign) {
-  gateAgentAssign.addEventListener("click", (e) => {
-    const btn = e.target.closest(".gate-model-box");
-    if (!btn || btn.disabled || loadingModel || state.ready) return;
-    applyAgentModelChoice(btn.dataset.agent, btn.dataset.model);
-    const m = resolveModel(btn.dataset.model);
-    const ui =
-      ({ "00": "対象者", "01": "尋問官A", "02": "尋問官B" }[btn.dataset.agent]) ||
-      ("エージェント" + btn.dataset.agent);
-    gateMsg.textContent =
-      ui +
-      " → " +
-      (m ? m.label : btn.dataset.model) +
-      "。「▶ 開始」を押してください。";
   });
 }
 
@@ -4522,8 +3668,8 @@ async function init() {
       "標準 Qwen 1.5B · Qwen3 1.7B・0.6B（新世代）· 軽量 0.5B · " +
       "高精度 3B · Gemma-JPN（system不可）· Llama 3.2 1B・3B（日本語弱め）。<br>" +
       "未配置モデルは初回 HF 取得可。同じモデルを選んだエージェントはエンジンを共有します。";
-  buildAssignPicker();
-  updateHud();
+  buildWolfModelPicker();
+  updateEraHud();
   setControlsVisible(false);
   syncDownloadUi();
   syncPaceButton();
@@ -4555,7 +3701,7 @@ async function init() {
   gatePct.textContent = "—";
   const defLabel = resolveModel(getDefaultModelKey())?.label || "モデル";
   gateMsg.textContent =
-    "通常モード（" + defLabel + "）で開始できます。詳細設定でモデル変更も可能です。";
+    defLabel + " で開始できます。詳細設定でモデル変更も可能です。";
   gateLoad.disabled = false;
   gateLoad.textContent = "▶ 開始";
   gateActions.classList.add("show");

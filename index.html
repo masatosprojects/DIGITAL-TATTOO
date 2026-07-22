@@ -1155,32 +1155,17 @@
 
             <h3>ゲームを始める</h3>
             <div class="start-simple">
-                通常モード（推奨）
-                <small>標準設定のまますぐ開始できます。形式やモデルは下から変更。</small>
-            </div>
-
-            <div class="gate-section-label">ゲーム形式</div>
-            <div id="gateFormatPick" role="radiogroup" aria-label="ゲーム形式選択">
-                <button type="button" class="gate-format-box selected" data-format="duo" role="radio" aria-checked="true">
-                    <span class="box-label">尋問モード（2人）</span>
-                    <span class="box-hint">尋問官A/B が協同で推理する標準プレイ。</span>
-                </button>
-                <button type="button" class="gate-format-box" data-format="wolf" role="radio" aria-checked="false">
-                    <span class="box-label">人狼モード（5人）</span>
-                    <span class="box-hint">討論者5人＋追放投票。発展ルール。</span>
-                </button>
+                標準設定で開始
+                <small>証人1人・討論者3人。1人は秘密裏に虚偽を紛れ込ませるかもしれない。</small>
             </div>
 
             <button type="button" id="gateAdvancedToggle" aria-expanded="false" aria-controls="gateAdvanced">詳細設定</button>
 
             <div id="gateAdvanced" class="gate-advanced">
-                <div class="gate-section-label" id="gateAssignLabel">エージェント別 LLM（ボックスを選択）</div>
-                <div id="gateAgentAssign" role="group" aria-label="エージェント別モデル選択"></div>
-                <div class="gate-section-label" id="gateWolfModelLabel" hidden>討論者5人＋AGENT-00 が共有するモデル</div>
-                <div id="gateWolfModelPick" role="radiogroup" aria-label="人狼モードモデル選択" hidden></div>
-                <div id="gateAssignWarn" hidden></div>
+                <div class="gate-section-label" id="gateWolfModelLabel">討論者・証人が共有するモデル</div>
+                <div id="gateWolfModelPick" role="radiogroup" aria-label="モデル選択"></div>
                 <div id="gateHint">
-                    推奨は TinySwallow 1.5B（JP特化）。未同梱モデルは初回 HF から取得（IndexedDB）。同じモデルを選んだエージェントはエンジンを共有。ORIGIN は対象者のみが知る。
+                    推奨は TinySwallow 1.5B（JP特化）。未同梱モデルは初回 HF から取得（IndexedDB）。ORIGIN は証人のみが知る。
                 </div>
             </div>
 
@@ -1188,7 +1173,7 @@
             <div id="gateBar"><i id="gateFill"></i></div>
             <div id="gatePct">—</div>
             <div id="gateMsg">準備しています…</div>
-            <p class="start-footnote">通常モードは標準 Qwen 1.5B。詳細設定でモデル変更も可能です。</p>
+            <p class="start-footnote">全員が同じモデルを共有する。詳細設定でモデル変更も可能。</p>
             <div id="gateActions">
                 <button type="button" id="gateSkip" hidden>モデル必須</button>
             </div>
@@ -1207,9 +1192,8 @@
                 <span id="engineBadge">LLM …</span>
                 <div id="helpStrip">
                     <strong>遊び方:</strong>
-                    ORIGIN を対象者に刻印 →
-                    <span style="color:var(--a01)">尋問官A</span>/<span style="color:var(--a02)">尋問官B</span>
-                    が質問 → コンソールで思考と発言を追う → 「あなたは〇〇です。」で正式推測
+                    ORIGIN を証人に刻印 → 討論者たちが尋問・議論・投票 →
+                    世代の終わりに「記録」を執筆 → 証人は失われ、次の世代が記録だけを頼りに続ける（無制限）。操作者は見守るのみ。
                 </div>
             </div>
         </div>
@@ -1243,15 +1227,15 @@
 
             <div id="agentStrip" aria-label="エージェント">
                 <div id="panel00" class="agent-chip a00">
-                    <span class="who">対象者 <span class="agent-id">AGENT-00</span></span>
-                    <span class="role">秘密の役割 · 自由回答</span>
+                    <span class="who">証人 <span class="agent-id">AGENT-00</span></span>
+                    <span class="role">第1世代のみ実在 · 秘密の役割</span>
                 </div>
                 <div id="panel01" class="agent-chip a01">
-                    <span class="who">尋問官A <span class="agent-id">AGENT-01</span></span>
+                    <span class="who">討論者ロースター</span>
                     <span class="hyp">共有仮説: <span id="hyp01">（まだAIが立てていない）</span></span>
                 </div>
                 <div id="panel02" class="agent-chip a02">
-                    <span class="who">尋問官B <span class="agent-id">AGENT-02</span></span>
+                    <span class="who">運営メモ（オペレーターのみ）</span>
                     <span class="hyp">共有仮説: <span id="hyp02">（まだAIが立てていない）</span></span>
                 </div>
             </div>
@@ -1272,8 +1256,6 @@
         </div>
 
         <div id="controls">
-            <button type="button" id="btnInject">質問を提案</button>
-            <button type="button" id="btnGuess">正式推測を要求</button>
             <button type="button" id="btnPause">一時停止</button>
             <button type="button" id="btnPace" title="表示ペース切替（最速→やや速め→標準→じっくり）">最速</button>
             <button type="button" id="btnReloadModel" title="GPU切断時などにモデルを選び直す">モデルを再読み込み</button>
